@@ -8,6 +8,8 @@ pub mod grim_capture;
 pub mod hyprctl;
 pub mod mock;
 pub mod onnx_vision;
+pub mod portal_capture;
+pub mod portal_input;
 pub mod uinput_input;
 pub mod wlr_capture;
 pub mod wlr_input;

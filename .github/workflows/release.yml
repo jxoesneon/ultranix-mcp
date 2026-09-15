@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-release:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          pkg="ultranix-mcp-${version}-${{ matrix.target }}"
+          strip "target/${{ matrix.target }}/release/ultranix-mcp"
+          mkdir -p "dist/${pkg}"
+          cp "target/${{ matrix.target }}/release/ultranix-mcp" "dist/${pkg}/"
+          cp LICENSE README.md "dist/${pkg}/"
+          cp packaging/ultranix-mcp.service \
+             packaging/99-ultranix-mcp-uinput.rules \
+             packaging/README-uinput.md \
+             "dist/${pkg}/"
+          tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
+          (cd dist && sha256sum "${pkg}.tar.gz" > "${pkg}.tar.gz.sha256")
+
+      - name: Attach release assets
+        uses: softprops/action-gh-release@v2.2.1
+        with:
+          files: dist/*

@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `labeled` added so the `nested-live` job can be triggered on a PR by
+    # applying the `live` label; every other job already ran on
+    # opened/synchronize/reopened.
+    types: [opened, synchronize, reopened, labeled]
+  # Manual dispatch is the primary gate for the nested-compositor rig —
+  # github-hosted runners ship no Wayland compositor.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -91,6 +98,48 @@ jobs:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+  # Phase-5 nested-compositor rig (docs/TESTING_STRATEGY.md §2.2, ROADMAP
+  # Phase 5). Never runs on a default push: Hyprland isn't packaged for
+  # GitHub runners, so this job installs sway and runs it headless
+  # (WLR_BACKENDS=headless + pixman). wlroots advertises
+  # wlr-screencopy even headless, so the screenshot PNG assertion is fully
+  # exercised; get_windows correctly returns -32010 (the window provider
+  # is hyprctl-only). On a self-hosted CachyOS/Hyprland runner the same
+  # script auto-detects `Hyprland` and exercises the nested-in-session
+  # path instead — trigger it there with `workflow_dispatch`.
+  nested-live:
+    name: nested compositor (live)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'live'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # sway is in Ubuntu universe; it needs no seat/GPU under
+      # WLR_BACKENDS=headless. python3 (JSON-RPC driver) is preinstalled
+      # on GH-hosted images.
+      - name: Install headless compositor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends sway
+
+      - name: Build server
+        run: cargo build --bin ultranix-mcp
+
+      - name: Run nested-compositor rig
+        run: bash scripts/nested-test.sh --compositor sway
+        env:
+          ULTRANIX_MCP_BIN: ${{ github.workspace }}/target/debug/ultranix-mcp
 
   audit:
     name: cargo audit

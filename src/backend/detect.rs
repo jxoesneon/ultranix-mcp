@@ -107,6 +107,8 @@ pub enum CaptureBackend {
     Wlr,
     /// `grim`/`slurp` subprocess fallback for wlroots compositors.
     Grim,
+    /// XDG `org.freedesktop.portal.Screenshot` — universal last resort.
+    Portal,
 }
 
 /// Ordered candidates for the input slot.
@@ -116,6 +118,8 @@ pub enum InputBackend {
     Wlr,
     /// `/dev/uinput` kernel-level injection — display-agnostic fallback.
     UInput,
+    /// XDG `org.freedesktop.portal.RemoteDesktop` — universal last resort.
+    Portal,
 }
 
 /// Ordered candidates for the window-management slot.
@@ -162,10 +166,11 @@ pub struct DetectionPlan {
 /// Map a session snapshot onto the per-slot fallback ladders.
 ///
 /// Ladder policy (per spec):
-/// - capture: `Wlr → Grim → None` (Wayland only — both rungs are
-///   Wayland-native; no X11 capture backend exists yet)
-/// - input: `Wlr → UInput-stub → None` (Wayland prefers compositor-native
-///   injection; uinput is display-agnostic so it also candidated on X11)
+/// - capture: `Wlr → Grim → Portal → None` (wlr rungs are Wayland-only;
+///   the portal rung also candidated on X11 — it's session-agnostic)
+/// - input: `Wlr → UInput → Portal → None` (Wayland prefers
+///   compositor-native injection; uinput and the portal are
+///   display-agnostic so they also candidated on X11)
 /// - window: `Hyprctl → None` (Hyprland sessions only)
 /// - ui_automation: `Atspi → None` on any non-headless session — the
 ///   accessibility bus is compositor-agnostic (Wayland and X11 alike)
@@ -176,16 +181,22 @@ pub struct DetectionPlan {
 /// - headless: every ladder is empty — there is no display to automate.
 pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
     let capture = match session.session_type {
-        SessionType::Wayland => vec![CaptureBackend::Wlr, CaptureBackend::Grim],
-        SessionType::X11 | SessionType::Headless => vec![],
+        SessionType::Wayland => vec![
+            CaptureBackend::Wlr,
+            CaptureBackend::Grim,
+            CaptureBackend::Portal,
+        ],
+        SessionType::X11 => vec![CaptureBackend::Portal],
+        SessionType::Headless => vec![],
     };
 
     let input = match session.session_type {
-        SessionType::Wayland => vec![InputBackend::Wlr, InputBackend::UInput],
-        // uinput injects at the kernel level and works under X11; it stays
-        // a stub until the Phase-2 backend lands, but it is a legitimate
-        // candidate there.
-        SessionType::X11 => vec![InputBackend::UInput],
+        SessionType::Wayland => vec![
+            InputBackend::Wlr,
+            InputBackend::UInput,
+            InputBackend::Portal,
+        ],
+        SessionType::X11 => vec![InputBackend::UInput, InputBackend::Portal],
         SessionType::Headless => vec![],
     };
 
@@ -275,6 +286,12 @@ fn detect_capture(candidates: &[CaptureBackend]) -> Option<Arc<dyn CaptureProvid
                     return Some(Arc::new(p));
                 }
             }
+            CaptureBackend::Portal => {
+                if let Some(p) = crate::providers::portal_capture::PortalCapture::new() {
+                    tracing::info!(backend = "portal-screenshot", "capture provider registered");
+                    return Some(Arc::new(p));
+                }
+            }
         }
     }
     tracing::debug!("capture: no backend registered");
@@ -294,6 +311,15 @@ fn detect_input(candidates: &[InputBackend]) -> Option<Arc<dyn InputProvider>> {
             InputBackend::UInput => {
                 if let Some(p) = crate::providers::uinput_input::UinputInput::new() {
                     tracing::info!(backend = "uinput", "input provider registered");
+                    return Some(Arc::new(p));
+                }
+            }
+            InputBackend::Portal => {
+                if let Some(p) = crate::providers::portal_input::PortalInput::new() {
+                    tracing::info!(
+                        backend = "portal-remote-desktop",
+                        "input provider registered"
+                    );
                     return Some(Arc::new(p));
                 }
             }
@@ -398,9 +424,20 @@ mod tests {
         let plan = plan_backends(&s);
         assert_eq!(
             plan.capture,
-            vec![CaptureBackend::Wlr, CaptureBackend::Grim]
+            vec![
+                CaptureBackend::Wlr,
+                CaptureBackend::Grim,
+                CaptureBackend::Portal,
+            ]
         );
-        assert_eq!(plan.input, vec![InputBackend::Wlr, InputBackend::UInput]);
+        assert_eq!(
+            plan.input,
+            vec![
+                InputBackend::Wlr,
+                InputBackend::UInput,
+                InputBackend::Portal,
+            ]
+        );
         assert_eq!(plan.window, vec![WindowBackend::Hyprctl]);
     }
 
@@ -421,9 +458,20 @@ mod tests {
         let plan = plan_backends(&s);
         assert_eq!(
             plan.capture,
-            vec![CaptureBackend::Wlr, CaptureBackend::Grim]
+            vec![
+                CaptureBackend::Wlr,
+                CaptureBackend::Grim,
+                CaptureBackend::Portal,
+            ]
         );
-        assert_eq!(plan.input, vec![InputBackend::Wlr, InputBackend::UInput]);
+        assert_eq!(
+            plan.input,
+            vec![
+                InputBackend::Wlr,
+                InputBackend::UInput,
+                InputBackend::Portal,
+            ]
+        );
         assert!(plan.window.is_empty());
     }
 
@@ -438,10 +486,12 @@ mod tests {
         assert!(!s.is_hyprland);
 
         let plan = plan_backends(&s);
-        // No X11 capture backend exists yet.
-        assert!(plan.capture.is_empty());
-        // uinput is display-agnostic — a legitimate X11 candidate.
-        assert_eq!(plan.input, vec![InputBackend::UInput]);
+        // No X11-native capture backend — the portal rung is
+        // session-agnostic and the only candidate.
+        assert_eq!(plan.capture, vec![CaptureBackend::Portal]);
+        // uinput is display-agnostic — a legitimate X11 candidate,
+        // with the portal behind it.
+        assert_eq!(plan.input, vec![InputBackend::UInput, InputBackend::Portal]);
         assert!(plan.window.is_empty());
     }
 

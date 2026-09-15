@@ -90,6 +90,9 @@ Three AUR entries, following Arch Rust-packaging conventions.
 
 ### 3.1 `ultranix-mcp` (source build) — PKGBUILD outline
 
+The shipped file lives at `packaging/ultranix-mcp/PKGBUILD` (with
+`ultranix-mcp.install` alongside it); the outline below is kept in sync:
+
 ```bash
 # Maintainer: <name> <email>
 pkgname=ultranix-mcp
@@ -131,12 +134,12 @@ prepare() {
 build() {
   cd "${pkgname}-${pkgver}"
   export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
-  cargo build --frozen --release --all-features
+  cargo build --release --locked
 }
 
 check() {
   cd "${pkgname}-${pkgver}"
-  cargo test --frozen --release
+  cargo test --release --locked
 }
 
 package() {
@@ -284,14 +287,14 @@ Also ensure the `uinput` module loads: `echo uinput > /etc/modules-load.d/uinput
 | `ULTRANIX_MCP_HISTORY_SECRET` | AES-256-GCM key for `history.json` | per-install generated at first run (stored `0600` under `~/.ultranix-mcp/`); a dev fallback warns loudly |
 | `ULTRANIX_MCP_LOG_LEVEL` / `RUST_LOG` | tracing verbosity | `info` |
 | `ULTRANIX_MCP_SENTRY_DSN` | Optional Sentry error reporting | unset (disabled) |
-| `PORT` | HTTP listen port (or `--port` flag) | `3010` |
+| `ULTRANIX_MCP_BIND` | HTTP bind address (or `--bind` flag) | `127.0.0.1:3010` |
 
 Key-source precedence: `ULTRANIX_MCP_API_KEY` → `ULTRANIX_MCP_API_KEY_FILE`
 → `~/.ultranix-mcp/api-keys` (convention fallback, one key per line, mode
 `0600` required — see `docs/API_KEY_MANAGEMENT.md` §3).
 
 Startup flags (the other half of configuration): `--transport stdio|http`
-(the canonical selector; `--stdio` is an accepted alias), `--port <n>`,
+(the canonical selector; `--stdio` is an accepted alias), `--bind <addr:port>`,
 `--category=<csv>` to cap the served tool surface, and
 `--allow-destructive` to bypass the destructive-tool consent gate (§5.4).
 
@@ -358,7 +361,7 @@ Type=simple
 # API key: prefer systemd-creds / EnvironmentFile over inline secrets.
 EnvironmentFile=-%h/.config/ultranix-mcp/env
 Environment=ULTRANIX_MCP_LOG_LEVEL=info
-ExecStart=/usr/bin/ultranix-mcp --transport http --port 3010
+ExecStart=/usr/bin/ultranix-mcp --transport http --bind 127.0.0.1:3010
 Restart=on-failure
 RestartSec=3
 
@@ -488,6 +491,49 @@ Run in order on a live Hyprland session:
 - [ ] Auth negative test: request without `ULTRANIX_MCP_API_KEY` → `401`;
       with `ULTRANIX_MCP_DISABLE_AUTH=true` (dev only) → `200`.
 - [ ] `--category=mouse` run exposes only the 7 mouse tools via `tools/list`.
+
+---
+
+## 9. Shipped artifacts
+
+Files in the repo that implement this spec:
+
+| Path | Purpose |
+| --- | --- |
+| `packaging/ultranix-mcp/PKGBUILD` | AUR source build (§3.1). `sha256sums` ships as `SKIP` — run `updpkgsums` after tagging, before pushing to the AUR. |
+| `packaging/ultranix-mcp/ultranix-mcp.install` | Post-install permission notes (§5) — prints guidance only, never `udevadm trigger`s silently. |
+| `packaging/ultranix-mcp-git/PKGBUILD` | VCS build of `main` HEAD (§3.3); `pkgver()` derives from `git describe --tags --long`. |
+| `packaging/ultranix-mcp.service` | systemd `--user` unit (§6 shape): stdio transport by default, `WantedBy=default.target`, comments carry the HTTP-mode and non-`/usr/bin` `ExecStart` variants. |
+| `packaging/99-ultranix-mcp-uinput.rules` | Opt-in udev rule (§5.1) — inert until the dedicated `ultranix-input` group exists. |
+| `packaging/README-uinput.md` | Copy-paste uinput setup, verification, and removal. |
+| `.github/workflows/release.yml` | On `v*` tags: `cargo build --release --locked` for `x86_64-unknown-linux-gnu`, strip, `tar.gz` + `.sha256` sidecar, attached to the GitHub release via `softprops/action-gh-release`. |
+
+### `cargo install`
+
+Unchanged and canonical (§2): `cargo install ultranix-mcp --locked` lands
+the binary at `~/.cargo/bin/ultranix-mcp`. `cargo install` ships no unit or
+udev rule — for supervised operation copy `packaging/ultranix-mcp.service`
+to `~/.config/systemd/user/` and point `ExecStart` at
+`%h/.cargo/bin/ultranix-mcp`.
+
+### Non-Arch distro notes (Fedora, Debian/Ubuntu, …)
+
+No `.rpm`/`.deb` artifacts ship yet — use `cargo install` or the GitHub
+release tarball, then:
+
+- **Build deps** (needed by `cargo install` too — crates.io builds from
+  source): Debian/Ubuntu `pkg-config libwayland-dev libxkbcommon-dev`;
+  Fedora `pkgconf-pkg-config wayland-devel libxkbcommon-devel`.
+- **udev**: copy `packaging/99-ultranix-mcp-uinput.rules` to
+  `/etc/udev/rules.d/`, then follow the groupadd/usermod/udevadm steps in
+  `packaging/README-uinput.md`. Dedicated `ultranix-input` group — never
+  `input`.
+- **systemd `--user`**: copy the unit to `~/.config/systemd/user/` and
+  adjust `ExecStart` to the real install path (`%h/.cargo/bin` or
+  `%h/.local/bin`), then `systemctl --user daemon-reload`.
+- **Portal backend**: `xdg-desktop-portal` plus the backend matching the
+  session (`-hyprland`/`-wlr`/`-gnome`/`-kde`) and `pipewire` for the
+  `RemoteDesktop` stream — package names vary by distro.
 
 ---
 

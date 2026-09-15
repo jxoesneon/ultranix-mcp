@@ -558,7 +558,7 @@ Type=simple
 # API key: prefer systemd-creds / EnvironmentFile over inline secrets.
 EnvironmentFile=-%h/.config/ultranix-mcp/env
 Environment=ULTRANIX_MCP_LOG_LEVEL=info
-ExecStart=/usr/bin/ultranix-mcp --transport http --port 3010
+ExecStart=/usr/bin/ultranix-mcp --transport http --bind 127.0.0.1:3010
 Restart=on-failure
 RestartSec=3
 

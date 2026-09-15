@@ -1,0 +1,43 @@
+# ultranix-mcp — systemd --user unit.
+# Packaged at /usr/lib/systemd/user/ultranix-mcp.service; for a user-local
+# install copy to ~/.config/systemd/user/ultranix-mcp.service.
+[Unit]
+Description=ultranix-mcp — MCP server for Linux desktop automation
+Documentation=https://github.com/jxoesneon/ultranix-mcp
+After=graphical-session.target
+
+[Service]
+Type=simple
+# API key file for HTTP mode: prefer systemd-creds / EnvironmentFile over
+# inline secrets (see docs/PACKAGING.md §5.3).
+EnvironmentFile=-%h/.config/ultranix-mcp/env
+Environment=ULTRANIX_MCP_LOG_LEVEL=info
+# Canonical deployment is the HTTP daemon (docs/PACKAGING.md §6): a
+# supervised service only makes sense for HTTP — stdio clients spawn the
+# server themselves and never use this unit.
+# HTTP fails closed without a configured ULTRANIX_MCP_API_KEY (§5.3).
+ExecStart=ultranix-mcp --transport http --bind 127.0.0.1:3010
+# Absolute-path / stdio alternatives — pick the one matching your install:
+#   cargo install:   ExecStart=%h/.cargo/bin/ultranix-mcp --transport http --bind 127.0.0.1:3010
+#   ~/.local/bin:    ExecStart=%h/.local/bin/ultranix-mcp --transport http --bind 127.0.0.1:3010
+Restart=on-failure
+RestartSec=3
+
+# --- Hardening (must NOT break the session-level backends) ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.ultranix-mcp
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+# Deliberately NOT set (rationale: docs/PACKAGING.md §6):
+#   PrivateDevices=yes         — would hide /dev/uinput from the evdev fallback.
+#   MemoryDenyWriteExecute=yes — ONNX Runtime JIT may need W+X.
+#   RestrictNamespaces=yes     — portals spawn helper sockets via userns.
+
+[Install]
+WantedBy=graphical-session.target

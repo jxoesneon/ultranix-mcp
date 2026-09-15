@@ -1,0 +1,11 @@
+# ultranix-mcp — uinput access for the evdev input fallback.
+#
+# OPT-IN: this rule is inert until the dedicated `ultranix-input` group
+# exists and the single service user is added to it — group membership is
+# the opt-in gate. Setup: packaging/README-uinput.md (installed at
+# /usr/share/doc/ultranix-mcp/README-uinput.md).
+#
+# NEVER GROUP="input" — `input` membership grants read of *real* input
+# devices, i.e. a keylogger permission (docs/THREAT_MODEL.md §4.1).
+# Add ONLY the service user to `ultranix-input`; nothing else belongs there.
+SUBSYSTEM=="uinput", MODE="0660", GROUP="ultranix-input", OPTIONS+="static_node=uinput"

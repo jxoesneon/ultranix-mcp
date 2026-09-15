@@ -1,0 +1,75 @@
+# Maintainer: jxoesneon <jxoesneon@users.noreply.github.com>
+pkgname=ultranix-mcp-git
+_pkgname=ultranix-mcp
+pkgver=0.5.0.r0.g0000000
+pkgrel=1
+pkgdesc="Wayland-native, security-first MCP server for Linux desktop automation (Hyprland-first) — git build"
+arch=('x86_64' 'aarch64')
+url="https://github.com/jxoesneon/ultranix-mcp"
+license=('ISC')
+depends=(
+  'libxkbcommon'      # virtual-keyboard keymap handling
+  'dbus'              # zbus / portals / AT-SPI2 session bus
+)
+makedepends=('cargo' 'git' 'pkgconf' 'wayland' 'wayland-protocols')
+optdepends=(
+  'xdg-desktop-portal-hyprland: screen-capture consent path on Hyprland'
+  'xdg-desktop-portal-wlr: portal backend for other wlroots compositors'
+  'xdg-desktop-portal-gnome: portal backend under GNOME'
+  'pipewire: stream transport for the portal RemoteDesktop path'
+  'wl-clipboard: post-v1 clipboard tools (wl-copy/wl-paste) — NOT a v1 runtime dep'
+  'at-spi2-core: semantic UI tree (a11y backend)'
+  'onnxruntime: system ONNX Runtime for ORT_STRATEGY=system builds'
+  'grim: whitelisted system_command capture helper (wlroots)'
+  'slurp: whitelisted system_command region-picker (wlroots)'
+  'xdotool: X11 input fallback'
+  'scrot: X11 capture fallback'
+  'wmctrl: X11 window management fallback'
+)
+provides=('ultranix-mcp')
+conflicts=('ultranix-mcp' 'ultranix-mcp-bin')
+install=ultranix-mcp.install
+source=("git+${url}.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "${_pkgname}"
+  git describe --tags --long 2>/dev/null \
+    | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' \
+    || printf '0.0.0.r%s.g%s' \
+      "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "${_pkgname}"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "${_pkgname}"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo build --release --locked
+}
+
+check() {
+  cd "${_pkgname}"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo test --release --locked
+}
+
+package() {
+  cd "${_pkgname}"
+  install -Dm0755 "target/release/ultranix-mcp" \
+    "${pkgdir}/usr/bin/ultranix-mcp"
+  install -Dm0644 LICENSE \
+    "${pkgdir}/usr/share/licenses/${_pkgname}/LICENSE"
+  install -Dm0644 "packaging/ultranix-mcp.service" \
+    "${pkgdir}/usr/lib/systemd/user/ultranix-mcp.service"
+  install -Dm0644 "packaging/99-ultranix-mcp-uinput.rules" \
+    "${pkgdir}/usr/lib/udev/rules.d/99-ultranix-mcp-uinput.rules"
+  install -Dm0644 "packaging/README-uinput.md" \
+    "${pkgdir}/usr/share/doc/${_pkgname}/README-uinput.md"
+  install -Dm0644 README.md \
+    "${pkgdir}/usr/share/doc/${_pkgname}/README.md"
+}

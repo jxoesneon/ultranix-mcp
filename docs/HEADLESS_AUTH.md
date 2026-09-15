@@ -127,7 +127,7 @@ Type=simple
 # API key: prefer systemd-creds / EnvironmentFile over inline secrets.
 EnvironmentFile=-%h/.config/ultranix-mcp/env
 Environment=ULTRANIX_MCP_LOG_LEVEL=info
-ExecStart=/usr/bin/ultranix-mcp --transport http --port 3010
+ExecStart=/usr/bin/ultranix-mcp --transport http --bind 127.0.0.1:3010
 Restart=on-failure
 RestartSec=3
 
@@ -158,14 +158,14 @@ canonical unit's `After=`/`PartOf=`/`ConditionEnvironment=` and
 `After=default.target` + `WantedBy=default.target` and drop
 `ConditionEnvironment=WAYLAND_DISPLAY` — then accept the degraded tool table
 below. cargo-install users substitute
-`ExecStart=%h/.local/bin/ultranix-mcp --transport http --port 3010`.
+`ExecStart=%h/.local/bin/ultranix-mcp --transport http --bind 127.0.0.1:3010`.
 
 The env file (`%h/.config/ultranix-mcp/env`, mode `0600`) carries
 `ULTRANIX_MCP_API_KEY` (or `ULTRANIX_MCP_API_KEY_FILE` pointing at a key
 file; `~/.ultranix-mcp/api-keys`, mode `0600`, is the convention fallback
 source when neither is set — see `docs/API_KEY_MANAGEMENT.md` §3), the
 optional `ULTRANIX_MCP_API_KEY_EXPIRES` key-expiry metadata,
-`ULTRANIX_MCP_HISTORY_SECRET`, and any `PORT`/`--port` override; the
+`ULTRANIX_MCP_HISTORY_SECRET`, and any `ULTRANIX_MCP_BIND`/`--bind` override; the
 listener defaults to `127.0.0.1:3010`.
 
 ### Degraded-tools table — what works without a seat

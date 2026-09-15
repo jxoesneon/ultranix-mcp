@@ -50,7 +50,7 @@ cd ultranix-mcp && cargo build --release
 ultranix-mcp --transport stdio
 
 # Run — streamable HTTP on :3010
-ULTRANIX_MCP_API_KEY="uxcp_<64-hex>" ultranix-mcp --transport http --port 3010
+ULTRANIX_MCP_API_KEY="uxcp_<64-hex>" ultranix-mcp --transport http --bind 127.0.0.1:3010
 ```
 
 ## Environment variables (referenced by every listing)

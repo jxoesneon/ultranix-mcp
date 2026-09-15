@@ -40,7 +40,7 @@ struct Cli {
     category: Vec<String>,
 
     /// HTTP bind address (only with --transport http).
-    #[arg(long, default_value = "127.0.0.1:3010")]
+    #[arg(long, env = "ULTRANIX_MCP_BIND", default_value = "127.0.0.1:3010")]
     bind: String,
 
     /// Bypass the destructive-tool consent gate (operator opt-out;
