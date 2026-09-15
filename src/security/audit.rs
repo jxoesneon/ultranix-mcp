@@ -3,11 +3,21 @@
 //!
 //! Every tool invocation — accepted or rejected — is appended to
 //! `~/.ultranix-mcp/logs/audit.jsonl`. Each record carries
-//! `{timestamp, tool, args_hash, outcome, duration_ms, key_id, prev_hash}`
-//! where `prev_hash` is the SHA-256 of the *previous record's serialized
-//! bytes* (the JSON line, newline excluded). The genesis record's
-//! `prev_hash` is `"0"*64`. Raw arguments are **never** persisted — only
-//! the same canonical `args_hash` the consent gate binds to.
+//! `{timestamp, tool, args_hash, outcome, duration_ms, key_id, caller,
+//! prev_hash}` where `prev_hash` is the SHA-256 of the *previous record's
+//! serialized bytes* (the JSON line, newline excluded). The genesis
+//! record's `prev_hash` is `"0"*64`. Raw arguments are **never**
+//! persisted — only the same canonical `args_hash` the consent gate
+//! binds to.
+//!
+//! **Rotation / retention.** `audit.jsonl` is always the live file. When
+//! the UTC day rolls over — checked on every `record` and at `open` (via
+//! the first record's timestamp) — the finished file is renamed to
+//! `audit-YYYY-MM-DD.jsonl` under `logs/` and a fresh `audit.jsonl`
+//! starts a new chain at `GENESIS`, so every file is self-verifying.
+//! Archives older than `ULTRANIX_MCP_AUDIT_RETENTION_DAYS` (default
+//! [`DEFAULT_RETENTION_DAYS`] = 30; `0` keeps archives forever) are
+//! pruned at open and after each rotation.
 //!
 //! File mode `0600`, containing dir `0700`. The chain makes silent edits
 //! detectable; per THREAT_MODEL.md R-6 there is no external anchor — a
@@ -22,11 +32,21 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::Context;
+use chrono::NaiveDate;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 /// `prev_hash` of the first record in a fresh log.
 pub const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Default archive retention in days, overridable via
+/// [`RETENTION_ENV`]. Archives dated more than this many days before
+/// today are deleted at open and after each day-rollover rotation.
+pub const DEFAULT_RETENTION_DAYS: u64 = 30;
+
+/// Env override for audit retention: a day count. `0` keeps archives
+/// forever; an unparseable value falls back to [`DEFAULT_RETENTION_DAYS`].
+pub const RETENTION_ENV: &str = "ULTRANIX_MCP_AUDIT_RETENTION_DAYS";
 
 /// One audit record — the serialized line shape. Field order is fixed by
 /// declaration order so the chain hashes a stable encoding.
@@ -44,6 +64,9 @@ struct AuditRecord<'a> {
     duration_ms: u64,
     /// API key id on HTTP; absent/stdio → `null`.
     key_id: Option<&'a str>,
+    /// Caller identity the consent gate bound to: `key_id` on HTTP, the
+    /// session id on stdio. `null` only when neither exists.
+    caller: Option<&'a str>,
     /// Consent stamp for gated calls: `"bypassed"` under
     /// `--allow-destructive`, absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,9 +75,28 @@ struct AuditRecord<'a> {
     prev_hash: &'a str,
 }
 
+/// Who made the call and how consent applied — the record fields that
+/// describe the caller rather than the call. Bundled into one struct so
+/// [`AuditLog::record`] stays under the argument-count lint.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CallContext<'a> {
+    /// API key id on HTTP; `None` on stdio.
+    pub key_id: Option<&'a str>,
+    /// Identity the consent gate bound to: `key_id` on HTTP, the session
+    /// id on stdio.
+    pub caller: Option<&'a str>,
+    /// Consent stamp for gated calls: `"bypassed"` under
+    /// `--allow-destructive`, `"verified"` after a token check, `None`
+    /// for ungated calls.
+    pub consent: Option<&'a str>,
+}
+
 /// Append-only, hash-chained audit sink.
 pub struct AuditLog {
+    /// Live file — always `<logs>/audit.jsonl` in production.
     path: PathBuf,
+    /// Archive retention in days; `None` keeps archives forever.
+    retention: Option<u64>,
     inner: Mutex<Inner>,
 }
 
@@ -62,6 +104,8 @@ struct Inner {
     file: File,
     /// SHA-256 hex of the last line written (or [`GENESIS`]).
     prev_hash: String,
+    /// UTC date the live file covers — the trigger for day rotation.
+    date: NaiveDate,
 }
 
 impl AuditLog {
@@ -71,25 +115,46 @@ impl AuditLog {
     /// If the file already has records, the chain is resumed: the last
     /// line's hash becomes `prev_hash`, so appends after restart remain
     /// verifiable end-to-end.
+    ///
+    /// A pre-existing live file whose first record predates today (UTC)
+    /// is first rotated to `audit-YYYY-MM-DD.jsonl`, then archives older
+    /// than the retention window ([`RETENTION_ENV`], default
+    /// [`DEFAULT_RETENTION_DAYS`]) are pruned.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
+        Self::open_with_retention(path, retention_from_env())
+    }
+
+    /// [`AuditLog::open`] with an explicit retention policy — the
+    /// testable core (the public entry point derives it from
+    /// [`RETENTION_ENV`]). `None` keeps archives forever.
+    pub fn open_with_retention(path: &Path, retention: Option<u64>) -> anyhow::Result<Self> {
+        let today = chrono::Utc::now().date_naive();
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)
                 .with_context(|| format!("create audit dir {}", dir.display()))?;
             set_mode(dir, 0o700)?;
+            // A live file whose first record is from a previous day is a
+            // stale log left by an earlier process — archive it before
+            // appending so each file holds exactly one UTC day.
+            if let Some(date) = first_record_date(path)? {
+                if date != today {
+                    rotate_file(path, date)?;
+                }
+            }
+            prune_archives(dir, today, retention, stem_of(path))?;
         }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .mode(0o600)
-            .open(path)
-            .with_context(|| format!("open audit log {}", path.display()))?;
+        let mut file = open_append(path)?;
         set_mode(path, 0o600)?; // enforce on pre-existing files too
 
         let prev_hash = last_line_hash(&mut file)?.unwrap_or_else(|| GENESIS.to_string());
         Ok(Self {
             path: path.to_path_buf(),
-            inner: Mutex::new(Inner { file, prev_hash }),
+            retention,
+            inner: Mutex::new(Inner {
+                file,
+                prev_hash,
+                date: today,
+            }),
         })
     }
 
@@ -107,18 +172,31 @@ impl AuditLog {
         args_hash: &str,
         outcome: &str,
         duration_ms: u64,
-        key_id: Option<&str>,
-        consent: Option<&str>,
+        ctx: CallContext<'_>,
     ) -> anyhow::Result<()> {
         let mut inner = self.inner.lock().expect("audit log poisoned");
+        let now = chrono::Utc::now();
+        let today = now.date_naive();
+        if today != inner.date {
+            // Day rolled over: archive the finished day under its date,
+            // start a fresh chain at GENESIS, and apply retention.
+            rotate_file(&self.path, inner.date)?;
+            inner.file = open_append(&self.path)?;
+            inner.prev_hash = GENESIS.to_string();
+            inner.date = today;
+            if let Some(dir) = self.path.parent() {
+                prune_archives(dir, today, self.retention, stem_of(&self.path))?;
+            }
+        }
         let rec = AuditRecord {
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: now.to_rfc3339(),
             tool,
             args_hash,
             outcome,
             duration_ms,
-            key_id,
-            consent,
+            key_id: ctx.key_id,
+            caller: ctx.caller,
+            consent: ctx.consent,
             prev_hash: &inner.prev_hash,
         };
         let line = serde_json::to_string(&rec).context("serialize audit record")?;
@@ -200,6 +278,129 @@ fn sha256_hex(bytes: &[u8]) -> String {
     s
 }
 
+/// Open `path` for append, creating it `0600` if missing — the shared
+/// file-open behind [`AuditLog::open_with_retention`] and rotation.
+fn open_append(path: &Path) -> anyhow::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("open audit log {}", path.display()))
+}
+
+/// The log's file stem (`audit` for `audit.jsonl`) — archive names and
+/// pruning are both scoped to it.
+fn stem_of(path: &Path) -> &str {
+    path.file_stem().and_then(|s| s.to_str()).unwrap_or("audit")
+}
+
+/// Archive retention from [`RETENTION_ENV`]: unset or unparseable →
+/// [`DEFAULT_RETENTION_DAYS`]; `0` → `None` (keep archives forever).
+fn retention_from_env() -> Option<u64> {
+    match std::env::var(RETENTION_ENV) {
+        Ok(v) => match v.trim().parse::<u64>() {
+            Ok(0) => None,
+            Ok(n) => Some(n),
+            Err(_) => Some(DEFAULT_RETENTION_DAYS),
+        },
+        Err(_) => Some(DEFAULT_RETENTION_DAYS),
+    }
+}
+
+/// UTC date of the first record in `path`, or `None` when the file is
+/// absent, empty, or its first line has no parseable RFC 3339
+/// `timestamp` (a corrupt head is left in place rather than archived
+/// under a guessed date).
+fn first_record_date(path: &Path) -> anyhow::Result<Option<NaiveDate>> {
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+    };
+    // Records are < 1 KiB; the first line always fits in 4 KiB.
+    let mut buf = vec![0u8; 4096];
+    let n = file
+        .read(&mut buf)
+        .with_context(|| format!("read {}", path.display()))?;
+    let Some(line) = buf[..n].split(|b| *b == b'\n').find(|l| !l.is_empty()) else {
+        return Ok(None);
+    };
+    let Ok(rec) = serde_json::from_slice::<serde_json::Value>(line) else {
+        return Ok(None);
+    };
+    Ok(rec
+        .get("timestamp")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+        .map(|dt| dt.date_naive()))
+}
+
+/// Rename the finished live file `path` to `<stem>-YYYY-MM-DD.jsonl`
+/// beside it. On collision (`-2`, `-3`, … suffixes) the archive is never
+/// overwritten — a duplicated name means an operator restored files by
+/// hand, and losing either copy is worse than an extra file.
+fn rotate_file(path: &Path, date: NaiveDate) -> anyhow::Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .context("audit path has no UTF-8 stem")?;
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("jsonl");
+    let date_s = date.format("%Y-%m-%d");
+    let mut target = dir.join(format!("{stem}-{date_s}.{ext}"));
+    let mut n = 2u32;
+    while target.exists() {
+        target = dir.join(format!("{stem}-{date_s}-{n}.{ext}"));
+        n += 1;
+    }
+    fs::rename(path, &target).with_context(|| {
+        format!(
+            "rotate audit log {} -> {}",
+            path.display(),
+            target.display()
+        )
+    })?;
+    set_mode(&target, 0o600)?; // already 0600; enforce on odd cases anyway
+    Ok(())
+}
+
+/// `<stem>-YYYY-MM-DD[-N].jsonl` → its date, else `None`. The `[-N]`
+/// suffix (rotation-collision escape hatch) is ignored for dating.
+fn archive_date(name: &str, stem: &str) -> Option<NaiveDate> {
+    let rest = name
+        .strip_prefix(stem)?
+        .strip_prefix('-')?
+        .strip_suffix(".jsonl")?;
+    NaiveDate::parse_from_str(rest.get(..10)?, "%Y-%m-%d").ok()
+}
+
+/// Delete date-named archive files under `dir` whose date is more than
+/// `retention` days before `today`. `None` keeps everything. Unrelated
+/// or unparseable filenames are never touched.
+fn prune_archives(
+    dir: &Path,
+    today: NaiveDate,
+    retention: Option<u64>,
+    stem: &str,
+) -> anyhow::Result<()> {
+    let Some(days) = retention else { return Ok(()) };
+    for entry in fs::read_dir(dir).with_context(|| format!("read dir {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("read dir {}", dir.display()))?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(date) = archive_date(name, stem) else {
+            continue;
+        };
+        if today.signed_duration_since(date).num_days() > days as i64 {
+            fs::remove_file(entry.path())
+                .with_context(|| format!("prune archive {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -237,8 +438,18 @@ mod tests {
     fn records_are_jsonl_with_required_fields() {
         let tmp = tempfile::tempdir().unwrap();
         let log = log_in(tmp.path());
-        log.record("system_command", "abc123", "ok", 12, Some("key1"), None)
-            .unwrap();
+        log.record(
+            "system_command",
+            "abc123",
+            "ok",
+            12,
+            CallContext {
+                key_id: Some("key1"),
+                caller: Some("sess-1"),
+                consent: None,
+            },
+        )
+        .unwrap();
         let content = fs::read_to_string(log.path()).unwrap();
         let line: serde_json::Value =
             serde_json::from_str(content.lines().next().unwrap()).unwrap();
@@ -247,6 +458,7 @@ mod tests {
         assert_eq!(line["outcome"], "ok");
         assert_eq!(line["duration_ms"], 12);
         assert_eq!(line["key_id"], "key1");
+        assert_eq!(line["caller"], "sess-1");
         assert_eq!(line["prev_hash"], GENESIS);
         // RFC3339 timestamp parses.
         chrono::DateTime::parse_from_rfc3339(line["timestamp"].as_str().unwrap()).unwrap();
@@ -259,7 +471,8 @@ mod tests {
         // The API takes only a hash — feed a hash of a secret-shaped arg and
         // confirm the raw secret isn't anywhere in the file. (Neutral tool
         // name: "system_command" itself contains the substring "command".)
-        log.record("tool", "d34db33f", "ok", 1, None, None).unwrap();
+        log.record("tool", "d34db33f", "ok", 1, CallContext::default())
+            .unwrap();
         let content = fs::read_to_string(log.path()).unwrap();
         assert!(!content.contains("hunter2"));
         assert!(!content.contains("command"));
@@ -272,7 +485,7 @@ mod tests {
         {
             let log = log_in(tmp.path());
             for i in 0..5 {
-                log.record("tool", &format!("h{i}"), "ok", i, None, None)
+                log.record("tool", &format!("h{i}"), "ok", i, CallContext::default())
                     .unwrap();
             }
             assert!(log.verify_chain().unwrap());
@@ -303,7 +516,7 @@ mod tests {
         {
             let log = log_in(tmp.path());
             for i in 0..3 {
-                log.record("tool", &format!("h{i}"), "ok", i, None, None)
+                log.record("tool", &format!("h{i}"), "ok", i, CallContext::default())
                     .unwrap();
             }
         }
@@ -328,11 +541,13 @@ mod tests {
         let path = tmp.path().join("logs").join("audit.jsonl");
         {
             let log = log_in(tmp.path());
-            log.record("a", "h1", "ok", 1, None, None).unwrap();
+            log.record("a", "h1", "ok", 1, CallContext::default())
+                .unwrap();
         }
         {
             let log = log_in(tmp.path());
-            log.record("b", "h2", "ok", 1, None, None).unwrap();
+            log.record("b", "h2", "ok", 1, CallContext::default())
+                .unwrap();
             assert!(log.verify_chain().unwrap());
         }
         assert!(verify_chain_at(&path).unwrap());
@@ -348,13 +563,24 @@ mod tests {
     fn consent_bypass_stamp_persisted() {
         let tmp = tempfile::tempdir().unwrap();
         let log = log_in(tmp.path());
-        log.record("system_command", "h", "ok", 1, Some("k"), Some("bypassed"))
-            .unwrap();
+        log.record(
+            "system_command",
+            "h",
+            "ok",
+            1,
+            CallContext {
+                key_id: Some("k"),
+                caller: Some("s"),
+                consent: Some("bypassed"),
+            },
+        )
+        .unwrap();
         let content = fs::read_to_string(log.path()).unwrap();
         let line: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(line["consent"], "bypassed");
         // Absent when not stamped.
-        log.record("tool", "h", "ok", 1, None, None).unwrap();
+        log.record("tool", "h", "ok", 1, CallContext::default())
+            .unwrap();
         let second: serde_json::Value = serde_json::from_str(
             fs::read_to_string(log.path())
                 .unwrap()
@@ -372,5 +598,125 @@ mod tests {
         let path = tmp.path().join("audit.jsonl");
         fs::write(&path, "").unwrap();
         assert!(verify_chain_at(&path).unwrap());
+    }
+
+    /// One hand-crafted JSONL record with a fixed RFC 3339 timestamp —
+    /// used to seed "stale" live files without waiting a day.
+    fn seeded_record(ts: &str, tool: &str) -> String {
+        format!(
+            "{{\"timestamp\":\"{ts}\",\"tool\":\"{tool}\",\"args_hash\":\"h\",\"outcome\":\"ok\",\"duration_ms\":1,\"key_id\":null,\"caller\":null,\"prev_hash\":\"{GENESIS}\"}}\n"
+        )
+    }
+
+    #[test]
+    fn stale_live_file_rotates_to_date_name_on_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("logs");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.jsonl");
+        fs::write(
+            &path,
+            seeded_record("2020-03-04T10:00:00+00:00", "old_tool"),
+        )
+        .unwrap();
+
+        // Retention `None`: a 2020 archive is far outside any day
+        // window — it would be pruned the instant it is rotated.
+        let log = AuditLog::open_with_retention(&path, None).unwrap();
+        // The stale file was renamed under its record date; the live
+        // path is a fresh file.
+        assert!(dir.join("audit-2020-03-04.jsonl").is_file());
+        assert_eq!(log.path(), path.as_path());
+        log.record("new_tool", "h2", "ok", 1, CallContext::default())
+            .unwrap();
+
+        // The archive keeps its original content and verifies
+        // standalone; the new file chains from GENESIS.
+        let archived = fs::read_to_string(dir.join("audit-2020-03-04.jsonl")).unwrap();
+        assert!(archived.contains("old_tool"));
+        assert!(verify_chain_at(&dir.join("audit-2020-03-04.jsonl")).unwrap());
+        let live = fs::read_to_string(&path).unwrap();
+        let rec: serde_json::Value = serde_json::from_str(live.trim()).unwrap();
+        assert_eq!(rec["tool"], "new_tool");
+        assert_eq!(rec["prev_hash"], GENESIS);
+        assert!(log.verify_chain().unwrap());
+    }
+
+    #[test]
+    fn rotation_name_collision_gets_numeric_suffix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("logs");
+        fs::create_dir_all(&dir).unwrap();
+        // A pre-existing archive for the same date forces the suffix.
+        fs::write(dir.join("audit-2020-03-04.jsonl"), "prior archive\n").unwrap();
+        let path = dir.join("audit.jsonl");
+        fs::write(&path, seeded_record("2020-03-04T10:00:00+00:00", "old")).unwrap();
+
+        // Retention None so the freshly-rotated archives aren't pruned.
+        let _log = AuditLog::open_with_retention(&path, None).unwrap();
+        assert!(dir.join("audit-2020-03-04.jsonl").is_file());
+        assert!(dir.join("audit-2020-03-04-2.jsonl").is_file());
+        assert_eq!(
+            fs::read_to_string(dir.join("audit-2020-03-04.jsonl")).unwrap(),
+            "prior archive\n"
+        );
+        assert!(
+            fs::read_to_string(dir.join("audit-2020-03-04-2.jsonl"))
+                .unwrap()
+                .contains("old")
+        );
+    }
+
+    #[test]
+    fn archives_older_than_retention_are_pruned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("logs");
+        fs::create_dir_all(&dir).unwrap();
+        let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+        let recent = dir.join(format!("audit-{}.jsonl", yesterday.format("%Y-%m-%d")));
+        fs::write(dir.join("audit-2000-01-01.jsonl"), "ancient\n").unwrap();
+        fs::write(&recent, "recent\n").unwrap();
+        // Unrelated files are never touched.
+        fs::write(dir.join("other.log"), "keep me\n").unwrap();
+        fs::write(dir.join("audit-notadate.jsonl"), "keep me\n").unwrap();
+
+        let _log = AuditLog::open_with_retention(&dir.join("audit.jsonl"), Some(30)).unwrap();
+        assert!(
+            !dir.join("audit-2000-01-01.jsonl").exists(),
+            "expired archive kept"
+        );
+        assert!(recent.is_file(), "in-window archive pruned");
+        assert!(dir.join("other.log").is_file());
+        assert!(dir.join("audit-notadate.jsonl").is_file());
+    }
+
+    #[test]
+    fn retention_none_keeps_all_archives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("logs");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("audit-2000-01-01.jsonl"), "ancient\n").unwrap();
+        let _log = AuditLog::open_with_retention(&dir.join("audit.jsonl"), None).unwrap();
+        assert!(dir.join("audit-2000-01-01.jsonl").is_file());
+    }
+
+    #[test]
+    fn same_day_reopen_does_not_rotate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("logs");
+        let path = dir.join("audit.jsonl");
+        {
+            let log = AuditLog::open_with_retention(&path, Some(30)).unwrap();
+            log.record("a", "h1", "ok", 1, CallContext::default())
+                .unwrap();
+        }
+        let log = AuditLog::open_with_retention(&path, Some(30)).unwrap();
+        // No archive was created; the same-day file resumed its chain.
+        assert!(
+            fs::read_dir(&dir)
+                .unwrap()
+                .all(|e| e.unwrap().file_name().to_str().unwrap() == "audit.jsonl")
+        );
+        assert!(log.verify_chain().unwrap());
     }
 }

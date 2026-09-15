@@ -112,12 +112,30 @@ pub fn list_tools(categories: Option<&[String]>) -> Vec<Tool> {
 }
 
 /// Dispatch a `tools/call` request into the provider layer.
+///
+/// Every call — hit or miss — is timed and counted in the process-global
+/// metrics registry ([`crate::metrics`]). The secured wrapper
+/// [`call_tool_secured`] bypasses this shim (it records metrics itself,
+/// including the consent-gate overhead) and adds the audit record.
 pub async fn call_tool(
     name: &str,
     args: serde_json::Map<String, Value>,
     providers: &Providers,
 ) -> Result<CallToolResult, ErrorData> {
-    let args = &args;
+    let t0 = std::time::Instant::now();
+    let result = dispatch(name, &args, providers).await;
+    crate::metrics::record_call(name, t0.elapsed(), outcome_of(&result));
+    result
+}
+
+/// The category-dispatch chain behind [`call_tool`]. Takes `&Map` so the
+/// secured wrapper can reuse `args` for consent binding and the audit
+/// hash without an extra clone.
+async fn dispatch(
+    name: &str,
+    args: &Map<String, Value>,
+    providers: &Providers,
+) -> Result<CallToolResult, ErrorData> {
     if let Some(r) = mouse::dispatch(name, args, providers).await {
         return r;
     }
@@ -133,11 +151,60 @@ pub async fn call_tool(
     if let Some(r) = admin::dispatch(name, args, providers).await {
         return r;
     }
-    Err(ErrorData::new(
+    Err(unknown_tool(name))
+}
+
+/// `dispatch` for the secured path — identical except the admin leg uses
+/// [`admin::dispatch_secured`], so `replay_action` re-enters
+/// [`call_tool_secured`] for the recorded call: consent re-challenge,
+/// audit record, and metric sample on its own `{caller, tool, args_hash}`
+/// binding rather than an ungated Phase-0 replay.
+async fn dispatch_secured(
+    name: &str,
+    args: &Map<String, Value>,
+    providers: &Providers,
+    security: &crate::security::SecurityContext,
+    session_id: &str,
+    key_id: Option<&str>,
+) -> Result<CallToolResult, ErrorData> {
+    if let Some(r) = mouse::dispatch(name, args, providers).await {
+        return r;
+    }
+    if let Some(r) = keyboard::dispatch(name, args, providers).await {
+        return r;
+    }
+    if let Some(r) = vision::dispatch(name, args, providers).await {
+        return r;
+    }
+    if let Some(r) = automation::dispatch(name, args, providers).await {
+        return r;
+    }
+    if let Some(r) =
+        admin::dispatch_secured(name, args, providers, security, session_id, key_id).await
+    {
+        return r;
+    }
+    Err(unknown_tool(name))
+}
+
+/// `-32601 MethodNotFound` for a name no category claimed.
+fn unknown_tool(name: &str) -> ErrorData {
+    ErrorData::new(
         ErrorCode::METHOD_NOT_FOUND,
         format!("unknown tool: {name}"),
         Some(json!({"kind": "MethodNotFound", "tool": name})),
-    ))
+    )
+}
+
+/// Map a dispatch result onto the audit/metrics `outcome` vocabulary:
+/// `ok`, `tool_error` (`isError` result), `consent_required`, `error`.
+fn outcome_of(result: &Result<CallToolResult, ErrorData>) -> &'static str {
+    match result {
+        Ok(r) if r.is_error == Some(true) => "tool_error",
+        Ok(_) => "ok",
+        Err(e) if e.code == ErrorCode(codes::CONSENT_REQUIRED) => "consent_required",
+        Err(_) => "error",
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -168,8 +235,10 @@ fn is_destructive(name: &str, args: &Map<String, Value>) -> bool {
 }
 
 /// `tools/call` with the security pipeline applied: consent gate for the
-/// destructive class, real whitelist-constrained `system_command` exec, and
-/// a hash-chained audit record for every gated call.
+/// destructive class, real whitelist-constrained `system_command` exec,
+/// a hash-chained audit record for **every** call (accepted or rejected —
+/// SECURITY.md "Audit | Every invocation"), and a
+/// `ultranix_mcp_tool_calls_total` / `_duration_seconds` metric sample.
 pub async fn call_tool_secured(
     name: &str,
     args: Map<String, Value>,
@@ -212,13 +281,17 @@ pub async fn call_tool_secured(
             )
         });
         if !ok {
+            crate::metrics::record_call(name, t0.elapsed(), "consent_required");
             let _ = security.audit.record(
                 name,
                 &hash,
                 "consent_required",
                 t0.elapsed().as_millis() as u64,
-                key_id,
-                None,
+                crate::security::audit::CallContext {
+                    key_id,
+                    caller: Some(key_id.unwrap_or(session_id)),
+                    consent: None,
+                },
             );
             let ch = match resolved_target.as_deref() {
                 Some(t) => security
@@ -243,26 +316,62 @@ pub async fn call_tool_secured(
     let result = if name == "system_command" {
         exec_system_command(&args, security).await
     } else {
-        call_tool(name, args, providers).await
+        // `dispatch_secured`, not `call_tool`: the metric sample below is
+        // recorded with the full pipeline latency — routing through
+        // `call_tool` would double-count every secured call — and the
+        // admin leg must see the security context so `replay_action`
+        // re-enters this same gated+audited path for the recorded call.
+        dispatch_secured(name, &args, providers, security, session_id, key_id).await
     };
 
-    if destructive {
-        let outcome = match &result {
-            Ok(r) if r.is_error == Some(true) => "tool_error",
-            Ok(_) => "ok",
-            Err(e) if e.code == ErrorCode(codes::CONSENT_REQUIRED) => "consent_required",
-            Err(_) => "error",
-        };
-        let _ = security.audit.record(
-            name,
-            &hash,
-            outcome,
-            t0.elapsed().as_millis() as u64,
+    // Every invocation — gated or not, ok or error — emits one metric
+    // sample and one hash-chained audit record (SECURITY.md "Audit |
+    // Every invocation — accepted or rejected").
+    let elapsed = t0.elapsed();
+    let outcome = outcome_of(&result);
+    crate::metrics::record_call(name, elapsed, outcome);
+    let _ = security.audit.record(
+        name,
+        &hash,
+        outcome,
+        elapsed.as_millis() as u64,
+        crate::security::audit::CallContext {
             key_id,
-            consent_stamp,
-        );
+            caller: Some(key_id.unwrap_or(session_id)),
+            consent: consent_stamp,
+        },
+    );
+
+    // Encrypted action history: every replayable invocation appends to
+    // the context-scoped store (meta/history tools excluded — replaying
+    // them is meaningless and recording them is noise).
+    if !admin::NON_REPLAYABLE.contains(&name)
+        && let Ok(store) = security.history()
+    {
+        let _ = store.record(crate::security::history::NewActionRecord {
+            tool: name.to_string(),
+            args_json: argsv.clone(),
+            result_summary: result_summary(&result),
+            caller: key_id.unwrap_or(session_id).to_string(),
+            duration_ms: elapsed.as_millis() as u64,
+            outcome: outcome.to_string(),
+        });
     }
     result
+}
+
+/// First text block of a tool result (or the error line) — the summary
+/// persisted beside each action-history record.
+fn result_summary(result: &Result<CallToolResult, ErrorData>) -> String {
+    match result {
+        Ok(r) => r
+            .content
+            .first()
+            .and_then(ContentBlock::as_text)
+            .map(|t| t.text.clone())
+            .unwrap_or_else(|| "<non-text result>".into()),
+        Err(e) => format!("-{:05} {}", e.code.0, e.message),
+    }
 }
 
 /// Real `system_command` exec: whitelist validation → pinned absolute
@@ -766,5 +875,152 @@ mod tests {
         assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
         assert_eq!(base64_encode(b""), "");
         assert_eq!(base64_encode(&[0xFF, 0xFE]), "//4=");
+    }
+
+    // --- dispatch instrumentation: metrics + complete audit coverage ---
+
+    fn security_in(dir: &std::path::Path) -> crate::security::SecurityContext {
+        crate::security::SecurityContext::new(dir, false, false).expect("security context")
+    }
+
+    #[tokio::test]
+    async fn secured_dispatch_audits_every_tool_and_verifies_chain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sec = security_in(tmp.path());
+        let providers = Providers::all_mocks();
+
+        // Non-destructive tools across categories — previously unaudited.
+        for (name, a) in [
+            ("mouse_click", json!({"x": 1, "y": 2})),
+            ("type_text", json!({"text": "hi", "delay_ms": 0})),
+            ("get_windows", json!({})),
+        ] {
+            call_tool_secured(name, args(a), &providers, &sec, "sess-t", None)
+                .await
+                .unwrap();
+        }
+        // Destructive call without a token: audited as consent_required.
+        let err = call_tool_secured(
+            "system_command",
+            args(json!({"command": "slurp"})),
+            &providers,
+            &sec,
+            "sess-t",
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code.0, codes::CONSENT_REQUIRED);
+
+        let log_path = tmp.path().join("logs").join("audit.jsonl");
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 4, "every call must produce one record");
+        let tools: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                serde_json::from_str::<Value>(l).unwrap()["tool"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            tools,
+            ["mouse_click", "type_text", "get_windows", "system_command"]
+        );
+        let last: Value = serde_json::from_str(lines[3]).unwrap();
+        assert_eq!(last["outcome"], "consent_required");
+        assert_eq!(last["caller"], "sess-t");
+        // The mixed-tool chain verifies end-to-end.
+        assert!(crate::security::audit::verify_chain_at(&log_path).unwrap());
+    }
+
+    #[tokio::test]
+    async fn secured_dispatch_records_metrics_for_all_tools() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sec = security_in(tmp.path());
+        let providers = Providers::all_mocks();
+
+        call_tool_secured(
+            "screen_info",
+            args(json!({})),
+            &providers,
+            &sec,
+            "sess-m",
+            None,
+        )
+        .await
+        .unwrap();
+        let _ = call_tool_secured(
+            "replay_action", // gated → consent_required, still measured
+            args(json!({"id": "x"})),
+            &providers,
+            &sec,
+            "sess-m",
+            None,
+        )
+        .await;
+
+        let exp = crate::metrics::exposition();
+        assert!(
+            exp.contains("ultranix_mcp_tool_calls_total{tool=\"screen_info\",outcome=\"ok\"}"),
+            "{exp}"
+        );
+        assert!(
+            exp.contains(
+                "ultranix_mcp_tool_calls_total{tool=\"replay_action\",outcome=\"consent_required\"}"
+            ),
+            "{exp}"
+        );
+        assert!(
+            exp.contains("ultranix_mcp_tool_duration_seconds_count{tool=\"screen_info\"}"),
+            "{exp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_records_args_hash_never_raw_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sec = security_in(tmp.path());
+        let providers = Providers::all_mocks();
+
+        let secret_args = json!({"text": "s3cr3t-blob", "delay_ms": 0});
+        call_tool_secured(
+            "type_text",
+            args(secret_args.clone()),
+            &providers,
+            &sec,
+            "sess-h",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let content = std::fs::read_to_string(tmp.path().join("logs").join("audit.jsonl")).unwrap();
+        assert!(
+            !content.contains("s3cr3t-blob"),
+            "raw argument text must never reach the audit log"
+        );
+        let line: Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(
+            line["args_hash"].as_str().unwrap(),
+            crate::security::consent::args_hash(&secret_args),
+            "args_hash must be the canonical consent-gate hash"
+        );
+        assert_eq!(line["caller"], "sess-h");
+    }
+
+    #[tokio::test]
+    async fn unsecured_dispatch_still_records_metrics() {
+        call_tool("mouse_get_position", Map::new(), &Providers::all_mocks())
+            .await
+            .unwrap();
+        let exp = crate::metrics::exposition();
+        assert!(
+            exp.contains(
+                "ultranix_mcp_tool_calls_total{tool=\"mouse_get_position\",outcome=\"ok\"}"
+            )
+        );
     }
 }

@@ -1,7 +1,7 @@
 //! ultranix-mcp entrypoint — transport selection, provider bootstrap,
 //! stderr tracing (stdout is reserved for MCP JSON-RPC).
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
 use ultranix_mcp::backend::detect::{SessionInfo, detect_providers};
@@ -23,6 +23,9 @@ enum Transport {
     about = "Linux desktop automation MCP server"
 )]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Cmd>,
+
     /// Transport to serve.
     #[arg(long, value_enum, default_value_t = Transport::Stdio)]
     transport: Transport,
@@ -50,9 +53,21 @@ struct Cli {
     mock: bool,
 }
 
+#[derive(Debug, Subcommand)]
+enum Cmd {
+    /// Print a fresh `uxcp_*` API key (store it via
+    /// ULTRANIX_MCP_API_KEY or a file under ~/.ultranix-mcp/api-keys/).
+    Keygen,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    if let Some(Cmd::Keygen) = cli.command {
+        println!("{}", ultranix_mcp::security::auth::keygen());
+        return Ok(());
+    }
 
     // stdout is the JSON-RPC channel on stdio — diagnostics go to stderr.
     tracing_subscriber::fmt()

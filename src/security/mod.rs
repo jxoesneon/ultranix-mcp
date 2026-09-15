@@ -3,7 +3,7 @@
 //! whitelist, consent gate, hash-chained audit log, and capture-output
 //! scratch dirs / no-follow opens.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
@@ -14,9 +14,12 @@ use consent::ConsentGate;
 use whitelist::PinnedBins;
 
 pub mod audit;
+pub mod auth;
 pub mod captures;
 pub mod consent;
+pub mod history;
 pub mod paths;
+pub mod ratelimit;
 pub mod sanitize;
 pub mod whitelist;
 
@@ -47,6 +50,13 @@ pub struct SecurityContext {
     /// [`ConsentGate::allow_destructive`]; gated calls still write their
     /// audit record stamped `"consent": "bypassed"`.
     pub allow_destructive: bool,
+    /// State root this context was built for — the lazy
+    /// [`history::HistoryStore`] opens `<data_dir>/history.json` here.
+    data_dir: PathBuf,
+    /// Process-lazy encrypted action history. Root-scoped (unlike
+    /// `HistoryStore::shared`, which resolves the ambient state dir), so
+    /// tests and isolated contexts stay hermetic.
+    history: std::sync::OnceLock<history::HistoryStore>,
 }
 
 impl SecurityContext {
@@ -88,7 +98,21 @@ impl SecurityContext {
             pins: whitelist::resolve_binaries(),
             x11_active,
             allow_destructive,
+            data_dir: data_dir.as_ref().to_path_buf(),
+            history: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Lazily-opened AES-256-GCM action history at
+    /// `<data_dir>/history.json`. The store is opened on first use and
+    /// cached for the context's lifetime; a transient race between two
+    /// first callers resolves to a single store (`get_or_init`).
+    pub fn history(&self) -> anyhow::Result<&history::HistoryStore> {
+        if let Some(store) = self.history.get() {
+            return Ok(store);
+        }
+        let store = history::HistoryStore::open(&self.data_dir)?;
+        Ok(self.history.get_or_init(|| store))
     }
 }
 

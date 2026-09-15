@@ -5,6 +5,39 @@ All notable changes to ultranix-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-09-15
+
+### Added
+
+- HTTP security gate on `/mcp`: `ApiKeyStore` (`uxcp_*` keys; env →
+  file → `~/.ultranix-mcp/api-keys/` precedence; sha256-digest store,
+  constant-time compare, expiry + `rotate(grace)`, `0600`-enforced key
+  files; `ULTRANIX_MCP_DISABLE_AUTH` dev hatch) → 401, and a
+  token-bucket `RateLimiter` (10 rps / 20 burst per `key_id` or remote
+  addr) → 429. `/health`, `/readyz`, `/metrics` open on loopback.
+- `HistoryStore` — AES-256-GCM-encrypted action history at
+  `history.json` (`ULTRANIX_MCP_HISTORY_SECRET` or generated 0600
+  `history.key`; ULID ids, 10k FIFO cap, `type_text` arg redaction,
+  atomic writes). Lazy `SecurityContext::history()` scopes the store to
+  the context's state root.
+- Real admin tools: `get_action_history`, `replay_action` (exactly-one
+  selector, consent re-challenge through `call_tool_secured`),
+  `clear_action_history`; `metrics` now serves the live Prometheus
+  exposition.
+- `metrics.rs` — dependency-free Prometheus registry:
+  `ultranix_mcp_tool_calls_total`, `ultranix_mcp_tool_duration_seconds`
+  (histogram), `ultranix_mcp_rate_limit_rejections_total`,
+  `ultranix_mcp_active_sessions`.
+- Audit completion: every invocation records
+  `{tool, args_hash, outcome, duration_ms, key_id, caller, consent?,
+  prev_hash}`; day-rollover rotation (`audit-YYYY-MM-DD.jsonl`) +
+  `ULTRANIX_MCP_AUDIT_RETENTION_DAYS` pruning (default 30).
+- `ultranix-mcp keygen` CLI subcommand.
+
+### Fixed
+
+- `Cargo.toml` version synced to the release train.
+
 ## [0.4.0] — 2026-09-15
 
 ### Added

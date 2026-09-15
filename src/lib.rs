@@ -3,6 +3,7 @@
 
 pub mod backend;
 pub mod error;
+pub mod metrics;
 pub mod providers;
 pub mod security;
 pub mod server;
