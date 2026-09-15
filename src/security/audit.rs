@@ -136,10 +136,10 @@ impl AuditLog {
             // A live file whose first record is from a previous day is a
             // stale log left by an earlier process — archive it before
             // appending so each file holds exactly one UTC day.
-            if let Some(date) = first_record_date(path)? {
-                if date != today {
-                    rotate_file(path, date)?;
-                }
+            if let Some(date) = first_record_date(path)?
+                && date != today
+            {
+                rotate_file(path, date)?;
             }
             prune_archives(dir, today, retention, stem_of(path))?;
         }

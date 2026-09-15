@@ -2,8 +2,10 @@
 
 Ready-to-paste listings for the major MCP registries and package channels.
 Copy each section to the corresponding registry's "Add server / Submit" form.
-All six phases shipped at **v1.0.0** — the package/channel rows below mark
-which submissions are still pending.
+All six phases shipped at **v1.0.0**, and the post-v1 backlog wave (Sentry,
+X11-native providers, PipeWire capture, OCR cache, extra metrics) landed at
+**v1.1.0** — the package/channel rows below mark which submissions are
+still pending.
 
 **Date:** 2026-09-14
 **Maintainer:** jxoesneon (`https://github.com/jxoesneon`)
@@ -62,7 +64,7 @@ ULTRANIX_MCP_API_KEY="uxcp_<64-hex>" ultranix-mcp --transport http --bind 127.0.
 | `ULTRANIX_MCP_API_KEY_EXPIRES` | Optional key expiry — comma-separated RFC 3339 timestamps aligned with `ULTRANIX_MCP_API_KEY` (`expires=` suffix per line in key files) | none |
 | `ULTRANIX_MCP_DISABLE_AUTH` | Disable auth entirely (development only) | `false` |
 | `ULTRANIX_MCP_HISTORY_SECRET` | AES-256-GCM secret for `~/.ultranix-mcp/history.json` | per-install generated at first run; a dev fallback warns loudly |
-| `ULTRANIX_MCP_SENTRY_DSN` | Optional Sentry error reporting — **planned, post-v1** (documented, not wired) | unset |
+| `ULTRANIX_MCP_SENTRY_DSN` | Optional Sentry error reporting — opt-in; unset, empty, or malformed DSN disables it (malformed logs a startup warning) | unset |
 | `ULTRANIX_MCP_BIND` | HTTP bind address (or `--bind` flag) | `127.0.0.1:3010` |
 
 Key-source precedence: `ULTRANIX_MCP_API_KEY` → `ULTRANIX_MCP_API_KEY_FILE`
@@ -72,7 +74,8 @@ key-record files, JSON or line format, mode `0600` enforced per file).
 ## Runtime requirements (must appear in listings)
 
 - Linux, Wayland session; **Hyprland** for full functionality (uinput +
-  portal fallbacks cover other sessions; X11-native providers are post-v1)
+  portal fallbacks cover other Wayland sessions; X11 sessions get the
+  shipped `scrot`/`xdotool`/`wmctrl` rungs)
 - Optional: browser on `127.0.0.1:9222` (`--remote-debugging-port`) for
   `web_query`; AT-SPI2 enabled for `get_ui_tree`/`find_element`
 - No Node/Python dependency — single static Rust binary
@@ -88,15 +91,16 @@ key-record files, JSON or line format, mode `0600` enforced per file).
 - `version`: must equal the release tag being published
 - `packages[]`: at least one installable package reference
 
-**`server.json` sketch** (to be committed at `server.json` in repo root and
-published via `mcp-publisher` on each tag):
+**`server.json`** (committed at `server.json` in repo root — schema
+2025-09-29, camelCase fields — passes `mcp-publisher validate`; published
+via `mcp-publisher` on each tag):
 
 ```json
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.jxoesneon/ultranix-mcp",
   "description": "Secure Linux desktop automation for AI agents — mouse, keyboard, screen/OCR/vision, AT-SPI2 UI tree, Hyprland windows, browser DOM via MCP.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "ultranix-mcp",
   "repository": {
     "url": "https://github.com/jxoesneon/ultranix-mcp",
@@ -109,7 +113,7 @@ published via `mcp-publisher` on each tag):
   "packages": [
     {
       "registry_type": "oci",
-      "identifier": "ghcr.io/jxoesneon/ultranix-mcp:1.0.0",
+      "identifier": "ghcr.io/jxoesneon/ultranix-mcp:1.1.0",
       "transport": { "type": "stdio" },
       "runtime_hint": "docker",
       "environment_variables": [
@@ -117,7 +121,7 @@ published via `mcp-publisher` on each tag):
         { "name": "ULTRANIX_MCP_API_KEY_FILE", "description": "Path to a 0600 file holding uxcp_* keys, one per line", "is_required": false, "is_secret": false },
         { "name": "ULTRANIX_MCP_API_KEY_EXPIRES", "description": "Optional RFC 3339 expiry for the env-sourced key (self-revoking)", "is_required": false, "is_secret": false },
         { "name": "ULTRANIX_MCP_HISTORY_SECRET", "description": "AES-256-GCM secret for encrypted action history (per-install generated if unset)", "is_required": false, "is_secret": true },
-        { "name": "ULTRANIX_MCP_SENTRY_DSN", "description": "Optional Sentry DSN for error reporting (planned, post-v1 — not yet wired)", "is_required": false, "is_secret": true }
+        { "name": "ULTRANIX_MCP_SENTRY_DSN", "description": "Optional Sentry DSN for error reporting (unset/malformed = disabled)", "is_required": false, "is_secret": true }
       ]
     }
   ],
@@ -210,8 +214,8 @@ alphabetised and one line, per the list's contributing rules.
   (`--stdio` is an accepted alias)
 - **Env vars:** `ULTRANIX_MCP_API_KEY`, `ULTRANIX_MCP_API_KEY_FILE`,
   `ULTRANIX_MCP_API_KEY_EXPIRES`, `ULTRANIX_MCP_DISABLE_AUTH`,
-  `ULTRANIX_MCP_HISTORY_SECRET`, `ULTRANIX_MCP_SENTRY_DSN` (planned,
-  post-v1), `ULTRANIX_MCP_BIND` (default `127.0.0.1:3010`)
+  `ULTRANIX_MCP_HISTORY_SECRET`, `ULTRANIX_MCP_SENTRY_DSN` (opt-in),
+  `ULTRANIX_MCP_BIND` (default `127.0.0.1:3010`)
 - **Repo:** `https://github.com/jxoesneon/ultranix-mcp`
 
 ---
@@ -227,7 +231,7 @@ alphabetised and one line, per the list's contributing rules.
 - [ ] `Cargo.toml` metadata complete: `description`, `license = "ISC"`,
   `repository`, `keywords = ["mcp", "linux", "automation", "wayland", "hyprland"]`,
   `categories = ["command-line-utilities"]`
-- [ ] Release tag + notes published (`v1.0.0`)
+- [ ] Release tag + notes published (`v1.1.0`)
 - [ ] `cargo publish` run for `ultranix-mcp`; AUR `ultranix-mcp-bin` PKGBUILD
   submitted
 - [ ] GitHub topics set: `mcp`, `mcp-server`, `linux`, `wayland`, `hyprland`,

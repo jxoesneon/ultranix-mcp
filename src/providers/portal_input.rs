@@ -76,13 +76,16 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Mutex;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use atspi::zbus::{self, proxy::Builder, proxy::CacheProperties, zvariant};
 use zvariant::{OwnedObjectPath, OwnedValue, Value};
 
 use crate::traits::InputProvider;
 
+use super::common::{
+    KEY_LEFTSHIFT, KeyBinding, button_code, char_binding, detents, hyprctl_cursorpos, key_binding,
+};
 use super::portal_capture::{
     Options, PORTAL_BUS_NAME, PORTAL_DESKTOP_PATH, await_response, get_string, get_u32,
     new_handle_token, portal_call, portal_name_owned, response_stream,
@@ -279,270 +282,6 @@ fn absolute_target(streams: &[Stream], x: i32, y: i32) -> (u32, f64, f64) {
         f64::from((x - s.x).clamp(0, s.w - 1)),
         f64::from((y - s.y).clamp(0, s.h - 1)),
     )
-}
-
-// ---------------------------------------------------------------------------
-// Key/button tables — parity with uinput_input.rs (canonical copy).
-// Duplicated here because the portal rung is display-protocol agnostic
-// exactly like uinput: no keymap channel, fixed US-layout evdev codes.
-// ---------------------------------------------------------------------------
-
-/// Normalize a key/button name: lowercase, drop `_`, `-` and spaces.
-fn normalize_name(name: &str) -> String {
-    name.chars()
-        .filter(|c| !matches!(c, '_' | '-' | ' '))
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
-/// A resolved key: evdev keycode plus whether `Shift` must be held.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct KeyBinding {
-    code: u16,
-    shifted: bool,
-}
-
-const KEY_LEFTSHIFT: i32 = 42;
-
-/// evdev button code for a button name (`linux/input-event-codes.h`).
-fn button_code(name: &str) -> Option<i32> {
-    Some(match normalize_name(name).as_str() {
-        "left" | "lmb" => 0x110,     // BTN_LEFT
-        "right" | "rmb" => 0x111,    // BTN_RIGHT
-        "middle" | "mmb" => 0x112,   // BTN_MIDDLE
-        "side" | "thumb" => 0x113,   // BTN_SIDE
-        "extra" | "thumb2" => 0x114, // BTN_EXTRA
-        "forward" | "fwd" => 0x115,  // BTN_FORWARD
-        "back" => 0x116,             // BTN_BACK
-        "task" => 0x117,             // BTN_TASK
-        _ => return None,
-    })
-}
-
-/// evdev code for a letter key, `'a'..='z'`.
-fn letter_code(c: char) -> u16 {
-    match c {
-        'q' => 16,
-        'w' => 17,
-        'e' => 18,
-        'r' => 19,
-        't' => 20,
-        'y' => 21,
-        'u' => 22,
-        'i' => 23,
-        'o' => 24,
-        'p' => 25,
-        'a' => 30,
-        's' => 31,
-        'd' => 32,
-        'f' => 33,
-        'g' => 34,
-        'h' => 35,
-        'j' => 36,
-        'k' => 37,
-        'l' => 38,
-        'z' => 44,
-        'x' => 45,
-        'c' => 46,
-        'v' => 47,
-        'b' => 48,
-        'n' => 49,
-        'm' => 50,
-        _ => unreachable!("letter_code called with non-letter"),
-    }
-}
-
-/// evdev code for a row digit `'0'..='9'`.
-fn digit_code(c: char) -> u16 {
-    match c {
-        '0' => 11,
-        '1'..='9' => 1 + (c as u16 - '0' as u16), // KEY_1 = 2
-        _ => unreachable!("digit_code called with non-digit"),
-    }
-}
-
-/// Multi-character key names → evdev codes (input normalized already).
-fn named_key_code(n: &str) -> Option<u16> {
-    Some(match n {
-        "esc" | "escape" => 1,                                   // KEY_ESC
-        "backspace" | "bksp" | "bs" => 14,                       // KEY_BACKSPACE
-        "tab" => 15,                                             // KEY_TAB
-        "enter" | "return" | "ret" | "newline" => 28,            // KEY_ENTER
-        "ctrl" | "control" | "ctl" | "lctrl" | "leftctrl" => 29, // KEY_LEFTCTRL
-        "shift" | "lshift" | "leftshift" => 42,                  // KEY_LEFTSHIFT
-        "rshift" | "rightshift" => 54,                           // KEY_RIGHTSHIFT
-        "kpasterisk" | "kpmultiply" | "multiply" => 55,          // KEY_KPASTERISK
-        "alt" | "lalt" | "leftalt" => 56,                        // KEY_LEFTALT
-        "space" | "spc" | "spacebar" => 57,                      // KEY_SPACE
-        "caps" | "capslock" => 58,                               // KEY_CAPSLOCK
-        "numlock" => 69,                                         // KEY_NUMLOCK
-        "scrolllock" => 70,                                      // KEY_SCROLLLOCK
-        "kpminus" | "kpsubtract" | "subtract" => 74,             // KEY_KPMINUS
-        "kpplus" | "kpadd" | "add" => 78,                        // KEY_KPPLUS
-        "kpdot" | "kpdecimal" | "kpperiod" => 83,                // KEY_KPDOT
-        "kpenter" | "numpadenter" => 96,                         // KEY_KPENTER
-        "rctrl" | "rightctrl" => 97,                             // KEY_RIGHTCTRL
-        "kpslash" | "kpdivide" | "divide" => 98,                 // KEY_KPSLASH
-        "printscreen" | "prtsc" | "sysrq" | "print" => 99,       // KEY_SYSRQ
-        "ralt" | "rightalt" | "altgr" => 100,                    // KEY_RIGHTALT
-        "home" => 102,                                           // KEY_HOME
-        "up" | "uparrow" | "arrowup" => 103,                     // KEY_UP
-        "pageup" | "pgup" => 104,                                // KEY_PAGEUP
-        "left" | "leftarrow" | "arrowleft" => 105,               // KEY_LEFT
-        "right" | "rightarrow" | "arrowright" => 106,            // KEY_RIGHT
-        "end" => 107,                                            // KEY_END
-        "down" | "downarrow" | "arrowdown" => 108,               // KEY_DOWN
-        "pagedown" | "pgdown" | "pgdn" => 109,                   // KEY_PAGEDOWN
-        "insert" | "ins" => 110,                                 // KEY_INSERT
-        "delete" | "del" => 111,                                 // KEY_DELETE
-        "mute" | "audiomute" => 113,                             // KEY_MUTE
-        "volumedown" | "voldown" | "audiolowervolume" => 114,    // KEY_VOLUMEDOWN
-        "volumeup" | "volup" | "audioraisevolume" => 115,        // KEY_VOLUMEUP
-        "power" => 116,                                          // KEY_POWER
-        "kpequal" => 117,                                        // KEY_KPEQUAL
-        "pause" | "break" => 119,                                // KEY_PAUSE
-        "kpcomma" => 121,                                        // KEY_KPCOMMA
-        "super" | "win" | "cmd" | "meta" | "lsuper" | "leftsuper" | "lmeta" | "leftmeta" => 125, // KEY_LEFTMETA
-        "rsuper" | "rightsuper" | "rmeta" | "rightmeta" => 126, // KEY_RIGHTMETA
-        "compose" => 127,                                       // KEY_COMPOSE
-        "menu" | "appmenu" | "apps" => 139,                     // KEY_MENU
-        "browserback" | "acback" => 158,                        // KEY_BACK
-        "browserforward" | "acforward" => 159,                  // KEY_FORWARD
-        "nextsong" | "nexttrack" | "audionext" => 163,          // KEY_NEXTSONG
-        "playpause" | "play" | "audioplay" => 164,              // KEY_PLAYPAUSE
-        "previoussong" | "prevtrack" | "audioprev" => 165,      // KEY_PREVIOUSSONG
-        "stopcd" | "mediastop" => 166,                          // KEY_STOPCD
-        "homepage" | "www" | "browser" => 172,                  // KEY_HOMEPAGE
-        "refresh" | "reload" => 173,                            // KEY_REFRESH
-        "search" => 217,                                        // KEY_SEARCH
-        "kp0" | "numpad0" => 82,
-        "kp1" | "numpad1" => 79,
-        "kp2" | "numpad2" => 80,
-        "kp3" | "numpad3" => 81,
-        "kp4" | "numpad4" => 75,
-        "kp5" | "numpad5" => 76,
-        "kp6" | "numpad6" => 77,
-        "kp7" | "numpad7" => 71,
-        "kp8" | "numpad8" => 72,
-        "kp9" | "numpad9" => 73,
-        "kpleftparen" => 179,  // KEY_KPLEFTPAREN
-        "kprightparen" => 180, // KEY_KPRIGHTPAREN
-        _ => return None,
-    })
-}
-
-/// `F1`–`F24` → KEY_F1(59)..F10(68), F11(87), F12(88), F13(183)..F24(194).
-fn fn_key_code(n: &str) -> Option<u16> {
-    let f: u16 = n.strip_prefix('f')?.parse().ok()?;
-    Some(match f {
-        1..=10 => 58 + f,
-        11 | 12 => 76 + f,
-        13..=24 => 170 + f,
-        _ => return None,
-    })
-}
-
-/// KeyBinding for a literal character on a US-layout assumption;
-/// `\n`/`\r` → Enter, `\t` → Tab, non-ASCII has no binding.
-fn char_binding(c: char) -> Option<KeyBinding> {
-    let (code, shifted) = match c {
-        'a'..='z' => (letter_code(c), false),
-        'A'..='Z' => (letter_code(c.to_ascii_lowercase()), true),
-        '0'..='9' => (digit_code(c), false),
-        '\n' | '\r' => (28, false), // KEY_ENTER
-        '\t' => (15, false),        // KEY_TAB
-        ' ' => (57, false),         // KEY_SPACE
-        '-' => (12, false),
-        '_' => (12, true), // KEY_MINUS
-        '=' => (13, false),
-        '+' => (13, true), // KEY_EQUAL
-        '[' => (26, false),
-        '{' => (26, true), // KEY_LEFTBRACE
-        ']' => (27, false),
-        '}' => (27, true), // KEY_RIGHTBRACE
-        ';' => (39, false),
-        ':' => (39, true), // KEY_SEMICOLON
-        '\'' => (40, false),
-        '"' => (40, true), // KEY_APOSTROPHE
-        '`' => (41, false),
-        '~' => (41, true), // KEY_GRAVE
-        '\\' => (43, false),
-        '|' => (43, true), // KEY_BACKSLASH
-        ',' => (51, false),
-        '<' => (51, true), // KEY_COMMA
-        '.' => (52, false),
-        '>' => (52, true), // KEY_DOT
-        '/' => (53, false),
-        '?' => (53, true), // KEY_SLASH
-        '!' => (2, true),
-        '@' => (3, true),
-        '#' => (4, true),
-        '$' => (5, true),
-        '%' => (6, true),
-        '^' => (7, true),
-        '&' => (8, true),
-        '*' => (9, true),
-        '(' => (10, true),
-        ')' => (11, true),
-        _ => return None,
-    };
-    Some(KeyBinding { code, shifted })
-}
-
-/// Resolve a key name to a binding: single chars carry case/shift state,
-/// multi-char names hit the normalized table then the F-key range.
-fn key_binding(name: &str) -> Option<KeyBinding> {
-    let mut chars = name.chars();
-    if let (Some(c), None) = (chars.next(), chars.next()) {
-        if let Some(b) = char_binding(c) {
-            return Some(b);
-        }
-    }
-    let n = normalize_name(name);
-    named_key_code(&n)
-        .or_else(|| fn_key_code(&n))
-        .map(|code| KeyBinding {
-            code,
-            shifted: false,
-        })
-}
-
-/// Split a wheel delta into whole detents, carrying the sub-detent
-/// remainder across calls via `acc`.
-fn detents(delta: f64, acc: &mut f64) -> i32 {
-    *acc += delta;
-    let steps = acc.round() as i32;
-    *acc -= f64::from(steps);
-    steps
-}
-
-// ---------------------------------------------------------------------------
-// hyprctl cursor fallback (no portal read channel exists)
-// ---------------------------------------------------------------------------
-
-fn parse_cursorpos(s: &str) -> Option<(i32, i32)> {
-    let t = s.trim();
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
-        let x = v.get("x")?.as_i64()?;
-        let y = v.get("y")?.as_i64()?;
-        return Some((x as i32, y as i32));
-    }
-    let (xs, ys) = t.split_once(',')?;
-    Some((xs.trim().parse().ok()?, ys.trim().parse().ok()?))
-}
-
-/// Pinned `hyprctl -j cursorpos`, scrubbed env, bounded wait.
-async fn hyprctl_cursorpos(bin: &Path) -> Result<(i32, i32)> {
-    let mut cmd = crate::security::spawn::command(bin, &["-j", "cursorpos"]);
-    let out =
-        crate::security::spawn::output_within(&mut cmd, crate::security::spawn::SUBPROCESS_TIMEOUT)
-            .await
-            .context("run hyprctl cursorpos")?;
-    if !out.status.success() {
-        bail!("hyprctl cursorpos exited {}", out.status);
-    }
-    parse_cursorpos(&String::from_utf8_lossy(&out.stdout))
-        .ok_or_else(|| anyhow!("unparseable hyprctl cursorpos output"))
 }
 
 // ---------------------------------------------------------------------------
@@ -796,14 +535,18 @@ impl InputProvider for PortalInput {
     async fn mouse_click(&self, x: i32, y: i32, button: &str) -> Result<()> {
         // Validate before moving — a bad name never repositions the
         // pointer (same ordering as wlr_input/uinput_input).
-        let code = button_code(button).ok_or_else(|| anyhow!("unknown button name {button:?}"))?;
+        let code = button_code(button)
+            .map(i32::from)
+            .ok_or_else(|| anyhow!("unknown button name {button:?}"))?;
         self.move_to(x, y).await?;
         self.emit_button(code, true).await?;
         self.emit_button(code, false).await
     }
 
     async fn mouse_button(&self, button: &str, down: bool) -> Result<()> {
-        let code = button_code(button).ok_or_else(|| anyhow!("unknown button name {button:?}"))?;
+        let code = button_code(button)
+            .map(i32::from)
+            .ok_or_else(|| anyhow!("unknown button name {button:?}"))?;
         self.emit_button(code, down).await
     }
 
@@ -900,6 +643,7 @@ impl InputProvider for PortalInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::common;
 
     fn owned(v: impl Into<Value<'static>>) -> OwnedValue {
         OwnedValue::try_from(v.into()).unwrap()
@@ -1073,7 +817,80 @@ mod tests {
         assert!(parse_streams(&HashMap::new()).is_empty());
     }
 
+    // ---- pair / stream parsing edge cases -------------------------------
+
+    #[test]
+    fn pair_i32_accepts_only_two_int_structures() {
+        // (ii) → pair.
+        let v = owned(zvariant::Structure::from((7i32, -3i32)));
+        assert_eq!(pair_i32(Some(&v)), Some((7, -3)));
+        // Missing value, non-structure, short structure → None.
+        assert_eq!(pair_i32(None), None);
+        assert_eq!(pair_i32(Some(&owned(5u32))), None);
+        let one = owned(zvariant::Structure::from((9i32,)));
+        assert_eq!(pair_i32(Some(&one)), None);
+        // (uu) fields do not coerce to i32 → None.
+        let uu = owned(zvariant::Structure::from((3u32, 4u32)));
+        assert_eq!(pair_i32(Some(&uu)), None);
+    }
+
+    #[test]
+    fn parse_stream_defaults_missing_geometry() {
+        // node_id alone → a stream with identity (0,0,0,0) geometry.
+        let mut s: HashMap<String, OwnedValue> = HashMap::new();
+        s.insert("node_id".into(), owned(9u32));
+        assert_eq!(
+            parse_stream(&s),
+            Some(Stream {
+                node_id: 9,
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0
+            })
+        );
+        // No node_id → not a stream at all.
+        let mut bad: HashMap<String, OwnedValue> = HashMap::new();
+        bad.insert(
+            "position".into(),
+            owned(zvariant::Structure::from((0i32, 0i32))),
+        );
+        assert_eq!(parse_stream(&bad), None);
+    }
+
+    #[test]
+    fn parse_streams_tolerates_malformed_values() {
+        // `streams` present but not an aa{sv} → empty, not an error.
+        let mut results: HashMap<String, OwnedValue> = HashMap::new();
+        results.insert("streams".into(), owned("not-a-dict-array"));
+        assert!(parse_streams(&results).is_empty());
+        // Entries without node_id are dropped; valid ones survive.
+        let mut good: HashMap<String, OwnedValue> = HashMap::new();
+        good.insert("node_id".into(), owned(3u32));
+        let mut bad: HashMap<String, OwnedValue> = HashMap::new();
+        bad.insert("source_type".into(), owned(1u32));
+        let mut results: HashMap<String, OwnedValue> = HashMap::new();
+        results.insert("streams".into(), owned(vec![bad, good]));
+        assert_eq!(parse_streams(&results).len(), 1);
+    }
+
     // ---- stream → coordinate mapping ------------------------------------
+
+    #[test]
+    fn absolute_target_clamps_before_first_stream() {
+        // Point left/above the first stream's origin → stream-local 0,0
+        // via the clamp (the `find` miss falls back to `first`).
+        let streams = vec![Stream {
+            node_id: 4,
+            x: 100,
+            y: 100,
+            w: 800,
+            h: 600,
+        }];
+        let (node, x, y) = absolute_target(&streams, 50, 50);
+        assert_eq!(node, 4);
+        assert_eq!((x, y), (0.0, 0.0));
+    }
 
     #[test]
     fn absolute_target_without_streams_uses_no_stream() {
@@ -1134,9 +951,9 @@ mod tests {
 
     #[test]
     fn parse_cursorpos_json_and_pair() {
-        assert_eq!(parse_cursorpos("{\"x\":1,\"y\":2}"), Some((1, 2)));
-        assert_eq!(parse_cursorpos("3, 4"), Some((3, 4)));
-        assert_eq!(parse_cursorpos("garbage"), None);
+        assert_eq!(common::parse_cursorpos("{\"x\":1,\"y\":2}"), Some((1, 2)));
+        assert_eq!(common::parse_cursorpos("3, 4"), Some((3, 4)));
+        assert_eq!(common::parse_cursorpos("garbage"), None);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Threat Model — ultranix-mcp
 
-**Version**: 1.0.0 — **Status**: Implemented (describes the shipped v1.0.0
+**Version**: 1.1.0 — **Status**: Implemented (describes the shipped v1.1.0
 system; mitigations marked *post-v1* are roadmap)
 **Scope**: ultranix-mcp as deployed on its target environment — a single-user
 Wayland/Hyprland desktop on CachyOS, consumed by a local or SSH-tunneled MCP
@@ -184,10 +184,9 @@ SUBSYSTEM=="uinput", MODE="0660", GROUP="ultranix-input", OPTIONS+="static_node=
   **physical-keyboard equivalence**. Prefer Wayland virtual input whenever
   `zwlr_virtual_pointer_v1` is available (Hyprland supports it).
 - Startup probe: if uinput is the selected backend, emit an explicit
-  `backend.uinput.active` audit event + stderr warning; the planned
-  post-v1 `ultranix_mcp_backend_active{backend="uinput"}` gauge will
-  expose the same signal to Prometheus (today `/readyz` reports provider
-  resolution instead).
+  `backend.uinput.active` audit event + stderr warning; the shipped
+  `ultranix_mcp_backend_active{backend="uinput"}` gauge exposes the same
+  signal to Prometheus (and `/readyz` reports provider resolution).
 
 ### 4.2 XDG portal consent dialogs — spoofing & clickjacking
 
@@ -451,7 +450,7 @@ bottom line.**
 | **R-4** | CDP `:9222` open to all local processes → browser profile compromise | Medium–High | CDP has no auth; Chrome's design, not ours | `--remote-debugging-pipe`; dedicated browser profile; firewall |
 | **R-5** | Secret leakage into plaintext `audit.jsonl` despite redaction heuristics | Medium | No heuristic catches every secret shape | Treat `logs/` as sensitive; `0700`; avoid typing secrets via tools |
 | **R-6** | Same-UID attacker edits/forges `audit.jsonl` | Medium | `prev_hash` hash-chaining makes naive edits/truncation detectable, but there is no external anchor — an attacker who rewrites the file can recompute the whole chain | Ship logs to journald/SIEM via systemd stdout as well as file; verify chain integrity against the shipped copy |
-| **R-7** | uinput mode enables physical-equivalent input to privileged prompts (sudo/polkit) | Medium–High when active | Required fallback where virtual-input protocols unavailable | Prefer Wayland virtual input; dedicated udev group; watch `/readyz` + `backend.uinput.active` audit events (the `ultranix_mcp_backend_active{backend="uinput"}` gauge is post-v1) |
+| **R-7** | uinput mode enables physical-equivalent input to privileged prompts (sudo/polkit) | Medium–High when active | Required fallback where virtual-input protocols unavailable | Prefer Wayland virtual input; dedicated udev group; watch `/readyz` + `backend.uinput.active` audit events + the `ultranix_mcp_backend_active{backend="uinput"}` gauge |
 | **R-8** | Portal consent self-approval loop (agent clicks its own consent dialog) | Medium | Consent UI rendered on the same automatable desktop. The `-32015` consent gate avoids this shape — its challenge travels the MCP channel, not a clickable dialog — but covers only the destructive tool class; portal dialogs remain exposed | Disable virtual input when portals in use; accept per-session consent is UX, not boundary |
 | **R-9** | No TLS on `:3010` — passive sniffing if bound beyond loopback | Medium (Low on loopback) | TLS out of scope for v1; local-first assumption | SSH tunnel or reverse proxy; never bind to LAN |
 | **R-10** | Compositor-level screenshot is consent-free on Hyprland | Medium | wlr-screencopy has no per-capture prompt | Platform limitation; control is at TB-1 |

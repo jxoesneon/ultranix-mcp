@@ -8,11 +8,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::{
-    backend, backend_error, invalid_params, json_result, parse_args, text_result, tool, tool_error,
-    tool_schema, window_json, window_provider,
+    SecRef, backend, backend_error, invalid_params, json_result, parse_args, text_result, tool,
+    tool_error, tool_schema, window_json, window_provider,
 };
 use crate::providers::Providers;
-use crate::security::SecurityContext;
 use crate::security::history::{ActionRecord, HistoryStore};
 use crate::traits::{WindowInfo, WindowProvider};
 
@@ -49,6 +48,43 @@ fn store<'a>(secured: &'a Option<Secured<'a>>) -> Result<&'a HistoryStore, Error
         return s.security.history().map_err(history_error);
     }
     HistoryStore::shared().map_err(history_error)
+}
+
+/// A store handle that can move into `tokio::task::spawn_blocking`
+/// (`Send + 'static`): `&'static` for the ambient shared store, `Arc`
+/// for the context-scoped one
+/// ([`crate::security::SecurityContext::history_arc`] exists for exactly
+/// this — EFF-1). Used by `clear_action_history`, whose wipe does real
+/// file work; the read paths above keep their `&HistoryStore` borrows.
+enum StoreHandle {
+    /// The process-wide shared store — already `'static`.
+    Ambient(&'static HistoryStore),
+    /// Context-scoped store held by `Arc`.
+    Scoped(std::sync::Arc<HistoryStore>),
+}
+
+impl std::ops::Deref for StoreHandle {
+    type Target = HistoryStore;
+    fn deref(&self) -> &HistoryStore {
+        match self {
+            Self::Ambient(s) => s,
+            Self::Scoped(a) => a,
+        }
+    }
+}
+
+/// [`store`] for the blocking wipe path — returns the movable handle.
+fn store_handle(secured: &Option<Secured<'_>>) -> Result<StoreHandle, ErrorData> {
+    if let Some(s) = secured {
+        return s
+            .security
+            .history_arc()
+            .map(StoreHandle::Scoped)
+            .map_err(history_error);
+    }
+    HistoryStore::shared()
+        .map(StoreHandle::Ambient)
+        .map_err(history_error)
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -182,7 +218,10 @@ pub(super) fn tools() -> Vec<Tool> {
 /// Phase-0 ungated dispatch.
 #[derive(Clone, Copy)]
 struct Secured<'a> {
-    security: &'a SecurityContext,
+    /// [`SecRef`] (not a bare `&SecurityContext`) so a replay re-entering
+    /// `call_tool_secured` keeps the `Arc` shared handle and its
+    /// `spawn_blocking` audit path.
+    security: SecRef<'a>,
     session_id: &'a str,
     key_id: Option<&'a str>,
 }
@@ -204,7 +243,7 @@ pub(super) async fn dispatch_secured(
     name: &str,
     args: &Map<String, Value>,
     providers: &Providers,
-    security: &SecurityContext,
+    security: SecRef<'_>,
     session_id: &str,
     key_id: Option<&str>,
 ) -> Option<Result<CallToolResult, ErrorData>> {
@@ -240,7 +279,7 @@ async fn dispatch_ctx(
             Ok(s) => replay_action(args, providers, s, secured).await,
             Err(e) => Err(e),
         },
-        "clear_action_history" => match store(&secured) {
+        "clear_action_history" => match store_handle(&secured) {
             Ok(s) => clear_action_history(args, s).await,
             Err(e) => Err(e),
         },
@@ -567,11 +606,17 @@ async fn replay_action(
 
 async fn clear_action_history(
     args: &Map<String, Value>,
-    store: &HistoryStore,
+    store: StoreHandle,
 ) -> Result<CallToolResult, ErrorData> {
     let p: ClearHistoryParams = parse_args("clear_action_history", args)?;
     let _ = &p.consent_token;
-    let removed = store.clear().map_err(history_error)?;
+    // Overwrite-then-delete + index reset is blocking file work — move
+    // it onto `spawn_blocking` like the secured record path (EFF-1).
+    let removed = tokio::task::spawn_blocking(move || store.clear())
+        .await
+        .map_err(|e| history_error(anyhow::anyhow!("history clear task: {e}")))?
+        .map_err(history_error)?;
+    crate::metrics::set_action_history_size(0);
     Ok(text_result(format!(
         "Action history cleared ({removed} records removed)"
     )))
@@ -580,6 +625,7 @@ async fn clear_action_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::security::SecurityContext;
     use crate::security::history::NewActionRecord;
 
     fn args(v: Value) -> Map<String, Value> {
@@ -828,7 +874,7 @@ mod tests {
         record(&store, "system_command", rec_args.clone());
 
         let secured = Secured {
-            security: &sec,
+            security: SecRef::Borrowed(&sec),
             session_id: SESSION,
             key_id: None,
         };
@@ -861,7 +907,7 @@ mod tests {
         record(&store, "sleep", json!({"ms": 0}));
 
         let secured = Secured {
-            security: &sec,
+            security: SecRef::Borrowed(&sec),
             session_id: SESSION,
             key_id: None,
         };
@@ -908,19 +954,24 @@ mod tests {
     #[tokio::test]
     async fn clear_reports_count_and_wipes_file() {
         let (_tmp, store) = tmp_store();
+        // `clear` moves onto `spawn_blocking` — the store must ride in an
+        // `Arc` (production passes the context-scoped `history_arc()`).
+        let store = std::sync::Arc::new(store);
         record(&store, "sleep", json!({"ms": 0}));
         record(&store, "sleep", json!({"ms": 1}));
         let path = store.path().to_path_buf();
 
-        let res = clear_action_history(&args(json!({})), &store)
+        let res = clear_action_history(&args(json!({})), StoreHandle::Scoped(store.clone()))
             .await
             .unwrap();
         assert_eq!(text_of(&res), "Action history cleared (2 records removed)");
         assert!(store.is_empty());
         assert!(!path.exists());
+        // The gauge is reset to 0 alongside the wipe.
+        assert!(crate::metrics::exposition().contains("ultranix_mcp_action_history_size"));
 
         // Idempotent: a second clear reports zero.
-        let res = clear_action_history(&args(json!({})), &store)
+        let res = clear_action_history(&args(json!({})), StoreHandle::Scoped(store.clone()))
             .await
             .unwrap();
         assert_eq!(text_of(&res), "Action history cleared (0 records removed)");

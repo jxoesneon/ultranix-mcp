@@ -161,10 +161,10 @@ impl WindowProvider for HyprctlWindow {
 /// `/tmp/hypr/<HIS>/` fallback Hyprland uses when the runtime dir is unset.
 fn socket_candidates(his: &std::ffi::OsStr) -> Vec<PathBuf> {
     let mut dirs = Vec::with_capacity(2);
-    if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR") {
-        if !rt.is_empty() {
-            dirs.push(PathBuf::from(rt).join("hypr"));
-        }
+    if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR")
+        && !rt.is_empty()
+    {
+        dirs.push(PathBuf::from(rt).join("hypr"));
     }
     dirs.push(PathBuf::from("/tmp/hypr"));
     dirs.into_iter()

@@ -13,7 +13,11 @@
 //! - `ultranix_mcp_tool_duration_seconds{tool}` — histogram
 //!   (`_bucket{le}` / `_sum` / `_count`)
 //! - `ultranix_mcp_rate_limit_rejections_total{reason}` — counter
+//! - `ultranix_mcp_auth_failures_total{reason}` — counter
 //! - `ultranix_mcp_active_sessions{transport}` — gauge
+//! - `ultranix_mcp_backend_active{backend}` — gauge
+//! - `ultranix_mcp_action_history_size` — gauge
+//! - `ultranix_mcp_ocr_cache_entries` — gauge
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -71,8 +75,16 @@ struct Registry {
     durations: BTreeMap<String, Histogram>,
     /// `ultranix_mcp_rate_limit_rejections_total` keyed by `reason`.
     rate_rejections: BTreeMap<String, u64>,
+    /// `ultranix_mcp_auth_failures_total` keyed by `reason`.
+    auth_failures: BTreeMap<String, u64>,
     /// `ultranix_mcp_active_sessions` keyed by `transport`.
     sessions: BTreeMap<String, i64>,
+    /// `ultranix_mcp_backend_active` keyed by `backend`.
+    backends: BTreeMap<String, i64>,
+    /// `ultranix_mcp_action_history_size` — retained history records.
+    history_size: i64,
+    /// `ultranix_mcp_ocr_cache_entries` — live OCR cache entries.
+    ocr_cache_entries: i64,
 }
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registry::default()));
@@ -109,6 +121,33 @@ pub fn record_call(tool: &str, duration: Duration, outcome: &str) {
 pub fn record_rate_rejection(reason: &str) {
     let mut reg = registry();
     *reg.rate_rejections.entry(reason.to_string()).or_insert(0) += 1;
+}
+
+/// Increment `ultranix_mcp_auth_failures_total{reason}` — emitted by the
+/// HTTP gate on a rejected credential (`AuthFailure::reason()`:
+/// `missing`, `malformed`, `unknown`, `expired_key`).
+pub fn record_auth_failure(reason: &str) {
+    let mut reg = registry();
+    *reg.auth_failures.entry(reason.to_string()).or_insert(0) += 1;
+}
+
+/// Mark `ultranix_mcp_backend_active{backend}` = 1 — emitted once per
+/// initialised backend at startup from `Providers::backend_names`
+/// (e.g. `wlr-screencopy`, `atspi2`). Absent series = backend down.
+pub fn set_backend_active(backend: &str) {
+    registry().backends.insert(backend.to_string(), 1);
+}
+
+/// Set `ultranix_mcp_action_history_size` — the retained record count,
+/// refreshed after each history append and reset to 0 on clear.
+pub fn set_action_history_size(n: usize) {
+    registry().history_size = n as i64;
+}
+
+/// Set `ultranix_mcp_ocr_cache_entries` — the live entry count of the
+/// ONNX vision OCR cache (producer wired in `providers/onnx_vision.rs`).
+pub fn set_ocr_cache_entries(n: usize) {
+    registry().ocr_cache_entries = n as i64;
 }
 
 /// Set `ultranix_mcp_active_sessions{transport}` — the absolute count of
@@ -182,6 +221,18 @@ pub fn exposition() -> String {
         );
     }
 
+    out.push_str(
+        "# HELP ultranix_mcp_auth_failures_total HTTP authentication failures by rejection reason.\n",
+    );
+    out.push_str("# TYPE ultranix_mcp_auth_failures_total counter\n");
+    for (reason, n) in &reg.auth_failures {
+        let _ = writeln!(
+            out,
+            "ultranix_mcp_auth_failures_total{{reason=\"{}\"}} {n}",
+            esc(reason)
+        );
+    }
+
     out.push_str("# HELP ultranix_mcp_active_sessions Live sessions by transport.\n");
     out.push_str("# TYPE ultranix_mcp_active_sessions gauge\n");
     for (transport, n) in &reg.sessions {
@@ -191,6 +242,34 @@ pub fn exposition() -> String {
             esc(transport)
         );
     }
+
+    out.push_str(
+        "# HELP ultranix_mcp_backend_active Backends that initialised at startup (1 = active).\n",
+    );
+    out.push_str("# TYPE ultranix_mcp_backend_active gauge\n");
+    for (backend, n) in &reg.backends {
+        let _ = writeln!(
+            out,
+            "ultranix_mcp_backend_active{{backend=\"{}\"}} {n}",
+            esc(backend)
+        );
+    }
+
+    out.push_str(
+        "# HELP ultranix_mcp_action_history_size Records retained in the encrypted action history.\n",
+    );
+    out.push_str("# TYPE ultranix_mcp_action_history_size gauge\n");
+    let _ = writeln!(out, "ultranix_mcp_action_history_size {}", reg.history_size);
+
+    out.push_str(
+        "# HELP ultranix_mcp_ocr_cache_entries Live entries in the ONNX vision OCR cache.\n",
+    );
+    out.push_str("# TYPE ultranix_mcp_ocr_cache_entries gauge\n");
+    let _ = writeln!(
+        out,
+        "ultranix_mcp_ocr_cache_entries {}",
+        reg.ocr_cache_entries
+    );
 
     out
 }
@@ -311,5 +390,60 @@ mod tests {
         set_sessions("te\"st\n\\x", 1);
         let exp = exposition();
         assert!(exp.contains("transport=\"te\\\"st\\n\\\\x\""));
+    }
+
+    #[test]
+    fn auth_failure_counter_increments_per_reason() {
+        record_auth_failure("test_missing");
+        record_auth_failure("test_missing");
+        record_auth_failure("test_expired_key");
+        let exp = exposition();
+        assert!(
+            exp.contains("ultranix_mcp_auth_failures_total{reason=\"test_missing\"} 2\n"),
+            "{exp}"
+        );
+        assert!(exp.contains("ultranix_mcp_auth_failures_total{reason=\"test_expired_key\"} 1\n"));
+        assert!(exp.contains("# TYPE ultranix_mcp_auth_failures_total counter\n"));
+    }
+
+    #[test]
+    fn backend_active_gauge_marks_registered_backends() {
+        set_backend_active("test-backend-alpha");
+        set_backend_active("test-backend-beta");
+        // Re-registering the same backend stays at 1 (idempotent mark).
+        set_backend_active("test-backend-alpha");
+        let exp = exposition();
+        assert!(
+            exp.contains("ultranix_mcp_backend_active{backend=\"test-backend-alpha\"} 1\n"),
+            "{exp}"
+        );
+        assert!(exp.contains("ultranix_mcp_backend_active{backend=\"test-backend-beta\"} 1\n"));
+        assert!(exp.contains("# TYPE ultranix_mcp_backend_active gauge\n"));
+    }
+
+    #[test]
+    fn unlabelled_gauges_emit_integer_series() {
+        set_action_history_size(5);
+        set_ocr_cache_entries(9);
+        let exp = exposition();
+        // These series carry no labels, so a parallel test can
+        // legitimately overwrite the value between set and render —
+        // assert the series exists, is typed a gauge, and carries an
+        // integer rather than pinning the number.
+        for name in [
+            "ultranix_mcp_action_history_size",
+            "ultranix_mcp_ocr_cache_entries",
+        ] {
+            let line = exp
+                .lines()
+                .find(|l| l.starts_with(name))
+                .unwrap_or_else(|| panic!("missing series {name}:\n{exp}"));
+            line.rsplit(' ')
+                .next()
+                .unwrap()
+                .parse::<i64>()
+                .unwrap_or_else(|_| panic!("bad gauge value: {line}"));
+            assert!(exp.contains(&format!("# TYPE {name} gauge\n")), "{exp}");
+        }
     }
 }

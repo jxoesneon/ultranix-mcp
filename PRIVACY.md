@@ -2,7 +2,7 @@
 
 **Last updated**: 2026 — **Policy version**: 1.0.0
 **Status**: Implemented — describes the data handling of shipped ultranix-mcp
-v1.0.0; features marked *post-v1* are not yet wired.
+v1.1.0; features marked *post-v1* are not yet wired.
 
 ## Overview
 
@@ -84,11 +84,12 @@ third-party SDKs phoning home — unless you turn one on.
 
 ## Optional Telemetry — Strictly Opt-In
 
-### Sentry error reporting — *planned, post-v1*
+### Sentry error reporting — *opt-in, shipped at v1.1.0*
 
-`ULTRANIX_MCP_SENTRY_DSN` is documented but **not wired at v1.0.0** — setting
-it today has no effect and nothing is sent. When the integration ships it
-will remain strictly opt-in, with the following contract:
+`ULTRANIX_MCP_SENTRY_DSN` enables Sentry error reporting. It is **strictly
+opt-in**: unset, empty, or malformed values leave it disabled (a malformed
+DSN logs a startup warning and the server continues without Sentry). When
+enabled, the contract is:
 
 - Only panic/error reports and stack frames are sent — never screenshots,
   tool arguments, history, or a11y-tree content.
@@ -113,7 +114,7 @@ protect it like the HTTP port.
 | ----------- | ---- | ----------- | ------- |
 | ONNX model download | **Once**, on first use of a vision tool | Model host (checksum-pinned) | Place models manually in `~/.ultranix-mcp/models/` — no download occurs |
 | CDP (Chrome DevTools Protocol) | Browser automation tools | `127.0.0.1:9222` — **localhost only, never remote** | Don't launch a browser with `--remote-debugging-port` |
-| Sentry (post-v1, not yet wired) | Would only fire if `ULTRANIX_MCP_SENTRY_DSN` set | Your configured DSN | Off — unimplemented at v1.0.0 |
+| Sentry (opt-in, shipped at v1.1.0) | Only fires if `ULTRANIX_MCP_SENTRY_DSN` is set to a valid DSN | Your configured DSN | Off by default — unset/malformed DSN disables it |
 | Everything else | — | **None** | — |
 
 There is no update checker, no license phone-home, no feature-flag service.

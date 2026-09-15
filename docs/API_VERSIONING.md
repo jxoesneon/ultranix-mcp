@@ -21,7 +21,7 @@ frozen per server release); the protocol version moves independently and is
 always the *highest mutually supported* version from the `initialize`
 handshake.
 
-**Current versions:** server `1.0.0` · tool surface `1.0`
+**Current versions:** server `1.1.0` · tool surface `1.0`
 (32 tools) · protocol negotiated per MCP spec.
 
 ## Versioning Scheme
@@ -144,7 +144,7 @@ publishes an extension block:
   "id": 0,
   "result": {
     "protocolVersion": "2025-06-18",
-    "serverInfo": { "name": "ultranix-mcp", "version": "1.0.0" },
+    "serverInfo": { "name": "ultranix-mcp", "version": "1.1.0" },
     "capabilities": {
       "tools": { "listChanged": true },
       "ultranix": {
@@ -189,10 +189,10 @@ assert_eq!(info.server_info.name, "ultranix-mcp");
 
 ```bash
 # Binary
-ultranix-mcp --version        # ultranix-mcp 1.0.0
+ultranix-mcp --version        # ultranix-mcp 1.1.0
 
 # HTTP transport
-curl -s http://127.0.0.1:3010/health | jq .version   # "1.0.0"
+curl -s http://127.0.0.1:3010/health | jq .version   # "1.1.0"
 
 # Package metadata
 cargo info ultranix-mcp | head -1
@@ -245,7 +245,7 @@ All `tools/call` results carry server identity in `result._meta`:
 {
   "_meta": {
     "server": "ultranix-mcp",
-    "serverVersion": "1.0.0",
+    "serverVersion": "1.1.0",
     "toolSurfaceVersion": "1.0",
     "protocolVersion": "2025-06-18"
   }

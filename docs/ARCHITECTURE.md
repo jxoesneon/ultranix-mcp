@@ -1,11 +1,13 @@
 # Architecture Overview
 
-> **Status:** Implemented (v1.0.0) — all six phases of the plan in
-> [Implementation Phases](#implementation-phases) have shipped. Items that
-> remain unimplemented are marked inline as **planned / post-v1** (optional
-> Sentry reporting, PipeWire stream consumption on the portal
-> RemoteDesktop path, X11-native provider rungs, and the four planned
-> metrics in §7).
+> **Status:** Implemented (v1.1.0) — all six phases of the plan in
+> [Implementation Phases](#implementation-phases) have shipped, and the
+> v1.1.0 wave landed the layer-shell `OverlayProvider`/`screen_highlight`,
+> the X11-native provider rungs (`scrot`/`xdotool`/`wmctrl`), PipeWire
+> stream consumption on the portal RemoteDesktop path, opt-in Sentry
+> reporting, the OCR result cache, and the four additional metrics in §7.
+> Items that remain unimplemented are marked inline as **planned /
+> post-v1**.
 
 ultranix-mcp is a Model Context Protocol (MCP) server providing complete Linux
 desktop-automation capabilities through AI-accessible tools. It is the Linux sibling
@@ -63,13 +65,15 @@ graph TB
         PWIN[WindowProvider]
         PVIS[VisionProvider]
         PBRW[BrowserProvider]
+        POVL[OverlayProvider]
     end
 
     subgraph "Backend Implementations"
-        WLR[wlroots-native<br/>wlr-screencopy · virtual-pointer<br/>virtual-keyboard]
+        WLR[wlroots-native<br/>wlr-screencopy · virtual-pointer<br/>virtual-keyboard · layer-shell]
         UIN[uinput / evdev<br/>udev rule, no compositor dependency]
-        PORTAL[XDG Desktop Portal<br/>Screenshot · RemoteDesktop via zbus]
+        PORTAL[XDG Desktop Portal<br/>Screenshot · RemoteDesktop+PipeWire via zbus]
         HYPR[hyprctl IPC<br/>$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock]
+        X11B[X11-native<br/>scrot · xdotool · wmctrl]
         ATSPI[AT-SPI2<br/>atspi crate]
         ORT[ort / ONNX Runtime<br/>CPU → OpenVINO → CUDA]
         CDP[Chrome DevTools Protocol<br/>127.0.0.1:9222]
@@ -85,10 +89,10 @@ graph TB
 
     subgraph "Observability"
         HEALTH[Health Endpoints<br/>/health · /readyz]
-        METRICS[Prometheus /metrics<br/>4 shipped series]
+        METRICS[Prometheus /metrics<br/>8 shipped series]
         AUDIT[JSONL Audit Log]
         HISTORY[AES-256-GCM<br/>Action History]
-        SENTRY[Optional Sentry<br/>planned, post-v1]
+        SENTRY[Optional Sentry<br/>opt-in via ULTRANIX_MCP_SENTRY_DSN]
     end
 
     AI --> MCP
@@ -118,18 +122,24 @@ graph TB
     ADMIN --> PWIN
     PCAP --> WLR
     PCAP --> PORTAL
+    PCAP --> X11B
     PIN --> WLR
     PIN --> UIN
     PIN --> PORTAL
+    PIN --> X11B
     PUIA --> ATSPI
     PWIN --> HYPR
-    PWIN --> X11
+    PWIN --> X11B
     PVIS --> ORT
     PBRW --> CDP
+    VISION --> POVL
+    POVL --> WLR
     WLR --> WAYLAND
     PORTAL --> DBUS
+    PORTAL --> PIPEWIRE
     ATSPI --> DBUS
     HYPR --> COMPOSITOR
+    X11B --> X11
     X11 --> COMPOSITOR
     WAYLAND --> COMPOSITOR
     COMPOSITOR --> PIPEWIRE
@@ -204,7 +214,10 @@ graph LR
   to `clients`, `activewindow`, `monitors`, `workspaces`, and
   `dispatch focuswindow|movewindow|resizewindow|workspace|movetoworkspace`;
   `dispatch exec`/`exec-once` are denied). `xdotool`/`wmctrl` are registered
-  on X11-fallback sessions only. Binaries are pinned to absolute paths
+  on X11-fallback sessions only. `xrandr`/`xprop` sit in the startup pin set
+  as provider-internal helpers (X11 geometry / `_NET_WM_STATE` reads) but
+  have **no** `validate_command` arm — `system_command` cannot invoke them.
+  Binaries are pinned to absolute paths
   resolved once at startup. `busctl`/`gdbus` are not permitted — D-Bus work
   is in-process via `zbus`.
 - **Path whitelist** — file paths must resolve beneath `$XDG_RUNTIME_DIR`,
@@ -246,17 +259,18 @@ unavailable* error — never a panic and never an opaque transport failure.
 
 ### 4. Provider Abstraction Layer
 
-The core design inheritance from ultrawin: **all OS coupling lives behind six
+The core design inheritance from ultrawin: **all OS coupling lives behind seven
 async traits**, injected as `Option<Arc<dyn Trait>>` at server construction.
 
 | Trait | Responsibility | Implementations (priority order — summary; the canonical fallback-chain table is in §5) |
 | ----- | -------------- | -------------------------------- |
-| `CaptureProvider` | Frame capture, region capture, output geometry | `WlrCapture` → `GrimCapture` → `PortalCapture` (an `scrot`/X11 rung is post-v1) |
-| `InputProvider` | Pointer motion/buttons/scroll, keyboard text & key events | `WlrInput` → `UinputInput` → `PortalInput` (`xdotool`/X11 rung: post-v1) |
-| `UIAutomationProvider` | UI tree, focused element, element lookup, AT-SPI action invocation (`invoke_element`) | `AtspiUi` → `None` (vision-only fallback) |
-| `WindowProvider` | Window list/focus/move/resize, active window | `HyprctlWindow` → `None` (`wmctrl`/X11 rung: post-v1) |
+| `CaptureProvider` | Frame capture, region capture, output geometry | `WlrCapture` → `GrimCapture` → `PortalCapture`; `X11Capture` (`scrot` + `xdotool`/`xrandr` geometry) on X11 sessions |
+| `InputProvider` | Pointer motion/buttons/scroll, keyboard text & key events | `WlrInput` → `UinputInput` → `PortalInput`; `X11Input` (`xdotool`) first on X11 sessions |
+| `UIAutomationProvider` | UI tree, focused element, element lookup (multi-match via `find_elements`), AT-SPI action invocation (`invoke_element`) | `AtspiUi` → `None` (vision-only fallback) |
+| `WindowProvider` | Window list/focus/move/resize, active window | `HyprctlWindow`; `X11Window` (`wmctrl` + `xdotool` + `xprop`) on non-Hyprland X11 |
 | `VisionProvider` | OCR (`recognize_text`), zero-shot icon finding (`locate_icon`) | `OnnxVision` (ort: CPU EP; OpenVINO/CUDA behind `vision-openvino`/`vision-cuda` cargo features) |
 | `BrowserProvider` | DOM query/eval over CDP | `CdpBrowser` @ `127.0.0.1:9222` |
+| `OverlayProvider` | Translucent highlight overlay (`screen_highlight`) | `Overlay` (`zwlr_layer_shell_v1`, Wayland-only) → `None` on X11/headless |
 
 **Dependency injection** mirrors ultrawin's `build_server` signature: `main.rs`
 probes each backend, wraps successes in `Some(Arc::new(..) as Arc<dyn Trait>)`,
@@ -276,30 +290,43 @@ flowchart TD
     START[Startup probe] --> ENV{Read env:<br/>XDG_CURRENT_DESKTOP<br/>HYPRLAND_INSTANCE_SIGNATURE<br/>XDG_SESSION_TYPE}
     ENV -->|Hyprland / wlroots| WLR{wlroots protocols<br/>available?}
     ENV -->|Other Wayland| PORTAL_Q{Portal backend<br/>responding on D-Bus?}
-    ENV -->|X11 session| X11B[X11 backends<br/>scrot · xdotool · wmctrl<br/>post-v1]
+    ENV -->|X11 session| X11B[X11 backends<br/>scrot · xdotool · wmctrl]
+    X11B --> CAP_X11[CaptureProvider = X11Capture<br/>scrot → portal]
+    X11B --> IN_X11[InputProvider = X11Input<br/>xdotool → uinput → portal]
+    X11B --> WIN_X11[WindowProvider = X11Window<br/>wmctrl, non-Hyprland X11]
     WLR -->|wlr-screencopy| CAP_OK[CaptureProvider = WlrCapture]
     WLR -->|virtual-pointer +<br/>virtual-keyboard| IN_OK[InputProvider = WlrInput]
     WLR -->|protocol missing| UIN_Q{/dev/uinput<br/>writable?}
     UIN_Q -->|yes, udev rule present| UIN_OK[InputProvider = UinputInput]
     UIN_Q -->|no| PORTAL_Q
-    PORTAL_Q -->|Screenshot iface| CAP_P[CaptureProvider = PortalCapture]
+    PORTAL_Q -->|Screenshot iface| CAP_P[CaptureProvider = PortalCapture<br/>Screenshot path]
+    PORTAL_Q -->|RemoteDesktop only| CAP_PW[PortalCapture PipeWire path<br/>OpenPipeWireRemote → pw stream]
     PORTAL_Q -->|RemoteDesktop iface| IN_P[InputProvider = PortalInput]
-    PORTAL_Q -->|no response| CAP_X[CaptureProvider = None<br/>X11 capture is post-v1]
+    PORTAL_Q -->|no response| CAP_X[CaptureProvider = None]
     HYPR_Q{hyprctl socket<br/>exists?} -->|yes| WIN_OK[WindowProvider = HyprctlWindow]
-    HYPR_Q -->|no + DISPLAY set| WIN_X[WindowProvider = None<br/>wmctrl rung is post-v1]
+    HYPR_Q -->|no + DISPLAY set| WIN_X[WindowProvider = X11Window<br/>via wmctrl]
+    LYRS_Q{zwlr_layer_shell_v1<br/>advertised?} -->|yes| OVL_OK[OverlayProvider = Overlay]
+    LYRS_Q -->|no / X11| OVL_NONE[None — screen_highlight<br/>returns ProviderUnavailable]
     ATSPI_Q{AT-SPI2 bus<br/>live?} -->|yes| UIA_OK[UIAutomationProvider = AtspiUi]
     ATSPI_Q -->|no| UIA_NONE[None — vision-only<br/>element finding]
     ENV --> HYPR_Q
     HYPR_Q --> ATSPI_Q
-    ATSPI_Q --> DONE[Registry:<br/>Option<Arc<dyn Trait>> per provider]
+    ATSPI_Q --> LYRS_Q
+    LYRS_Q --> DONE[Registry:<br/>Option<Arc<dyn Trait>> per provider]
     CAP_OK --> DONE
     CAP_P --> DONE
+    CAP_PW --> DONE
     CAP_X --> DONE
+    CAP_X11 --> DONE
     IN_OK --> DONE
     UIN_OK --> DONE
     IN_P --> DONE
+    IN_X11 --> DONE
     WIN_OK --> DONE
     WIN_X --> DONE
+    WIN_X11 --> DONE
+    OVL_OK --> DONE
+    OVL_NONE --> DONE
     UIA_NONE --> DONE
 ```
 
@@ -308,24 +335,26 @@ flowchart TD
 documents (including §4 above and TOOLS.md) summarize or reference it rather
 than restating it:
 
-| Provider | Chain (shipped at v1.0.0) |
+| Provider | Chain (as shipped at v1.1.0) |
 | -------- | ----- |
-| Capture | `wlr-screencopy-unstable-v1` (in-process) → `grim`/`slurp` → XDG Portal `Screenshot` (zbus) → `None` |
-| Input | `zwlr_virtual_pointer_v1` + `virtual-keyboard-unstable-v1` (no root on Hyprland) → `/dev/uinput` + evdev → Portal `RemoteDesktop` → `None` |
-| Window | `hyprctl` IPC socket → `None` |
+| Capture | Wayland: `wlr-screencopy-unstable-v1` (in-process) → `grim`/`slurp` → XDG Portal `Screenshot` (zbus; `RemoteDesktop`+PipeWire stream when only `RemoteDesktop` is advertised) → `None`. X11: `scrot` (`X11Capture`) → portal → `None` |
+| Input | Wayland: `zwlr_virtual_pointer_v1` + `virtual-keyboard-unstable-v1` (no root on Hyprland) → `/dev/uinput` + evdev → Portal `RemoteDesktop` → `None`. X11: `xdotool` (`X11Input`) → uinput → portal → `None` |
+| Window | `hyprctl` IPC socket → `None` on Hyprland; `wmctrl` + `xdotool`/`xprop` (`X11Window`) → `None` on other X11 sessions |
+| Overlay | `zwlr_layer_shell_v1` (`Overlay`, Wayland-only) → `None` |
 | UI Automation | AT-SPI2 via `atspi` crate → `None` |
 | Vision | `ort` ONNX: CPU EP → OpenVINO/CUDA EPs behind `vision-openvino`/`vision-cuda` features → `None` |
 | Browser | CDP WebSocket `127.0.0.1:9222` → `None` |
 
-**Post-v1 rungs (not yet implemented):** X11-native providers —
-`scrot` capture, `xdotool` input, `wmctrl` window control — plus PipeWire
-stream consumption on the portal `RemoteDesktop` path (today
-`SelectSources` is used only for output geometry; the video fd is never
-opened). The `scrot`/`xdotool`/`wmctrl` entries in the `system_command`
-whitelist are already enforced on X11 sessions, but no provider rungs
-exist yet — on an X11 session the shipped ladders resolve to
-`Portal`/`UInput`/`Atspi`/`Onnx`/`Cdp` only and `WindowProvider` stays
-`None`.
+**X11-native rungs (shipped at v1.1.0):** `X11Capture` (`scrot` frames,
+`xdotool getmouselocation` pointer position, `xrandr`/`xdotool` geometry),
+`X11Input` (`xdotool`), and `X11Window` (`wmctrl` + `xdotool` + `xprop`)
+resolve under the backend names `"scrot"`, `"xdotool"`, and `"wmctrl"`. The
+`xrandr`/`xprop` helpers were added to the startup pin set but have **no**
+`validate_command` arm — `system_command` cannot invoke them; they are
+provider-internal only. The PipeWire path is also live: when a portal
+backend advertises `RemoteDesktop` but not `Screenshot`, `PortalCapture`
+opens the granted PipeWire fd (`OpenPipeWireRemote`) and pulls one video
+buffer (BGRx/BGRA/RGBx/RGBA, 5 s bounded grab, session always closed).
 
 **hyprctl IPC:** `WindowProvider` speaks JSON over the Unix socket at
 `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock` (the same wire
@@ -346,9 +375,9 @@ root daemon, no `ydotoold` service.
 ```mermaid
 graph LR
     TOOL[Tool Execution] --> CACHE{Cacheable?}
-    CACHE -->|OCR results| OCRCACHE[OCR Cache<br/>10s TTL, in-memory]
+    CACHE -->|OCR/icon results| OCRCACHE[OCR Cache<br/>10s TTL, in-memory]
     CACHE -->|All calls| HISTORY[Action History]
-    OCRCACHE --> MEM[DashMap<br/>keyed by image hash + region]
+    OCRCACHE --> MEM[DashMap<br/>blake3-keyed: ocr/frame · icon/frame/desc]
     HISTORY --> ENC[AES-256-GCM<br/>~/.ultranix-mcp/history.json]
     HISTORY --> AUDITL[JSONL audit<br/>~/.ultranix-mcp/logs/audit.jsonl]
     MODELS[ONNX models<br/>~/.ultranix-mcp/models/] -.->|lazy load<br/>once per session| PVIS2[VisionProvider]
@@ -356,13 +385,18 @@ graph LR
 
 **Components:**
 
-- **OCR cache** — *planned, post-v1*: a 10-second TTL in-memory cache keyed by
-  hash of the captured frame + requested region is designed but not yet wired;
-  every `find_text_on_screen` call currently re-runs inference.
+- **OCR cache** — shipped at v1.1.0 (`onnx_vision.rs`): a `DashMap` of
+  detection results keyed by blake3 hash — `ocr:{frame_hash}` for
+  `find_text_on_screen` (the region is folded into the captured frame bytes)
+  and `icon:{frame_hash}:{description}` for `find_icon`. Entries live 10 s,
+  the map is capped at 64 entries with oldest-first eviction, and the live
+  entry count is exported as `ultranix_mcp_ocr_cache_entries`.
 - **Action history** — every tool call appended to
   `~/.ultranix-mcp/history.json`, AES-256-GCM encrypted at rest (key material from
   `ULTRANIX_MCP_HISTORY_SECRET` or a generated per-install secret under
   `~/.ultranix-mcp/`, mode 0700); powers `get_action_history` and `replay_action`.
+  Blocking store work (history appends/`clear()` and audit appends) runs on
+  `spawn_blocking`, off the async executor.
 - **Model cache** — ONNX weights (OCR + OWL-ViT) under
   `~/.ultranix-mcp/models/`, downloaded on first vision call, pinned by SHA-256.
 - **Spatial-focus state** — `set_spatial_focus` stores a process-global
@@ -380,15 +414,15 @@ graph TB
     EXEC --> ERR[Error Pipeline]
 
     LOG --> TRACING[tracing +<br/>tracing-subscriber]
-    METRICS --> PROM[src/metrics.rs<br/>dependency-free exporter<br/>4 shipped series]
+    METRICS --> PROM[src/metrics.rs<br/>dependency-free exporter<br/>8 shipped series]
     HISTORY --> JSON[~/.ultranix-mcp/<br/>history.json — AES-256-GCM]
-    ERR --> SENTRY2[Optional Sentry<br/>ULTRANIX_MCP_SENTRY_DSN<br/>planned, post-v1]
+    ERR --> SENTRY2[Optional Sentry<br/>ULTRANIX_MCP_SENTRY_DSN<br/>opt-in, off when unset/malformed]
 
     TRACING --> DISK[~/.ultranix-mcp/logs/*.jsonl]
     PROM --> ENDPOINT[:3010/metrics]
 ```
 
-**The 4 shipped Prometheus series** — *this table is the canonical normative
+**The 8 shipped Prometheus series** — *this table is the canonical normative
 source for the metric catalog*; every other document (including the `metrics`
 tool reference in TOOLS.md) references these names rather than restating
 them. The registry is the dependency-free exporter in `src/metrics.rs` — no
@@ -398,18 +432,15 @@ them. The registry is the dependency-free exporter in `src/metrics.rs` — no
 | ------ | ---- | ------ | ----------- |
 | `ultranix_mcp_tool_calls_total` | Counter | `tool`, `outcome` | Tool call count by outcome (`ok`, `tool_error`, `consent_required`, `error`) |
 | `ultranix_mcp_tool_duration_seconds` | Histogram | `tool` | Per-tool execution latency (fixed-bucket `_bucket{le}` / `_sum` / `_count`) |
-| `ultranix_mcp_rate_limit_rejections_total` | Counter | `category` | 429 rejections |
+| `ultranix_mcp_rate_limit_rejections_total` | Counter | `reason` | 429 rejections |
+| `ultranix_mcp_auth_failures_total` | Counter | `reason` | HTTP auth failures (401s) by rejection reason |
 | `ultranix_mcp_active_sessions` | Gauge | `transport` | Live stdio/HTTP sessions |
-
-**Planned additions (Phase-6 / post-v1 — not yet emitted):**
-`ultranix_mcp_auth_failures_total{transport}`,
-`ultranix_mcp_backend_active{backend}`,
-`ultranix_mcp_action_history_size`, and
-`ultranix_mcp_ocr_cache_entries` (the OCR cache itself is not yet wired —
-see §6).
+| `ultranix_mcp_backend_active` | Gauge | `backend` | Backends that initialised at startup (1 = active) — emitted once per resolved backend |
+| `ultranix_mcp_action_history_size` | Gauge | — | Records retained in the encrypted action history |
+| `ultranix_mcp_ocr_cache_entries` | Gauge | — | Live entries in the ONNX vision result cache (§6) |
 
 Health endpoints: `/health` (process alive, <10ms cached) and `/readyz` (reports
-which of the six providers resolved to `Some`, enabling precise readiness gating).
+which of the seven providers resolved to `Some`, enabling precise readiness gating).
 
 ## Data Flow
 
@@ -488,7 +519,7 @@ sequenceDiagram
 | **Logging** | `tracing` + `tracing-subscriber` | JSONL to `~/.ultranix-mcp/logs/` |
 | **Metrics** | `src/metrics.rs` — dependency-free Prometheus text exporter | `/metrics` on :3010 |
 | **Errors** | `anyhow` + `thiserror` | provider internals / tool surfaces |
-| **Error reporting** | `sentry` — planned, post-v1 | `ULTRANIX_MCP_SENTRY_DSN` (documented, not wired) |
+| **Error reporting** | `sentry` + `sentry-tracing` — opt-in | `ULTRANIX_MCP_SENTRY_DSN`; parsed before tracing init, malformed DSN warns and disables |
 | **Testing** | `cargo test` + `tokio::test` + golden MCP fixtures | see TESTING_STRATEGY.md |
 
 ## Security Architecture
@@ -508,7 +539,7 @@ graph TD
     L6 --> EXEC[Safe Execution<br/>via provider traits]
     EXEC --> L7[Layer 7: AES-256-GCM<br/>History Encryption]
     L7 --> L8[Layer 8: JSONL Audit Log<br/>key_id · args_hash · prev_hash]
-    L8 --> L9[Layer 9: Prometheus /metrics<br/>+ optional Sentry (post-v1)]
+    L8 --> L9[Layer 9: Prometheus /metrics<br/>+ optional Sentry (opt-in DSN)]
 ```
 
 **Layer notes:**
@@ -538,8 +569,10 @@ graph TD
    (never raw arguments), `prev_hash` chain, outcome, duration; 30-day
    rotation by default.
 9. **Observability** — metrics surface rate-limit spikes and per-tool
-   outcomes in real time; Sentry panic/error-chain capture is planned
-   post-v1 (`ULTRANIX_MCP_SENTRY_DSN` is documented but not yet wired).
+   outcomes in real time; Sentry error reporting is opt-in via
+   `ULTRANIX_MCP_SENTRY_DSN` — parsed before tracing init, the
+   `sentry-tracing` layer attaches only when the DSN parses, and a malformed
+   DSN logs a warning and continues without Sentry.
 
 ### Threat Model
 
@@ -643,8 +676,8 @@ inherently single-seat.
 
 - **Single GUI session.** The server automates one compositor session; there is no
   horizontal scaling dimension. One process = one seat = one set of providers.
-- **Stateful.** Action history and the process-global spatial-focus rect are
-  per-instance (the post-v1 OCR cache will be too, when it lands).
+- **Stateful.** Action history, the process-global spatial-focus rect, and
+  the OCR result cache are per-instance.
 - **Vision throughput.** ONNX inference is CPU-bound by default; concurrent
   `find_icon` calls are serialized on the `ort` session.
 
@@ -669,10 +702,10 @@ xdg-desktop-portal-hyprland, AT-SPI2 live, Rust 1.98.1):
 | `screenshot` (full output) | **<50ms** | wlr-screencopy-unstable-v1 | in-process shm copy |
 | `screenshot` (portal path) | <800ms | XDG Portal Screenshot | includes portal round-trip |
 | `color_at` | <60ms | 1×1 screencopy + PNG decode | one capture, centre-pixel sample |
-| `get_ui_tree` | **<500ms** | AT-SPI2 | full recursive snapshot |
-| `get_focused_element` | <100ms | AT-SPI2 | single-node query |
-| `find_element` | <500ms | AT-SPI2 | tree scan + match |
-| `find_text_on_screen` (cached) | <1ms | OCR cache (10s TTL) | **planned** — the OCR cache is not yet wired; uncached path applies |
+| `get_ui_tree` | **<500ms** | AT-SPI2 | full recursive snapshot; child proxies built in parallel (`join_all`) |
+| `get_focused_element` | <100ms | AT-SPI2 | per-app active-window scan, parallel across apps (`join_all`) |
+| `find_element` | <500ms | AT-SPI2 | tree scan + match; returns up to 10 matches (`find_elements`) |
+| `find_text_on_screen` (cached) | <1ms | OCR cache (10s TTL, blake3-keyed) | memoized `Detection`s; hit requires identical frame bytes |
 | `find_text_on_screen` (uncached) | **<2s** | ort CPU EP | OpenVINO/CUDA reduce further |
 | `find_icon` (OWL-ViT) | <2s | ort, EP-dependent | zero-shot, no retraining |
 | `get_windows` | <30ms | hyprctl IPC socket | JSON parse of `clients` |
@@ -709,7 +742,8 @@ impl WindowProvider for SwayMsgWindow {
     // ...
 }
 
-// detect.rs — insert after HyprctlWindow in the chain (the wmctrl rung is post-v1).
+// detect.rs — insert into the window ladder's candidate list (e.g. before
+// `WindowBackend::Wmctrl` on sway sessions).
 ```
 
 ### Registering a custom metric
@@ -727,12 +761,12 @@ crate::metrics::record_call(tool_name, elapsed, "ok");
 
 | Phase | Scope | Exit criteria |
 | ----- | ----- | ------------- |
-| **0 — Scaffold + mocks** | Cargo workspace, rmcp server skeleton (stdio + streamable-HTTP `:3010` transports), all 6 traits + mock providers, `tools/list`/`tools/call` golden | Server lists all 32 tools with mocks; CI green |
+| **0 — Scaffold + mocks** | Cargo workspace, rmcp server skeleton (stdio + streamable-HTTP `:3010` transports), all 7 traits + mock providers, `tools/list`/`tools/call` golden | Server lists all 32 tools with mocks; CI green |
 | **1 — Hyprland I/O + security scaffolding** | wlr-screencopy capture, virtual-pointer/keyboard input, hyprctl WindowProvider; input sanitization, arg-constrained exec, path whitelist, audit skeleton, consent gate | Screenshot <50ms, click <10ms on real Hyprland; consent challenge on `system_command` |
-| **2 — AT-SPI2** | `AtspiUi` provider: tree, focus, find_element, AT-SPI action invocation (`invoke_element`); `set_spatial_focus` shipped process-scoped; `screen_highlight` validates args then returns `-32010 ProviderUnavailable` — the layer-shell overlay is post-v1 | `get_ui_tree` <500ms on live session |
-| **3 — Vision + CDP** | ort OCR + OWL-ViT, model cache, `CdpBrowser` | `find_text_on_screen` <2s; `web_query` on :9222 |
-| **4 — Enterprise** | HTTP auth surface (`uxcp_*` enforcement on `:3010`, fail-closed bind), token-bucket rate limiting (10 req/s), AES-256-GCM history, JSONL audit rotation, 4 shipped metrics, health endpoints (Sentry: planned post-v1) | Threat-model table fully enforced; `/metrics` live |
-| **5 — Portability + packaging** | uinput/portal fallback chains (session-agnostic — they also cover X11 sessions; the X11-native provider rungs are post-v1), systemd unit, packaging | Boots and degrades cleanly on non-Hyprland Wayland and X11 |
+| **2 — AT-SPI2** | `AtspiUi` provider: tree, focus, multi-match `find_element`, AT-SPI action invocation (`invoke_element`); `set_spatial_focus` shipped process-scoped; `screen_highlight` draws a real `zwlr_layer_shell_v1` overlay (the layer-shell `Overlay` backend landed at v1.1.0) | `get_ui_tree` <500ms on live session |
+| **3 — Vision + CDP** | ort OCR + OWL-ViT, model cache, `CdpBrowser`, blake3-keyed OCR/icon result cache (v1.1.0) | `find_text_on_screen` <2s; `web_query` on :9222 |
+| **4 — Enterprise** | HTTP auth surface (`uxcp_*` enforcement on `:3010`, fail-closed bind), token-bucket rate limiting (10 req/s), AES-256-GCM history, JSONL audit rotation, 8 shipped metrics, health endpoints, opt-in Sentry via `ULTRANIX_MCP_SENTRY_DSN` (wired at v1.1.0) | Threat-model table fully enforced; `/metrics` live |
+| **5 — Portability + packaging** | uinput/portal fallback chains (session-agnostic), X11-native rungs (`scrot`/`xdotool`/`wmctrl`, shipped at v1.1.0), PipeWire RemoteDesktop stream consumption (v1.1.0), systemd unit, packaging, `server.json` registry manifest | Boots and degrades cleanly on non-Hyprland Wayland and X11 |
 
 ## References
 

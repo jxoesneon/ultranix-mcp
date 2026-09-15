@@ -48,9 +48,11 @@ use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Once, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
+use dashmap::DashMap;
 use image::{ImageFormat, RgbImage, imageops::FilterType};
 use ort::ep::ExecutionProviderDispatch;
 use ort::session::Session;
@@ -187,6 +189,9 @@ struct Inner {
     state: StateDir,
     ocr: OnceLock<Result<OcrEngine, String>>,
     icon: OnceLock<Result<IconEngine, String>>,
+    /// Detection-result cache (ARCHITECTURE §6): blake3-keyed, TTL
+    /// [`OCR_CACHE_TTL`], capped at [`OCR_CACHE_CAP`] entries.
+    cache: DashMap<String, (Instant, Vec<Detection>)>,
 }
 
 struct OcrEngine {
@@ -215,6 +220,7 @@ impl OnnxVision {
                 state,
                 ocr: OnceLock::new(),
                 icon: OnceLock::new(),
+                cache: DashMap::new(),
             }),
         })
     }
@@ -282,6 +288,62 @@ fn build_session(path: &Path) -> Result<Session> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Detection-result cache (ARCHITECTURE §6): a fresh `recognize_text` /
+// `find_icon` inference costs up to ~2 s on CPU, while tools routinely
+// re-query the same frame (e.g. `find_text_on_screen` retries). Cache
+// hits are keyed on the full PNG bytes plus query params — a changed
+// pixel or query is always a miss. Entries expire after
+// [`OCR_CACHE_TTL`] and the map is capped at [`OCR_CACHE_CAP`] entries
+// (oldest evicted on insert).
+// ---------------------------------------------------------------------------
+
+/// TTL for one cached detection result.
+const OCR_CACHE_TTL: Duration = Duration::from_secs(10);
+/// Max entries in the result cache.
+const OCR_CACHE_CAP: usize = 64;
+
+type ResultCache = DashMap<String, (Instant, Vec<Detection>)>;
+
+/// `recognize_text` cache key — the full frame bytes.
+fn ocr_cache_key(png: &[u8]) -> String {
+    format!("ocr:{}", blake3::hash(png).to_hex())
+}
+
+/// `find_icon` cache key — frame bytes plus the natural-language query.
+fn icon_cache_key(png: &[u8], description: &str) -> String {
+    format!("icon:{}:{}", blake3::hash(png).to_hex(), description)
+}
+
+/// Cache hit: `Some` only when the entry exists and is younger than
+/// [`OCR_CACHE_TTL`]; an expired entry is evicted on the way out.
+fn cache_get(cache: &ResultCache, key: &str, now: Instant) -> Option<Vec<Detection>> {
+    let entry = cache.get(key)?;
+    if now.duration_since(entry.0) >= OCR_CACHE_TTL {
+        drop(entry);
+        cache.remove(key);
+        crate::metrics::set_ocr_cache_entries(cache.len());
+        return None;
+    }
+    Some(entry.1.clone())
+}
+
+/// Insert `dets` under `key`, evicting the oldest entry first when the
+/// map is at capacity.
+fn cache_put(cache: &ResultCache, key: String, dets: Vec<Detection>, now: Instant) {
+    if !cache.contains_key(&key) && cache.len() >= OCR_CACHE_CAP {
+        let oldest = cache
+            .iter()
+            .min_by_key(|e| e.value().0)
+            .map(|e| e.key().clone());
+        if let Some(k) = oldest {
+            cache.remove(&k);
+        }
+    }
+    cache.insert(key, (now, dets));
+    crate::metrics::set_ocr_cache_entries(cache.len());
+}
+
 impl Inner {
     /// Lazily fetch + load the OCR pipeline. `OnceLock` memoizes failures
     /// too — a broken cache/network doesn't retry-download per call.
@@ -326,8 +388,23 @@ impl Inner {
         })
     }
 
-    /// Blocking OCR: det → boxes → rec per box → `Detection`s.
+    /// Blocking OCR with the 10 s result cache in front (ARCHITECTURE
+    /// §6): identical frame bytes within the TTL return the memoized
+    /// `Detection`s and never touch the sessions.
     fn recognize(&self, png: &[u8]) -> Result<Vec<Detection>> {
+        let key = ocr_cache_key(png);
+        let now = Instant::now();
+        if let Some(hit) = cache_get(&self.cache, &key, now) {
+            return Ok(hit);
+        }
+        let dets = self.recognize_uncached(png)?;
+        // Timestamp at completion so inference time doesn't eat the TTL.
+        cache_put(&self.cache, key, dets.clone(), Instant::now());
+        Ok(dets)
+    }
+
+    /// Uncached OCR: det → boxes → rec per box → `Detection`s.
+    fn recognize_uncached(&self, png: &[u8]) -> Result<Vec<Detection>> {
         let img = decode_png_rgb(png)?;
         let engine = self.ocr()?;
 
@@ -412,8 +489,21 @@ impl Inner {
         Ok(ctc_greedy_decode(logits, t, c, &engine.keys))
     }
 
-    /// Blocking OWL-ViT zero-shot detection for one text query.
+    /// Blocking OWL-ViT zero-shot detection for one text query, behind
+    /// the same 10 s result cache as [`Self::recognize`].
     fn find_icon(&self, png: &[u8], description: &str) -> Result<Vec<Detection>> {
+        let key = icon_cache_key(png, description);
+        let now = Instant::now();
+        if let Some(hit) = cache_get(&self.cache, &key, now) {
+            return Ok(hit);
+        }
+        let dets = self.find_icon_uncached(png, description)?;
+        cache_put(&self.cache, key, dets.clone(), Instant::now());
+        Ok(dets)
+    }
+
+    /// Uncached OWL-ViT inference for `(png, description)`.
+    fn find_icon_uncached(&self, png: &[u8], description: &str) -> Result<Vec<Detection>> {
         let img = decode_png_rgb(png)?;
         let engine = self.icon()?;
 
@@ -819,11 +909,12 @@ fn ctc_greedy_decode(
                 best = i;
             }
         }
-        if best != 0 && best != prev {
-            if let Some(ch) = keys.get(best - 1) {
-                text.push_str(ch);
-                probs.push(best_p);
-            }
+        if best != 0
+            && best != prev
+            && let Some(ch) = keys.get(best - 1)
+        {
+            text.push_str(ch);
+            probs.push(best_p);
         }
         prev = best;
     }
@@ -930,6 +1021,13 @@ mod tests {
         assert_eq!((w, h), (128, 64)); // small frame: scale=1, rounded up to stride
         let (w, h) = det_resize_dims(1, 1);
         assert_eq!((w, h), (32, 32));
+        // Extreme aspect: the long edge still caps at DET_MAX_SIDE.
+        let (w, h) = det_resize_dims(4000, 30);
+        assert_eq!(w, 960);
+        assert_eq!(h, 32); // 30*0.24 → 7 → rounded up to one stride
+        // Portrait orientation scales the same way.
+        let (w, h) = det_resize_dims(30, 4000);
+        assert_eq!((w, h), (32, 960));
     }
 
     #[test]
@@ -997,6 +1095,11 @@ mod tests {
         // All-zero map → nothing.
         let zero = vec![0.0f32; (w * h) as usize];
         assert!(det_boxes(&zero, w, h, 1, 1, 1.0, 1.0).is_empty());
+        // A strong but sub-DET_MIN_EDGE speck is dropped before unclip.
+        let mut speck = vec![0.0f32; (w * h) as usize];
+        speck[(4 * w + 4) as usize] = 0.95;
+        speck[(4 * w + 5) as usize] = 0.95; // 2x1 — under the 3px minimum
+        assert!(det_boxes(&speck, w, h, 1, 1, 1.0, 1.0).is_empty());
     }
 
     #[test]
@@ -1052,6 +1155,20 @@ mod tests {
         assert_eq!(conf, 0.0);
     }
 
+    #[test]
+    fn ctc_skips_classes_outside_the_dictionary() {
+        // 2 steps x 4 classes with a 2-entry dictionary: class 3 wins
+        // step 0 (no key → dropped), class 1 wins step 1.
+        let keys: Vec<String> = vec!["a".to_string(), "b".to_string()];
+        let logits = [
+            0.0, 0.1, 0.2, 0.9, // step 0: class 3 — beyond `keys`
+            0.0, 0.8, 0.2, 0.1, // step 1: class 1 → "a"
+        ];
+        let (text, conf) = ctc_greedy_decode(&logits, 2, 4, &keys);
+        assert_eq!(text, "a");
+        assert!((conf - 0.8).abs() < 1e-6);
+    }
+
     // --- CLIP padding ---
 
     #[test]
@@ -1069,6 +1186,18 @@ mod tests {
         assert_eq!(ids.len(), 8);
         assert_eq!(*ids.last().unwrap(), 49407); // EOS preserved
         assert_eq!(mask, [1; 8]);
+    }
+
+    #[test]
+    fn clip_pad_empty_and_exact_fit() {
+        // Empty encoding → all padding, all masked out.
+        let (ids, mask) = clip_pad_ids(&[], 4);
+        assert_eq!(ids, [OWL_PAD_ID; 4]);
+        assert_eq!(mask, [0; 4]);
+        // Exactly `len` tokens → no padding needed, full mask.
+        let (ids, mask) = clip_pad_ids(&[1, 2, 3, 4], 4);
+        assert_eq!(ids, [1, 2, 3, 4]);
+        assert_eq!(mask, [1; 4]);
     }
 
     // --- icon post-processing ---
@@ -1123,6 +1252,26 @@ mod tests {
         assert_eq!(kept.len(), 2);
         assert!((kept[0].confidence - 0.9).abs() < 1e-6);
         assert_eq!(kept[1].rect, c);
+
+        // Touching-but-not-overlapping edges → IoU 0, both kept.
+        let d = Rect {
+            x: 10,
+            y: 0,
+            w: 10,
+            h: 10,
+        };
+        assert_eq!(iou(&a, &d), 0.0);
+        // Degenerate zero-area boxes never overlap.
+        let z = Rect {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        };
+        assert_eq!(iou(&a, &z), 0.0);
+        assert_eq!(iou(&z, &z), 0.0);
+        // nms on an empty input is a no-op.
+        assert!(nms(vec![], 0.5).is_empty());
     }
 
     #[test]
@@ -1234,6 +1383,47 @@ mod tests {
     }
 
     #[test]
+    fn fetch_to_supports_file_urls() {
+        let dir = tmp_dir("fetch");
+        let src = dir.join("src.bin");
+        fs::write(&src, b"payload").unwrap();
+        let dest = dir.join("out.bin");
+        fetch_to(&format!("file://{}", src.display()), &dest).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"payload");
+        // A missing source errors rather than creating a partial file.
+        assert!(
+            fetch_to(
+                &format!("file://{}/missing.bin", dir.display()),
+                &dir.join("nope.bin"),
+            )
+            .is_err()
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ort_probe_is_panic_free() {
+        // The probe is `catch_unwind`-guarded: it must return a bool
+        // whatever the ORT load state is.
+        let _ = ort_probe();
+    }
+
+    #[test]
+    fn build_session_errors_on_missing_or_garbage_model() {
+        if !ort_probe() {
+            // ORT unavailable in this environment (e.g. load-dynamic
+            // with no ORT_DYLIB_PATH) — nothing to exercise.
+            return;
+        }
+        let dir = tmp_dir("sess");
+        assert!(build_session(&dir.join("missing.onnx")).is_err());
+        let garbage = dir.join("g.onnx");
+        fs::write(&garbage, b"this is not an onnx model").unwrap();
+        assert!(build_session(&garbage).is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn ensure_model_redownloads_corrupted_cache() {
         let dir = tmp_dir("model-fix");
         let models = dir.join("models");
@@ -1254,6 +1444,141 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    // --- detection-result cache (ARCHITECTURE §6) ---
+
+    fn det(text: &str) -> Detection {
+        Detection {
+            text: text.into(),
+            rect: Rect {
+                x: 1,
+                y: 2,
+                w: 3,
+                h: 4,
+            },
+            confidence: 0.9,
+        }
+    }
+
+    #[test]
+    fn cache_hit_returns_memoized_detections() {
+        let cache = ResultCache::new();
+        let now = Instant::now();
+        assert!(cache_get(&cache, "k", now).is_none());
+        cache_put(&cache, "k".into(), vec![det("hello")], now);
+        let hit = cache_get(&cache, "k", now + Duration::from_secs(5)).unwrap();
+        assert_eq!(hit.len(), 1);
+        assert_eq!(hit[0].text, "hello");
+        assert_eq!(
+            hit[0].rect,
+            Rect {
+                x: 1,
+                y: 2,
+                w: 3,
+                h: 4
+            }
+        );
+    }
+
+    #[test]
+    fn cache_entries_expire_at_ttl() {
+        let cache = ResultCache::new();
+        let now = Instant::now();
+        cache_put(&cache, "k".into(), vec![det("x")], now);
+        let just_inside = now + OCR_CACHE_TTL - Duration::from_millis(1);
+        assert!(cache_get(&cache, "k", just_inside).is_some());
+        // At/over the TTL boundary: miss, and the stale entry is evicted.
+        assert!(cache_get(&cache, "k", now + OCR_CACHE_TTL).is_none());
+        assert!(!cache.contains_key("k"));
+    }
+
+    #[test]
+    fn cache_evicts_oldest_at_cap() {
+        let cache = ResultCache::new();
+        let now = Instant::now();
+        for i in 0..OCR_CACHE_CAP {
+            cache_put(
+                &cache,
+                format!("k{i}"),
+                vec![det("x")],
+                now + Duration::from_millis(i as u64),
+            );
+        }
+        assert_eq!(cache.len(), OCR_CACHE_CAP);
+        cache_put(
+            &cache,
+            "new".into(),
+            vec![det("y")],
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(cache.len(), OCR_CACHE_CAP);
+        assert!(cache.get("k0").is_none()); // oldest evicted
+        assert!(cache.get("k1").is_some());
+        assert!(cache.get("new").is_some());
+    }
+
+    #[test]
+    fn cache_reinsert_refreshes_without_evicting() {
+        let cache = ResultCache::new();
+        let now = Instant::now();
+        for i in 0..OCR_CACHE_CAP {
+            cache_put(&cache, format!("k{i}"), vec![det("x")], now);
+        }
+        cache_put(
+            &cache,
+            "k0".into(),
+            vec![det("fresh")],
+            now + Duration::from_millis(1),
+        );
+        assert_eq!(cache.len(), OCR_CACHE_CAP);
+        assert_eq!(cache.get("k0").unwrap().1[0].text, "fresh");
+    }
+
+    #[test]
+    fn recognize_and_find_icon_serve_cache_hits() {
+        // A pre-warmed cache short-circuits before any engine init —
+        // the OnceLocks stay untouched and no model is fetched.
+        let dir = tmp_dir("cache-hit");
+        let inner = Inner {
+            state: StateDir::at(dir.join("state")),
+            ocr: OnceLock::new(),
+            icon: OnceLock::new(),
+            cache: DashMap::new(),
+        };
+        let png = b"fake png bytes";
+        cache_put(
+            &inner.cache,
+            ocr_cache_key(png),
+            vec![det("cached")],
+            Instant::now(),
+        );
+        let out = inner.recognize(png).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text, "cached");
+        assert!(inner.ocr.get().is_none());
+
+        cache_put(
+            &inner.cache,
+            icon_cache_key(png, "gear"),
+            vec![det("icon")],
+            Instant::now(),
+        );
+        let out = inner.find_icon(png, "gear").unwrap();
+        assert_eq!(out[0].text, "icon");
+        assert!(inner.icon.get().is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cache_keys_distinguish_frame_and_query() {
+        assert_eq!(ocr_cache_key(b"a"), ocr_cache_key(b"a"));
+        assert_ne!(ocr_cache_key(b"a"), ocr_cache_key(b"b"));
+        // The capability prefix keeps an OCR entry from colliding with
+        // an icon entry over the same frame.
+        assert_ne!(ocr_cache_key(b"a"), icon_cache_key(b"a", "x"));
+        assert_ne!(icon_cache_key(b"a", "x"), icon_cache_key(b"a", "y"));
+        assert_ne!(icon_cache_key(b"a", "x"), icon_cache_key(b"b", "x"));
+    }
+
     // --- end-to-end, gated: needs real models + network on first run ---
 
     #[test]
@@ -1268,6 +1593,7 @@ mod tests {
                 state: StateDir::at(dir.join("state")),
                 ocr: OnceLock::new(),
                 icon: OnceLock::new(),
+                cache: DashMap::new(),
             }),
         };
         // White frame with a black filled "icon-ish" block.

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.jxoesneon/ultranix-mcp",
+  "description": "Secure Linux desktop automation via MCP — input, screen/OCR/vision, AT-SPI2 UI tree, window control",
+  "version": "1.1.0",
+  "title": "ultranix-mcp",
+  "repository": {
+    "url": "https://github.com/jxoesneon/ultranix-mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/jxoesneon/ultranix-mcp",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/jxoesneon/ultranix-mcp:1.1.0",
+      "version": "1.1.0",
+      "transport": { "type": "stdio" },
+      "runtimeHint": "docker",
+      "environmentVariables": [
+        { "name": "ULTRANIX_MCP_API_KEY", "description": "API key(s) (uxcp_*) for HTTP transport auth — required for --transport http (fail-closed), unused on stdio", "isRequired": false, "isSecret": true },
+        { "name": "ULTRANIX_MCP_API_KEY_FILE", "description": "Path to a 0600 file holding uxcp_* keys, one per line", "isRequired": false, "isSecret": false },
+        { "name": "ULTRANIX_MCP_API_KEY_EXPIRES", "description": "Optional RFC 3339 expiry for the env-sourced key (self-revoking)", "isRequired": false, "isSecret": false },
+        { "name": "ULTRANIX_MCP_HISTORY_SECRET", "description": "AES-256-GCM secret for encrypted action history (per-install generated if unset)", "isRequired": false, "isSecret": true },
+        { "name": "ULTRANIX_MCP_SENTRY_DSN", "description": "Optional Sentry DSN for error reporting (unset = disabled)", "isRequired": false, "isSecret": true }
+      ]
+    }
+  ],
+  "remotes": [],
+  "keywords": ["mcp", "linux", "wayland", "hyprland", "automation", "accessibility", "ocr", "computer-use", "rust"]
+}

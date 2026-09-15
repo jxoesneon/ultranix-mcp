@@ -1,11 +1,11 @@
 # ultranix-mcp
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](Cargo.toml)
 [![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%28Wayland%20%2B%20Hyprland%29-lightgrey.svg)](https://hyprland.org/)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org/)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-rmcp-purple.svg)](https://github.com/modelcontextprotocol/rust-sdk)
-[![Status](https://img.shields.io/badge/status-1.0.0%20implemented-brightgreen.svg)](ROADMAP.md)
+[![Status](https://img.shields.io/badge/status-1.1.0%20implemented-brightgreen.svg)](ROADMAP.md)
 
 **ultranix-mcp is the enterprise-grade, secure Linux desktop-automation layer
 for AI agents.** It gives Model Context Protocol (MCP) clients — Claude
@@ -23,8 +23,10 @@ combine a cross-compositor fallback ladder, a full governance surface, and a
 tri-OS sibling contract — organisations can let agents control a Linux
 desktop without giving up control themselves.
 
-> **Status:** v1.0.0 implemented. Phases 0–5 of
-> [ROADMAP.md](ROADMAP.md) have shipped — see
+> **Status:** v1.1.0 implemented. Phases 0–5 of
+> [ROADMAP.md](ROADMAP.md) have shipped, plus the v1.1.0 wave (layer-shell
+> overlay, X11-native providers, PipeWire portal capture, opt-in Sentry,
+> OCR cache, additional metrics) — see
 > [CHANGELOG.md](CHANGELOG.md) for per-release notes. The verified target
 > environment is **CachyOS (Arch) + Hyprland on Wayland**, PipeWire,
 > `xdg-desktop-portal-hyprland`, and a live AT-SPI2 bus, on Rust 1.98.1.
@@ -41,10 +43,10 @@ desktop without giving up control themselves.
 - **📸 Intelligent Vision** — in-process `wlr-screencopy-unstable-v1` capture,
   ONNX Runtime OCR (`ort` crate), and OWL-ViT icon finding. Region
   screenshots, color sampling (`color_at`), and session spatial focus
-  (`set_spatial_focus` scopes `screenshot`/`find_text_on_screen`/`find_icon`).
-  *Caveat:* `screen_highlight` is not yet implemented — it validates its
-  arguments then fails loudly with `-32010 ProviderUnavailable` (no
-  layer-shell overlay backend exists yet; post-v1 — see
+  (`set_spatial_focus` scopes `screenshot`/`find_text_on_screen`/`find_icon`),
+  and real `screen_highlight` overlays via `zwlr_layer_shell_v1`
+  (translucent, click-through; `-32010 ProviderUnavailable` on
+  compositors/sessions without layer-shell — see
   [docs/TOOLS.md](docs/TOOLS.md)).
 - **🪟 Window Management** — list, focus, move, resize, close, and inspect
   windows through Hyprland's `hyprctl` IPC socket (`hyprctl -j` JSON:
@@ -80,6 +82,7 @@ tool surface testable without a Wayland session.
 | `WindowProvider` | Window list/focus/move/close | `hyprctl` IPC socket (new vs. ultrawin) |
 | `VisionProvider` | OCR, icon finding | `ort` (ONNX Runtime; CPU, OpenVINO, CUDA EPs) |
 | `BrowserProvider` | Web queries, DOM access | CDP bridge on `127.0.0.1:9222` |
+| `OverlayProvider` | `screen_highlight` overlay | `zwlr_layer_shell_v1` (Wayland-only) |
 
 **Backend priority ladder.** At startup the server detects the session via
 `XDG_CURRENT_DESKTOP` and `HYPRLAND_INSTANCE_SIGNATURE`, then binds each
@@ -91,8 +94,9 @@ provider to the best available backend:
 3. **XDG Desktop Portal** — `Screenshot` and `RemoteDesktop` over `zbus`
    (universal fallback, subject to portal consent)
 
-X11-native provider rungs (`scrot`/`xdotool`/`wmctrl`) are post-v1 — on X11
-sessions only the portal/uinput rungs resolve.
+On X11 sessions the X11-native rungs shipped at v1.1.0 resolve instead:
+`scrot` capture, `xdotool` input (both still ahead of portal/uinput), and
+`wmctrl` window management on non-Hyprland X11.
 
 ```mermaid
 graph TB
@@ -304,7 +308,7 @@ following variables are supported:
 | `ULTRANIX_MCP_DISABLE_AUTH` | Escape hatch: disable HTTP auth (dev only; stdio is always unauthenticated). | `false` | No |
 | `ULTRANIX_MCP_LOG_LEVEL` | `tracing` verbosity (`error`, `warn`, `info`, `debug`, `trace`). | `info` | No |
 | `ULTRANIX_MCP_BIND` | Bind address for the streamable-HTTP server (equivalent to the `--bind` flag). | `127.0.0.1:3010` | No |
-| `ULTRANIX_MCP_SENTRY_DSN` | DSN for Sentry error tracking — **planned, post-v1**: the variable is documented but not yet wired to any exporter. | _Not implemented_ | No |
+| `ULTRANIX_MCP_SENTRY_DSN` | DSN for Sentry error tracking — opt-in; the `sentry-tracing` layer attaches only when the DSN parses (unset/empty/malformed = disabled, with a warning on malformed). | _Unset — disabled_ | No |
 
 **Key-dir fallback.** When neither `ULTRANIX_MCP_API_KEY` nor
 `ULTRANIX_MCP_API_KEY_FILE` is set, the server scans
@@ -387,8 +391,10 @@ catalog (full schemas, per-tool errors, and consent semantics).*
 
 See [ROADMAP.md](ROADMAP.md) for the six-phase delivery plan — all of
 Phases 0–5 (scaffold → Hyprland I/O → AT-SPI2 → vision/CDP → enterprise →
-portability/packaging) shipped as of v1.0.0 — and
-[CHANGELOG.md](CHANGELOG.md) for release notes.
+portability/packaging) shipped as of v1.0.0, and the v1.1.0 wave added the
+layer-shell `screen_highlight` overlay, X11-native providers, PipeWire
+portal capture, opt-in Sentry, the OCR result cache, and four more
+Prometheus metrics — and [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## 📚 Documentation
 

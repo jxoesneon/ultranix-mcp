@@ -227,22 +227,34 @@ async fn type_text(
         // Delayed path types char-by-char: re-check the active window
         // between key events and abort the remaining sequence on a focus
         // change (docs/TOOLS.md §Focus Safety) instead of typing the tail
-        // into the wrong window.
+        // into the wrong window. Each re-check is a provider round-trip,
+        // so it's throttled: the first inter-char gap is always checked
+        // (short sequences must still abort mid-way), then every 16th
+        // character or ≥100 ms since the last check. The post-loop check
+        // below catches anything in the unchecked remainder.
         let mut chars = p.text.chars().peekable();
         let mut typed = 0usize;
+        let mut last_focus_check = std::time::Instant::now();
         while let Some(ch) = chars.next() {
             backend!(input.type_text(&ch.to_string()).await);
             typed += 1;
             if chars.peek().is_some() {
-                if let (Some(before), Some(now)) =
-                    (focus_before.as_ref(), focused_window_id(providers).await)
-                    && &now != before
-                {
-                    return Ok(tool_error(format!(
-                        "FocusChanged: active window changed mid-action \
-                         (was {before}, now {now}); typed {typed} of \
-                         {n_chars} characters, aborted the rest"
-                    )));
+                let check_due = focus_before.is_some()
+                    && (typed == 1
+                        || typed.is_multiple_of(16)
+                        || last_focus_check.elapsed() >= Duration::from_millis(100));
+                if check_due {
+                    last_focus_check = std::time::Instant::now();
+                    if let (Some(before), Some(now)) =
+                        (focus_before.as_ref(), focused_window_id(providers).await)
+                        && &now != before
+                    {
+                        return Ok(tool_error(format!(
+                            "FocusChanged: active window changed mid-action \
+                             (was {before}, now {now}); typed {typed} of \
+                             {n_chars} characters, aborted the rest"
+                        )));
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(p.delay_ms)).await;
             }

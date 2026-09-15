@@ -53,19 +53,6 @@ fn rect_geometry(r: Rect) -> String {
     format!("{},{} {}x{}", r.x, r.y, r.w, r.h)
 }
 
-/// Parse `hyprctl cursorpos` output — modern JSON `{"x":N,"y":M}` or the
-/// legacy `x, y` pair.
-fn parse_cursorpos(s: &str) -> Option<(i32, i32)> {
-    let t = s.trim();
-    if let Ok(v) = serde_json::from_str::<Value>(t) {
-        let x = v.get("x")?.as_i64()?;
-        let y = v.get("y")?.as_i64()?;
-        return Some((x as i32, y as i32));
-    }
-    let (xs, ys) = t.split_once(',')?;
-    Some((xs.trim().parse().ok()?, ys.trim().parse().ok()?))
-}
-
 impl GrimCapture {
     /// Geometry for a region capture: interactive `slurp` when installed
     /// (blocks for a user drag — intended UX for a region request; bounded
@@ -126,20 +113,12 @@ impl GrimCapture {
         })
     }
 
-    /// `hyprctl -j <sub>` → stdout bytes, non-zero exit is an error.
-    async fn hyprctl(&self, sub: &str) -> Result<Vec<u8>> {
-        let hyprctl = self
-            .hyprctl
-            .as_ref()
-            .ok_or_else(|| anyhow!("hyprctl not on PATH at pin time"))?;
-        let mut cmd = spawn::command(hyprctl, &["-j", sub]);
-        let out = spawn::output_within(&mut cmd, spawn::SUBPROCESS_TIMEOUT)
-            .await
-            .with_context(|| format!("run hyprctl {sub}"))?;
-        if !out.status.success() {
-            bail!("hyprctl {sub} exited {}", out.status);
-        }
-        Ok(out.stdout)
+    /// The pinned `hyprctl` binary, or an error when it was absent at
+    /// pin time.
+    fn hyprctl_bin(&self) -> Result<&Path> {
+        self.hyprctl
+            .as_deref()
+            .ok_or_else(|| anyhow!("hyprctl not on PATH at pin time"))
     }
 }
 
@@ -156,14 +135,11 @@ impl CaptureProvider for GrimCapture {
     }
 
     async fn cursor_position(&self) -> Result<(i32, i32)> {
-        let stdout = self.hyprctl("cursorpos").await?;
-        parse_cursorpos(&String::from_utf8_lossy(&stdout))
-            .ok_or_else(|| anyhow!("unparseable hyprctl cursorpos output"))
+        super::common::hyprctl_cursorpos(self.hyprctl_bin()?).await
     }
 
     async fn screen_info(&self) -> Result<Value> {
-        let stdout = self.hyprctl("monitors").await?;
-        serde_json::from_slice(&stdout).context("parse hyprctl monitors JSON")
+        super::common::hyprctl_monitors(self.hyprctl_bin()?).await
     }
 }
 
@@ -190,6 +166,7 @@ mod tests {
 
     #[test]
     fn parse_cursorpos_json_and_pair() {
+        use crate::providers::common::parse_cursorpos;
         assert_eq!(parse_cursorpos("{\"x\":1017,\"y\":664}"), Some((1017, 664)));
         assert_eq!(parse_cursorpos("1234, 567"), Some((1234, 567)));
         assert_eq!(parse_cursorpos("garbage"), None);

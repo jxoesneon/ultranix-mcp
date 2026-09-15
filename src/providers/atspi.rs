@@ -46,9 +46,10 @@ use atspi::proxy::application::ApplicationProxy;
 use atspi::proxy::component::ComponentProxy;
 use atspi::zbus::{self, names::BusName, proxy::CacheProperties};
 use atspi::{AccessibilityConnection, CoordType, ObjectRefOwned, Role, State};
+use futures_util::future::join_all;
 use serde_json::{Map, Value, json};
 
-use crate::traits::{Rect, UIAutomationProvider};
+use crate::traits::{ElementMatch, Rect, UIAutomationProvider};
 
 /// Hard cap on nodes serialized by `get_root_json` (TOOLS.md contract:
 /// trees over the cap set `"truncated": true` on the root).
@@ -280,6 +281,37 @@ fn query_matches(query: &Query, name: &str, description: &str, role: &str) -> bo
     }
 }
 
+/// Resolve the requested `action` name to a `DoAction` index over the
+/// action names an element advertises. Activation verbs resolve against
+/// common AT-SPI action names, falling back to index 0 (by convention
+/// the default action). Pure — exercised by the unit tests so the
+/// matching contract is verified without a live bus.
+fn resolve_action_index<'a>(names: impl Iterator<Item = &'a str>, action: &str) -> Option<i32> {
+    let names: Vec<&str> = names.collect();
+    let wanted = action.trim().to_ascii_lowercase();
+    // Activation verbs resolve against common AT-SPI action names,
+    // falling back to the conventional default action (index 0).
+    let activation = matches!(
+        wanted.as_str(),
+        "press" | "activate" | "click" | "default" | ""
+    );
+    let aliases: &[&str] = if activation {
+        &["press", "activate", "click", "select"]
+    } else {
+        &[]
+    };
+    names
+        .iter()
+        .position(|a| a.eq_ignore_ascii_case(&wanted))
+        .or_else(|| {
+            names
+                .iter()
+                .position(|a| aliases.iter().any(|al| a.eq_ignore_ascii_case(al)))
+        })
+        .or_else(|| activation.then_some(0))
+        .map(|i| i as i32)
+}
+
 /// Object-path match for `path:` queries: exact, or path-suffix so
 /// `path:/42` matches `/org/a11y/atspi/accessible/42`.
 fn object_path_matches(object_path: &str, value: &str) -> bool {
@@ -448,21 +480,29 @@ impl AtspiUi {
         Some(Rect { x, y, w, h })
     }
 
-    /// Fetch the serializable fields of `acc` (children added by the walk).
+    /// Fetch the serializable fields of `acc` (children added by the
+    /// walk). The five property calls run concurrently — each is an
+    /// independent [`DBUS_TIMEOUT`]-wrapped D-Bus call.
     async fn node_meta(&self, acc: &AccessibleProxy<'_>) -> Node {
-        let bounds = match Self::object_ref(acc) {
-            Some(obj) => self.extents_at(&obj).await,
-            None => None,
+        let obj = Self::object_ref(acc);
+        let bounds_fut = async {
+            match obj {
+                Some(ref o) => self.extents_at(o).await,
+                None => None,
+            }
         };
+        let (bounds, name, role, description, states) = tokio::join!(
+            bounds_fut,
+            dbus(acc.name()),
+            dbus(acc.get_role()),
+            dbus(acc.description()),
+            dbus(acc.get_state()),
+        );
         Node {
-            name: dbus(acc.name()).await.unwrap_or_default(),
-            role: dbus(acc.get_role())
-                .await
-                .map(role_kebab)
-                .unwrap_or_else(|_| "unknown".into()),
-            description: dbus(acc.description()).await.unwrap_or_default(),
-            states: dbus(acc.get_state())
-                .await
+            name: name.unwrap_or_default(),
+            role: role.map(role_kebab).unwrap_or_else(|_| "unknown".into()),
+            description: description.unwrap_or_default(),
+            states: states
                 .map(|ss| ss.iter().map(state_name).collect())
                 .unwrap_or_default(),
             bounds,
@@ -487,22 +527,24 @@ impl AtspiUi {
             }
             let mut node = self.node_meta(acc).await;
 
-            if depth_left > 0 {
-                if let Ok(refs) = dbus(acc.get_children()).await {
-                    for r in refs {
-                        if r.is_null() || budget.visited >= budget.limit {
-                            if budget.visited >= budget.limit {
-                                budget.truncated = true;
-                            }
-                            break;
-                        }
-                        let Some(child) = self.accessible_at(&r).await else {
-                            continue;
-                        };
-                        match self.build_node(&child, depth_left - 1, budget).await {
-                            Some(n) => node.children.push(n),
-                            None => break,
-                        }
+            if depth_left > 0
+                && let Ok(refs) = dbus(acc.get_children()).await
+            {
+                // Child proxy builds dominate the walk — run them in
+                // parallel (null refs end the sibling list, as before).
+                // The recursion itself stays serial so budget
+                // accounting and child order are unchanged.
+                let live: Vec<&ObjectRefOwned> = refs.iter().take_while(|r| !r.is_null()).collect();
+                let children = join_all(live.iter().map(|r| self.accessible_at(r))).await;
+                for child in children {
+                    if budget.visited >= budget.limit {
+                        budget.truncated = true;
+                        break;
+                    }
+                    let Some(child) = child else { continue };
+                    match self.build_node(&child, depth_left - 1, budget).await {
+                        Some(n) => node.children.push(n),
+                        None => break,
                     }
                 }
             }
@@ -513,21 +555,22 @@ impl AtspiUi {
 
     // ---- element search -------------------------------------------------
 
-    /// Children of `acc` as accessible proxies (dead/skipped refs dropped).
+    /// Children of `acc` as accessible proxies (dead/skipped refs
+    /// dropped). Proxy builds run in parallel; result order matches the
+    /// `get_children` order.
     async fn children_of(&self, acc: &AccessibleProxy<'_>) -> Vec<AccessibleProxy<'_>> {
         let Ok(refs) = dbus(acc.get_children()).await else {
             return Vec::new();
         };
-        let mut out = Vec::with_capacity(refs.len());
-        for r in refs {
-            if r.is_null() {
-                continue;
-            }
-            if let Some(p) = self.accessible_at(&r).await {
-                out.push(p);
-            }
-        }
-        out
+        join_all(
+            refs.iter()
+                .filter(|r| !r.is_null())
+                .map(|r| self.accessible_at(r)),
+        )
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
     }
 
     /// Application refs from the desktop root, ordered so the app owning
@@ -540,24 +583,22 @@ impl AtspiUi {
         let mut apps = dbus(root.get_children()).await.unwrap_or_default();
         apps.retain(|r| !r.is_null());
 
-        // Find the app with an Active-state top-level window.
-        let mut active_idx = None;
-        'apps: for (i, r) in apps.iter().enumerate() {
+        // Find the app with an Active-state top-level window. The
+        // per-app scans run in parallel — each reports whether one of
+        // its windows carries `State::Active`; the first match in root
+        // order still wins.
+        let active = join_all(apps.iter().map(|r| async move {
             let Some(app) = self.accessible_at(r).await else {
-                continue;
+                return false;
             };
-            for w in self.children_of(&app).await {
-                if dbus(w.get_state())
-                    .await
-                    .map(|s| s.contains(State::Active))
-                    .unwrap_or(false)
-                {
-                    active_idx = Some(i);
-                    break 'apps;
-                }
-            }
-        }
-        if let Some(i) = active_idx {
+            let windows = self.children_of(&app).await;
+            join_all(windows.iter().map(|w| dbus(w.get_state())))
+                .await
+                .into_iter()
+                .any(|s| s.map(|ss| ss.contains(State::Active)).unwrap_or(false))
+        }))
+        .await;
+        if let Some(i) = active.iter().position(|a| *a) {
             apps.swap(0, i);
         }
         Ok(apps)
@@ -663,6 +704,65 @@ impl AtspiUi {
             }
         }
         Ok(None)
+    }
+
+    /// Multi-match variant of [`Self::search_node`]: preorder DFS
+    /// collecting up to `limit` matches (with metadata) into `out`.
+    fn search_node_all<'a>(
+        &'a self,
+        acc: &'a AccessibleProxy<'a>,
+        query: &'a Query,
+        budget: &'a mut Budget,
+        out: &'a mut Vec<Node>,
+        limit: usize,
+    ) -> BoxFut<'a, ()> {
+        Box::pin(async move {
+            if out.len() >= limit || !budget.take() {
+                return;
+            }
+            if self.node_matches(acc, query).await {
+                out.push(self.node_meta(acc).await);
+            }
+            if out.len() >= limit {
+                return;
+            }
+            for child in self.children_of(acc).await {
+                if out.len() >= limit || budget.visited >= budget.limit {
+                    break;
+                }
+                self.search_node_all(&child, query, budget, out, limit)
+                    .await;
+            }
+        })
+    }
+
+    /// All matches for `query` across applications (active-window owner
+    /// first), capped at `limit`, in preorder tree order — the harvest
+    /// behind [`UIAutomationProvider::find_elements`].
+    async fn find_matches(&self, query: &Query, limit: usize) -> Result<Vec<Node>> {
+        if let Query::IndexPath(indices) = query {
+            let Some(obj) = self.navigate_index_path(indices).await? else {
+                return Ok(Vec::new());
+            };
+            let Some(acc) = self.accessible_at(&obj).await else {
+                return Ok(Vec::new());
+            };
+            return Ok(vec![self.node_meta(&acc).await]);
+        }
+
+        let mut budget = Budget::new(MAX_SEARCH_NODES);
+        let mut out = Vec::new();
+        for app_ref in self.ordered_apps().await? {
+            let Some(app) = self.accessible_at(&app_ref).await else {
+                continue;
+            };
+            self.search_node_all(&app, query, &mut budget, &mut out, limit)
+                .await;
+            if out.len() >= limit || budget.visited >= budget.limit {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     // ---- focus ----------------------------------------------------------
@@ -783,6 +883,32 @@ impl UIAutomationProvider for AtspiUi {
         Ok(self.extents_at(&obj).await)
     }
 
+    /// Real multi-match: every element satisfying `query`, up to
+    /// `limit`, in preorder tree order with name/role/states harvested
+    /// via [`Self::node_meta`]. Elements that expose no `Component`
+    /// interface report a zeroed `bounds` — they still matched.
+    async fn find_elements(&self, query: &str, limit: usize) -> Result<Vec<ElementMatch>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let query = parse_query(query)?;
+        let nodes = self.find_matches(&query, limit).await?;
+        Ok(nodes
+            .into_iter()
+            .map(|n| ElementMatch {
+                name: n.name,
+                role: n.role,
+                states: n.states,
+                bounds: n.bounds.unwrap_or(Rect {
+                    x: 0,
+                    y: 0,
+                    w: 0,
+                    h: 0,
+                }),
+            })
+            .collect())
+    }
+
     /// Find the match, then invoke its default AT-SPI Action
     /// (`do_action(0)` — by convention the first action is the default).
     /// `Ok(false)` when nothing matched or the element exposes no
@@ -807,31 +933,10 @@ impl UIAutomationProvider for AtspiUi {
         if actions.is_empty() {
             return Ok(false);
         }
-        let wanted = action.trim().to_ascii_lowercase();
-        // Activation verbs resolve against common AT-SPI action names,
-        // falling back to the conventional default action (index 0).
-        let activation = matches!(
-            wanted.as_str(),
-            "press" | "activate" | "click" | "default" | ""
-        );
-        let aliases: &[&str] = if activation {
-            &["press", "activate", "click", "select"]
-        } else {
-            &[]
-        };
-        let idx = actions
-            .iter()
-            .position(|a| a.name.eq_ignore_ascii_case(&wanted))
-            .or_else(|| {
-                actions
-                    .iter()
-                    .position(|a| aliases.iter().any(|al| a.name.eq_ignore_ascii_case(al)))
-            })
-            .or_else(|| activation.then_some(0));
-        let Some(i) = idx else {
+        let Some(i) = resolve_action_index(actions.iter().map(|a| a.name.as_str()), action) else {
             return Ok(false);
         };
-        dbus(proxy.do_action(i as i32))
+        dbus(proxy.do_action(i))
             .await
             .context("atspi do_action failed")
     }
@@ -1046,6 +1151,160 @@ mod tests {
         assert!(!b.take());
         assert!(b.truncated);
         assert_eq!(b.visited, 2);
+        // A zero-limit budget truncates on the very first node.
+        let mut b = Budget::new(0);
+        assert!(!b.take());
+        assert!(b.truncated);
+        assert_eq!(b.visited, 0);
+    }
+
+    // ---- query parsing edge cases -------------------------------------
+
+    #[test]
+    fn parse_path_query_edge_cases() {
+        // Whitespace inside the `path:` value is trimmed by parse_query.
+        assert_eq!(
+            parse_query("path: /0/1").unwrap(),
+            Query::IndexPath(vec![0, 1])
+        );
+        // Negative indices parse as an index path (navigation reports
+        // out-of-range as not-found at walk time).
+        assert_eq!(parse_query("path:/-1").unwrap(), Query::IndexPath(vec![-1]));
+        // A trailing-slash segment is not an integer → object path.
+        assert_eq!(
+            parse_query("path:/0/").unwrap(),
+            Query::ObjectPath("/0/".into())
+        );
+        // Mixed numeric/non-numeric → object path.
+        assert_eq!(
+            parse_query("path:/0/x").unwrap(),
+            Query::ObjectPath("/0/x".into())
+        );
+        // A path value with no leading slash is an object-path suffix.
+        assert_eq!(
+            parse_query("path:accessible/7").unwrap(),
+            Query::ObjectPath("accessible/7".into())
+        );
+    }
+
+    #[test]
+    fn parse_rejects_more_empties() {
+        assert!(parse_query("desc:").is_err());
+        assert!(parse_query("description:   ").is_err());
+        assert!(parse_query("path:  ").is_err());
+    }
+
+    #[test]
+    fn object_path_matches_edge_cases() {
+        let p = "/org/a11y/atspi/accessible/42";
+        // Trailing slashes on the query are ignored.
+        assert!(object_path_matches(p, "/42/"));
+        // "/" alone carries no signal.
+        assert!(!object_path_matches(p, "/"));
+        assert!(!object_path_matches(p, ""));
+        // Non-"/" values match by plain path suffix — "2" does match
+        // ".../42" and even a mid-segment partial like "le/42" (tail of
+        // "accessible/42") hits; documented behavior for `path:…` queries.
+        assert!(object_path_matches(p, "2"));
+        assert!(object_path_matches(p, "le/42"));
+        assert!(!object_path_matches(p, "ess/42"));
+        // But a "/…" query cannot match mid-segment: "/2" ≠ ".../42".
+        assert!(!object_path_matches(p, "/2"));
+    }
+
+    // ---- matching: non-node query kinds never hit nodes -----------------
+
+    #[test]
+    fn query_matches_rejects_path_kinds() {
+        // ObjectPath/IndexPath are resolved by navigation, not per-node
+        // attribute checks.
+        assert!(!query_matches(
+            &Query::ObjectPath("/x".into()),
+            "x",
+            "x",
+            "x"
+        ));
+        assert!(!query_matches(&Query::IndexPath(vec![0]), "x", "x", "x"));
+    }
+
+    #[test]
+    fn contains_ci_empty_needle_never_matches() {
+        // An empty needle must not degenerate into a match-everything.
+        assert!(!contains_ci("anything", ""));
+        assert!(contains_ci("Anything", "any"));
+    }
+
+    // ---- serialization helpers ----------------------------------------
+
+    #[test]
+    fn center_and_bounds_json() {
+        let r = Rect {
+            x: 10,
+            y: 20,
+            w: 30,
+            h: 40,
+        };
+        assert_eq!(bounds_json(r), json!({"x": 10, "y": 20, "w": 30, "h": 40}));
+        assert_eq!(center_json(r), json!({"x": 25, "y": 40}));
+        // Odd sizes truncate toward the top-left half — integer math is
+        // deliberate (compositor pixel centers).
+        let odd = Rect {
+            x: 0,
+            y: 0,
+            w: 3,
+            h: 3,
+        };
+        assert_eq!(center_json(odd), json!({"x": 1, "y": 1}));
+    }
+
+    // ---- action resolution ---------------------------------------------
+
+    #[test]
+    fn resolve_action_prefers_exact_name() {
+        let names = ["press", "scroll", "show-menu"];
+        // Exact (case-insensitive) name wins over the alias/default arms.
+        assert_eq!(
+            resolve_action_index(names.iter().copied(), "SCROLL"),
+            Some(1)
+        );
+        assert_eq!(
+            resolve_action_index(names.iter().copied(), "show-menu"),
+            Some(2)
+        );
+        assert_eq!(
+            resolve_action_index(names.iter().copied(), "nonexistent"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_action_activation_verbs_hit_aliases_and_default() {
+        // An element with an oddly-named first action still resolves
+        // "press" → index 0 via the conventional default.
+        let names = ["frob"];
+        assert_eq!(
+            resolve_action_index(names.iter().copied(), "press"),
+            Some(0)
+        );
+        assert_eq!(
+            resolve_action_index(names.iter().copied(), "click"),
+            Some(0)
+        );
+        assert_eq!(resolve_action_index(names.iter().copied(), ""), Some(0));
+        // A non-default alias resolves to its real index.
+        let names = ["check", "activate"];
+        assert_eq!(
+            resolve_action_index(names.iter().copied(), "default"),
+            Some(1)
+        );
+        // Non-activation verbs have no default fallback.
+        assert_eq!(resolve_action_index(names.iter().copied(), "toggle"), None);
+        // Whitespace around the name is trimmed before matching.
+        let names = ["press"];
+        assert_eq!(
+            resolve_action_index(names.iter().copied(), "  press  "),
+            Some(0)
+        );
     }
 
     // ---- live bus (opt-in; read-only; NEVER invoke) ---------------------

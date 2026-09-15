@@ -547,8 +547,6 @@ impl CaptureProvider for SpyCapture {
 // ---------------------------------------------------------------------------
 
 /// All non-gated tools return Ok with non-empty content under all-mocks.
-/// (`screen_highlight` is excluded: it honestly reports -32010 until the
-/// layer-shell overlay backend lands — covered below.)
 #[tokio::test]
 async fn happy_path_every_ungated_tool() {
     // This test installs a spatial-focus rect via valid_args; hold the
@@ -567,6 +565,7 @@ async fn happy_path_every_ungated_tool() {
         "key_control",
         "screenshot",
         "screen_info",
+        "screen_highlight",
         "color_at",
         "set_spatial_focus",
         "get_ui_tree",
@@ -1122,12 +1121,14 @@ async fn capture_backend_failure_is_tool_error() {
 
 #[tokio::test]
 async fn screen_info_highlight_color_at() {
-    let c = ctx(Providers::all_mocks());
+    let mut providers = Providers::all_mocks();
+    providers.overlay = None;
+    let c = ctx(providers);
     let res = secured(&c, "screen_info", args(json!({}))).await.unwrap();
     assert!(json_of(&res)["monitors"].is_array());
 
-    // No overlay backend exists — the call validates then reports
-    // -32010 ProviderUnavailable (a no-op success would be a lie).
+    // No overlay backend — the call validates then reports -32010
+    // ProviderUnavailable (a no-op success would be a lie).
     let res = secured(
         &c,
         "screen_highlight",
@@ -1910,7 +1911,7 @@ async fn provider_absent_matrix() {
         (
             "screen_highlight",
             json!({"x":0,"y":0,"w":5,"h":5,"duration_ms":200}),
-            "CaptureProvider",
+            "OverlayProvider",
         ),
         ("color_at", json!({"x":0,"y":0}), "CaptureProvider"),
         ("get_ui_tree", json!({}), "UIAutomationProvider"),

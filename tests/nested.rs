@@ -63,10 +63,10 @@ impl StdioClient {
             for line in BufReader::new(stdout).lines() {
                 match line {
                     Ok(l) if !l.trim().is_empty() => {
-                        if let Ok(v) = serde_json::from_str::<Value>(&l) {
-                            if tx.send(v).is_err() {
-                                return;
-                            }
+                        if let Ok(v) = serde_json::from_str::<Value>(&l)
+                            && tx.send(v).is_err()
+                        {
+                            return;
                         }
                     }
                     _ => return,

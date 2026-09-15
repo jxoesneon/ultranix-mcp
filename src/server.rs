@@ -29,6 +29,11 @@ pub struct UltraNixServer {
 
 impl UltraNixServer {
     pub fn new(providers: Providers, categories: Vec<String>) -> Self {
+        // Startup health surface: one `ultranix_mcp_backend_active{backend}`
+        // series per initialised backend (docs/ARCHITECTURE.md §7).
+        for backend in &providers.backend_names {
+            crate::metrics::set_backend_active(backend);
+        }
         Self {
             providers: Arc::new(providers),
             categories: if categories.is_empty() {
@@ -217,6 +222,7 @@ async fn http_gate(
             }
             Err(f) => {
                 crate::metrics::record_rate_rejection("auth");
+                crate::metrics::record_auth_failure(f.reason());
                 audit_rejection("auth_rejected", &remote_id);
                 tracing::warn!(reason = f.reason(), %remote, "HTTP auth rejected");
                 return (

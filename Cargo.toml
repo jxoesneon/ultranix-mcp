@@ -1,8 +1,8 @@
 [package]
 name = "ultranix-mcp"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Rust MCP server for Linux desktop automation — Wayland/Hyprland-first"
 license = "ISC"
 repository = "https://github.com/jxoesneon/ultranix-mcp"
@@ -58,6 +58,18 @@ tokenizers = { version = "0.22", default-features = false, features = ["fancy-re
 aes-gcm = "0.10"
 # ULID record ids — 26-char Crockford Base32, lexically time-sortable.
 ulid = "1"
+# Optional Sentry error reporting — initialised only when
+# ULTRANIX_MCP_SENTRY_DSN is set (src/main.rs); with no DSN the client is
+# never built, so the cost is zero. The `tracing` feature ships the
+# sentry-tracing subscriber layer so `tracing::error!` events reach
+# Sentry; panics ride the default `panic` integration.
+sentry = { version = "0.49", features = ["tracing"] }
+# PipeWire stream consumer for the portal capture path: when the
+# Screenshot portal is absent but RemoteDesktop is present, frames are
+# pulled from the granted PipeWire fd (src/providers/portal_capture.rs).
+pipewire = "0.10"
+blake3 = "1.8.7"
+dashmap = "6.2.1"
 
 [features]
 default = []

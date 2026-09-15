@@ -23,8 +23,8 @@ use std::sync::Arc;
 
 use crate::providers::Providers;
 use crate::traits::{
-    BrowserProvider, CaptureProvider, InputProvider, UIAutomationProvider, VisionProvider,
-    WindowProvider,
+    BrowserProvider, CaptureProvider, InputProvider, OverlayProvider, UIAutomationProvider,
+    VisionProvider, WindowProvider,
 };
 
 /// Session class derived from `XDG_SESSION_TYPE`, with display-variable
@@ -109,6 +109,8 @@ pub enum CaptureBackend {
     Grim,
     /// XDG `org.freedesktop.portal.Screenshot` — universal last resort.
     Portal,
+    /// `scrot` subprocess — X11-native capture.
+    Scrot,
 }
 
 /// Ordered candidates for the input slot.
@@ -116,6 +118,8 @@ pub enum CaptureBackend {
 pub enum InputBackend {
     /// wlr-virtual-pointer + virtual-keyboard (compositor-native).
     Wlr,
+    /// `xdotool` subprocess — X11-native injection.
+    Xdotool,
     /// `/dev/uinput` kernel-level injection — display-agnostic fallback.
     UInput,
     /// XDG `org.freedesktop.portal.RemoteDesktop` — universal last resort.
@@ -127,6 +131,15 @@ pub enum InputBackend {
 pub enum WindowBackend {
     /// `hyprctl` IPC (`$XDG_RUNTIME_DIR/hypr/$HIS/.socket.sock`).
     Hyprctl,
+    /// `wmctrl` + `xdotool` — X11 EWMH window management.
+    Wmctrl,
+}
+
+/// Ordered candidates for the visual-overlay slot (`screen_highlight`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayBackend {
+    /// `zwlr_layer_shell_v1` — short-lived translucent overlay surface.
+    WlrLayerShell,
 }
 
 /// Ordered candidates for the UI-automation slot.
@@ -161,17 +174,21 @@ pub struct DetectionPlan {
     pub ui_automation: Vec<UiAutomationBackend>,
     pub vision: Vec<VisionBackend>,
     pub browser: Vec<BrowserBackend>,
+    pub overlay: Vec<OverlayBackend>,
 }
 
 /// Map a session snapshot onto the per-slot fallback ladders.
 ///
 /// Ladder policy (per spec):
-/// - capture: `Wlr → Grim → Portal → None` (wlr rungs are Wayland-only;
-///   the portal rung also candidated on X11 — it's session-agnostic)
-/// - input: `Wlr → UInput → Portal → None` (Wayland prefers
-///   compositor-native injection; uinput and the portal are
-///   display-agnostic so they also candidated on X11)
-/// - window: `Hyprctl → None` (Hyprland sessions only)
+/// - capture: `Wlr → Grim → Portal → None` on Wayland;
+///   `Scrot → Portal → None` on X11 (portal is session-agnostic)
+/// - input: `Wlr → UInput → Portal → None` on Wayland;
+///   `Xdotool → UInput → Portal → None` on X11 (X11-native first —
+///   uinput needs the udev rule)
+/// - window: `Hyprctl → None` on Hyprland; `Wmctrl → None` on other
+///   X11 sessions
+/// - overlay: `WlrLayerShell → None` on Wayland only (the layer-shell
+///   protocol has no X11 analogue)
 /// - ui_automation: `Atspi → None` on any non-headless session — the
 ///   accessibility bus is compositor-agnostic (Wayland and X11 alike)
 /// - vision: `Onnx → None` on any non-headless session — frames come
@@ -186,7 +203,7 @@ pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
             CaptureBackend::Grim,
             CaptureBackend::Portal,
         ],
-        SessionType::X11 => vec![CaptureBackend::Portal],
+        SessionType::X11 => vec![CaptureBackend::Scrot, CaptureBackend::Portal],
         SessionType::Headless => vec![],
     };
 
@@ -196,14 +213,25 @@ pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
             InputBackend::UInput,
             InputBackend::Portal,
         ],
-        SessionType::X11 => vec![InputBackend::UInput, InputBackend::Portal],
+        SessionType::X11 => vec![
+            InputBackend::Xdotool,
+            InputBackend::UInput,
+            InputBackend::Portal,
+        ],
         SessionType::Headless => vec![],
     };
 
     let window = if session.is_hyprland {
         vec![WindowBackend::Hyprctl]
+    } else if session.session_type == SessionType::X11 {
+        vec![WindowBackend::Wmctrl]
     } else {
         vec![]
+    };
+
+    let overlay = match session.session_type {
+        SessionType::Wayland => vec![OverlayBackend::WlrLayerShell],
+        SessionType::X11 | SessionType::Headless => vec![],
     };
 
     let ui_automation = match session.session_type {
@@ -228,6 +256,7 @@ pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
         ui_automation,
         vision,
         browser,
+        overlay,
     }
 }
 
@@ -273,6 +302,10 @@ pub fn detect_providers(session: &SessionInfo) -> Providers {
     if let Some((_, name)) = &browser {
         backend_names.push(*name);
     }
+    let overlay = detect_overlay(&plan.overlay);
+    if let Some((_, name)) = &overlay {
+        backend_names.push(*name);
+    }
 
     let providers = Providers {
         capture: capture.map(|(p, _)| p),
@@ -281,6 +314,7 @@ pub fn detect_providers(session: &SessionInfo) -> Providers {
         ui_automation: ui_automation.map(|(p, _)| p),
         vision: vision.map(|(p, _)| p),
         browser: browser.map(|(p, _)| p),
+        overlay: overlay.map(|(p, _)| p),
         backend_names,
     };
 
@@ -291,6 +325,7 @@ pub fn detect_providers(session: &SessionInfo) -> Providers {
         ui_automation = providers.ui_automation.is_some(),
         vision = providers.vision.is_some(),
         browser = providers.browser.is_some(),
+        overlay = providers.overlay.is_some(),
         "provider detection complete"
     );
 
@@ -319,6 +354,12 @@ fn detect_capture(
                 if let Some(p) = crate::providers::portal_capture::PortalCapture::new() {
                     tracing::info!(backend = "portal-screenshot", "capture provider registered");
                     return Some((Arc::new(p), "portal-screenshot"));
+                }
+            }
+            CaptureBackend::Scrot => {
+                if let Some(p) = crate::providers::x11_capture::X11Capture::new() {
+                    tracing::info!(backend = "scrot", "capture provider registered");
+                    return Some((Arc::new(p), "scrot"));
                 }
             }
         }
@@ -352,6 +393,12 @@ fn detect_input(candidates: &[InputBackend]) -> Option<(Arc<dyn InputProvider>, 
                     return Some((Arc::new(p), "portal-remote-desktop"));
                 }
             }
+            InputBackend::Xdotool => {
+                if let Some(p) = crate::providers::x11_input::X11Input::new() {
+                    tracing::info!(backend = "xdotool", "input provider registered");
+                    return Some((Arc::new(p), "xdotool"));
+                }
+            }
         }
     }
     tracing::debug!("input: no backend registered");
@@ -366,6 +413,12 @@ fn detect_window(candidates: &[WindowBackend]) -> Option<(Arc<dyn WindowProvider
                 if let Some(p) = crate::providers::hyprctl::HyprctlWindow::new() {
                     tracing::info!(backend = "hyprctl", "window provider registered");
                     return Some((Arc::new(p), "hyprctl"));
+                }
+            }
+            WindowBackend::Wmctrl => {
+                if let Some(p) = crate::providers::x11_window::X11Window::new() {
+                    tracing::info!(backend = "wmctrl", "window provider registered");
+                    return Some((Arc::new(p), "wmctrl"));
                 }
             }
         }
@@ -423,6 +476,23 @@ fn detect_browser(
     None
 }
 
+fn detect_overlay(
+    candidates: &[OverlayBackend],
+) -> Option<(Arc<dyn OverlayProvider>, &'static str)> {
+    for &candidate in candidates {
+        match candidate {
+            OverlayBackend::WlrLayerShell => {
+                if let Some(p) = crate::providers::overlay::Overlay::new() {
+                    tracing::info!(backend = "wlr-layer-shell", "overlay provider registered");
+                    return Some((Arc::new(p), "wlr-layer-shell"));
+                }
+            }
+        }
+    }
+    tracing::debug!("overlay: no backend registered");
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,6 +540,7 @@ mod tests {
             ]
         );
         assert_eq!(plan.window, vec![WindowBackend::Hyprctl]);
+        assert_eq!(plan.overlay, vec![OverlayBackend::WlrLayerShell]);
     }
 
     #[test]
@@ -504,6 +575,7 @@ mod tests {
             ]
         );
         assert!(plan.window.is_empty());
+        assert_eq!(plan.overlay, vec![OverlayBackend::WlrLayerShell]);
     }
 
     #[test]
@@ -517,13 +589,24 @@ mod tests {
         assert!(!s.is_hyprland);
 
         let plan = plan_backends(&s);
-        // No X11-native capture backend — the portal rung is
-        // session-agnostic and the only candidate.
-        assert_eq!(plan.capture, vec![CaptureBackend::Portal]);
-        // uinput is display-agnostic — a legitimate X11 candidate,
-        // with the portal behind it.
-        assert_eq!(plan.input, vec![InputBackend::UInput, InputBackend::Portal]);
-        assert!(plan.window.is_empty());
+        // X11-native `scrot` first, the portal behind it.
+        assert_eq!(
+            plan.capture,
+            vec![CaptureBackend::Scrot, CaptureBackend::Portal]
+        );
+        // X11-native `xdotool` first, then the display-agnostic rungs.
+        assert_eq!(
+            plan.input,
+            vec![
+                InputBackend::Xdotool,
+                InputBackend::UInput,
+                InputBackend::Portal,
+            ]
+        );
+        // EWMH window management via `wmctrl`.
+        assert_eq!(plan.window, vec![WindowBackend::Wmctrl]);
+        // No layer-shell protocol on X11.
+        assert!(plan.overlay.is_empty());
     }
 
     #[test]
@@ -540,6 +623,7 @@ mod tests {
         assert!(plan.capture.is_empty());
         assert!(plan.input.is_empty());
         assert!(plan.window.is_empty());
+        assert!(plan.overlay.is_empty());
     }
 
     #[test]
@@ -602,6 +686,45 @@ mod tests {
         ]));
         assert!(!s.is_hyprland);
         assert!(plan_backends(&s).window.is_empty());
+    }
+
+    #[test]
+    fn session_wide_slots_follow_display_presence() {
+        // ui_automation / vision / browser ride along on any session
+        // with a display — they are compositor-agnostic.
+        let wl = SessionInfo::from_env(fake_env(&[("WAYLAND_DISPLAY", "wayland-0")]));
+        let plan = plan_backends(&wl);
+        assert_eq!(plan.ui_automation, vec![UiAutomationBackend::Atspi]);
+        assert_eq!(plan.vision, vec![VisionBackend::Onnx]);
+        assert_eq!(plan.browser, vec![BrowserBackend::Cdp]);
+
+        let x = SessionInfo::from_env(fake_env(&[("DISPLAY", ":0")]));
+        let plan = plan_backends(&x);
+        assert_eq!(plan.ui_automation, vec![UiAutomationBackend::Atspi]);
+        assert_eq!(plan.vision, vec![VisionBackend::Onnx]);
+        assert_eq!(plan.browser, vec![BrowserBackend::Cdp]);
+
+        // Headless: nothing to automate → all three slots empty.
+        let h = SessionInfo::from_env(fake_env(&[]));
+        let plan = plan_backends(&h);
+        assert!(plan.ui_automation.is_empty());
+        assert!(plan.vision.is_empty());
+        assert!(plan.browser.is_empty());
+    }
+
+    #[test]
+    fn hyprland_signature_wins_even_on_x11_typed_session() {
+        // A session that reports `x11` but carries the instance
+        // signature (e.g. Xwayland-only display var) still gets the
+        // hyprctl window backend — the signature check precedes the
+        // X11 fallback.
+        let s = SessionInfo::from_env(fake_env(&[
+            ("XDG_SESSION_TYPE", "x11"),
+            ("HYPRLAND_INSTANCE_SIGNATURE", "deadbeef_1700000000"),
+            ("DISPLAY", ":0"),
+        ]));
+        assert!(s.is_hyprland);
+        assert_eq!(plan_backends(&s).window, vec![WindowBackend::Hyprctl]);
     }
 
     #[test]

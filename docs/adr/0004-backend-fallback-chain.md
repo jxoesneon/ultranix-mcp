@@ -44,9 +44,9 @@ Requirements:
 
   | Provider | Chain |
   | -------- | ----- |
-  | Capture | `wlr-screencopy-unstable-v1` (in-process) → `grim`/`slurp` → portal `Screenshot` (zbus) → `scrot`/X11 *(post-v1)* → `None` |
-  | Input | `zwlr_virtual_pointer_v1` + `virtual-keyboard-unstable-v1` → `/dev/uinput` evdev → portal `RemoteDesktop` → `xdotool` *(post-v1)* → `None` |
-  | Window | `hyprctl` IPC socket → `wmctrl` (X11) *(post-v1)* → `None` |
+  | Capture | `wlr-screencopy-unstable-v1` (in-process) → `grim`/`slurp` → portal `Screenshot` (zbus) → `scrot`/X11 *(shipped at v1.1.0 — first rung on X11 sessions)* → `None` |
+  | Input | `zwlr_virtual_pointer_v1` + `virtual-keyboard-unstable-v1` → `/dev/uinput` evdev → portal `RemoteDesktop` → `xdotool` *(shipped at v1.1.0 — first rung on X11 sessions)* → `None` |
+  | Window | `hyprctl` IPC socket → `wmctrl` (X11) *(shipped at v1.1.0)* → `None` |
   | UI Automation | AT-SPI2 via `atspi` → `None` |
   | Vision | `ort` ONNX: CPU EP → OpenVINO EP → CUDA EP → `None` |
   | Browser | CDP WebSocket `127.0.0.1:9222` → `None` |
@@ -67,7 +67,7 @@ Requirements:
 **Positive:**
 
 - **Maximum reach:** one binary serves Hyprland fast paths, generic Wayland via
-  portal/uinput, and (post-v1) X11 via scrot/xdotool/wmctrl.
+  portal/uinput, and (since v1.1.0) X11 via scrot/xdotool/wmctrl.
 - **Honest failure modes:** `None` surfaces as a structured MCP error plus a
   `/readyz` signal, so agents and operators can see exactly which capabilities a
   session offers — no half-working tools.
@@ -85,8 +85,8 @@ Requirements:
 - **Probe latency at startup:** portal D-Bus checks can block; probes run
   concurrently with per-backend timeouts (~2s each) so startup stays <5s.
 - **Capability skew between sessions:** the same tool behaves differently across
-  environments (e.g., `get_windows` is rich on Hyprland, would be coarse under
-  the post-v1 `wmctrl` rung); the tool contract documents per-backend
+  environments (e.g., `get_windows` is rich on Hyprland, coarser under the
+  v1.1.0 `wmctrl` rung); the tool contract documents per-backend
   fidelity differences.
 
 **Follow-ups:**

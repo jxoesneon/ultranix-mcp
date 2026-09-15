@@ -5,6 +5,71 @@ All notable changes to ultranix-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-09-15
+
+The post-v1 backlog wave: every item the v1.0.0 docs flagged as "planned /
+post-v1" that had a real implementation path has now landed.
+
+### Added
+
+- `OverlayProvider` + real `screen_highlight` — `src/providers/overlay.rs`
+  draws a short-lived `zwlr_layer_shell_v1` overlay surface (translucent
+  fill + opaque border, click-through empty input region, per-output
+  placement by rect centre, bounded 5 s configure wait). On X11, headless,
+  or layer-shell-less compositors the tool returns `-32010
+  ProviderUnavailable` with `data.provider = "OverlayProvider"`.
+- `find_element` is now multi-match: it returns up to 10 matches
+  (`name`/`role`/`states`/`bounds`/`center` each) via
+  `UIAutomationProvider::find_elements`.
+- X11-native providers: `x11_capture.rs` (`scrot` frames, `xdotool
+  getmouselocation`, `xrandr`/`xdotool` geometry), `x11_input.rs`
+  (`xdotool`), `x11_window.rs` (`wmctrl` + `xdotool` + `xprop`). Detect
+  ladders on X11: capture `Scrot → Portal`, input `Xdotool → UInput →
+  Portal`, window `Wmctrl` (non-Hyprland X11). Backend names: `"scrot"`,
+  `"xdotool"`, `"wmctrl"`. `xrandr`/`xprop` joined the startup pin set as
+  provider-internal helpers — they have no `validate_command` arm, so
+  `system_command` still cannot invoke them.
+- PipeWire stream consumption in `PortalCapture`: when a portal backend
+  advertises `RemoteDesktop` but not `Screenshot`, capture runs
+  `CreateSession → SelectSources → Start → OpenPipeWireRemote` and pulls
+  one video buffer over the granted fd (BGRx/BGRA/RGBx/RGBA, 5 s bounded
+  grab, session always closed). `Screenshot` remains preferred when
+  advertised.
+- Opt-in Sentry error reporting via `ULTRANIX_MCP_SENTRY_DSN`: parsed
+  before tracing init; the `sentry-tracing` layer attaches only when the
+  DSN parses; a malformed DSN logs a warning and continues without Sentry.
+- Four new Prometheus series — `ultranix_mcp_auth_failures_total{reason}`,
+  `ultranix_mcp_backend_active{backend}`,
+  `ultranix_mcp_action_history_size`, `ultranix_mcp_ocr_cache_entries` —
+  for 8 shipped series total (canonical catalog: docs/ARCHITECTURE.md §7).
+- OCR/icon result cache in `onnx_vision.rs`: `DashMap`, blake3-keyed
+  (`ocr:{frame_hash}` / `icon:{frame_hash}:{desc}`), 10 s TTL, 64-entry
+  cap with oldest-first eviction — `find_text_on_screen`'s cached path is
+  real.
+- `server.json` registry manifest at repo root (schema 2025-09-29,
+  camelCase fields; passes `mcp-publisher validate`).
+- `providers/common.rs` — shared hyprctl degraded-read helpers, the evdev
+  key/button table, and `wl_output` geometry records deduplicated out of
+  the individual backends.
+
+### Changed
+
+- AT-SPI traversal is parallelized: `atspi.rs` uses `join_all` for child
+  proxy builds and per-app active-window scans; `MAX_SEARCH_NODES`/
+  `MAX_TREE_NODES` budgets and ordering semantics are unchanged.
+- Audit appends and history `clear()` moved onto `spawn_blocking` — no
+  blocking store work on the async executor.
+- `type_text` focus re-checks are throttled on the delayed path: first
+  inter-key gap, then every 16th char or ≥100 ms, plus the post-loop check
+  (see TOOLS.md §Focus Safety).
+
+### Still deferred (honest notes)
+
+- `wait_for_ui_element` still repeats a full AT-SPI scan per 250 ms poll —
+  no element cache.
+- Clipboard tools (`wl-copy`/`wl-paste`), the Nix flake, and the
+  per-backend cargo-feature split remain post-v1.
+
 ## [1.0.0] — 2026-09-15
 
 First stable release — the union of [0.1.0]–[0.5.0] plus the Council-of-Five
@@ -199,7 +264,9 @@ drift before tagging.
 
 ## Version History
 
-- **1.0.0** (in progress): First stable release — all six delivery phases
+- **1.1.0**: Post-v1 wave — layer-shell overlay, X11-native providers,
+  PipeWire portal capture, Sentry, OCR cache, 4 new metrics.
+- **1.0.0**: First stable release — all six delivery phases
   landed across 0.1.0–0.5.0.
 - **0.1.0–0.5.0** (2026-09-15): Phase-by-phase delivery on the verified
   target environment — CachyOS (Arch) + Hyprland on Wayland, PipeWire,

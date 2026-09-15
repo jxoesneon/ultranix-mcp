@@ -123,7 +123,7 @@ impl RateLimiter {
         let now = Instant::now();
         let mut inner = self.inner.lock().expect("rate limiter poisoned");
         inner.ops += 1;
-        if inner.ops % GC_EVERY_OPS == 0 || inner.buckets.len() > MAX_IDENTITIES {
+        if inner.ops.is_multiple_of(GC_EVERY_OPS) || inner.buckets.len() > MAX_IDENTITIES {
             evict_stale(&mut inner.buckets, now);
         }
         let bucket = inner

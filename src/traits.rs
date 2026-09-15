@@ -33,6 +33,18 @@ pub struct Detection {
     pub confidence: f32,
 }
 
+/// One match from [`UIAutomationProvider::find_elements`]: whatever
+/// accessibility metadata the backend can supply plus the bounding rect.
+/// `name`/`role` are `""` and `states` empty when the backend reports
+/// geometry only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ElementMatch {
+    pub name: String,
+    pub role: String,
+    pub states: Vec<String>,
+    pub bounds: Rect,
+}
+
 /// A window record returned by [`WindowProvider`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowInfo {
@@ -88,6 +100,25 @@ pub trait UIAutomationProvider: Send + Sync {
     /// Find an element matching `query` (role/name/text). Returns its
     /// bounding rect when found.
     async fn find_element(&self, query: &str) -> Result<Option<Rect>>;
+    /// All matches for `query`, capped at `limit`, in tree order. The
+    /// default impl wraps [`find_element`](Self::find_element) into a
+    /// single-element vec with empty `name`/`role`/`states`; backends
+    /// that can enumerate multiple hits (AT-SPI) override it.
+    async fn find_elements(&self, query: &str, limit: usize) -> Result<Vec<ElementMatch>> {
+        let Some(bounds) = self.find_element(query).await? else {
+            return Ok(Vec::new());
+        };
+        Ok(if limit == 0 {
+            Vec::new()
+        } else {
+            vec![ElementMatch {
+                name: String::new(),
+                role: String::new(),
+                states: Vec::new(),
+                bounds,
+            }]
+        })
+    }
     /// Invoke the element's default action (AT-SPI `Action` interface).
     async fn invoke_element(&self, query: &str) -> Result<bool>;
     /// Invoke a *named* action on the matched element — the
@@ -120,6 +151,15 @@ pub trait VisionProvider: Send + Sync {
     async fn recognize_text(&self, frame: &Frame) -> Result<Vec<Detection>>;
     /// Locate UI icons matching a natural-language description.
     async fn find_icon(&self, frame: &Frame, description: &str) -> Result<Vec<Detection>>;
+}
+
+/// On-screen highlight overlay (wlr-layer-shell).
+#[async_trait]
+pub trait OverlayProvider: Send + Sync {
+    /// Draw a translucent rectangle over `rect` for `duration_ms`, then
+    /// remove it. Purely visual — implementations must not affect
+    /// capture or input.
+    async fn highlight(&self, rect: Rect, duration_ms: u64) -> Result<()>;
 }
 
 /// Browser bridge (Chrome DevTools Protocol, loopback :9222).

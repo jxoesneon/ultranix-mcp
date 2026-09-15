@@ -1,7 +1,7 @@
 # Security Policy
 
 **Project**: ultranix-mcp — Rust MCP server for Linux desktop automation (Wayland/Hyprland, CachyOS)
-**Status**: Implemented (v1.0.0) — this document describes the shipped security design. Where the implementation still lags this document (called out inline — e.g. optional Sentry reporting, planned post-v1), the gap is tracked as a defect or roadmap item.
+**Status**: Implemented (v1.1.0) — this document describes the shipped security design. Where the implementation still lags this document (called out inline), the gap is tracked as a defect or roadmap item.
 
 ultranix-mcp grants AI agents the ability to see the screen and inject input on a
 live desktop session. That is an inherently high-privilege capability. This

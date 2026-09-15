@@ -2,16 +2,19 @@
 
 ultranix-mcp's delivery plan for **v1.0.0** and beyond. Work proceeded in six
 phases, each with concrete deliverables, exit criteria, dependencies, and
-risk callouts — **Phases 0–5 are delivered as of v1.0.0** (see
-[CHANGELOG.md](CHANGELOG.md)). This is a living document — update it as
-direction shifts.
+risk callouts — **Phases 0–5 are delivered as of v1.0.0, and the v1.1.0 wave
+shipped the post-v1 items that had a real implementation path** (see
+[CHANGELOG.md](CHANGELOG.md) and [v1.1.0 — Post-v1 Wave](#v110--post-v1-wave-shipped)
+below). This is a living document — update it as direction shifts.
 
 Legend: `[x]` done · `[ ]` planned · phases are strictly ordered; a phase's
 exit criteria gate the next.
 
 **Verified target environment:** CachyOS (Arch), Hyprland on Wayland,
 PipeWire, `xdg-desktop-portal-hyprland`, live AT-SPI2 bus, Rust 1.98.1.
-Installed session tools: `hyprctl`, `grim`, `slurp`. Post-v1/optional:
+Installed session tools: `hyprctl`, `grim`, `slurp`. X11 sessions use the
+shipped `scrot`/`xdotool`/`wmctrl` rungs (`xrandr`/`xprop` are pinned as
+provider-internal helpers, not `system_command`-invocable). Post-v1/optional:
 `wl-copy` (planned clipboard tools). Not required: `gdbus`/`busctl` —
 removed from the command whitelist. Absent by design: `wtype`, `ydotool`,
 `tesseract` — ultranix-mcp does not depend on them.
@@ -139,7 +142,8 @@ Semantic access to application UI through the accessibility bus.
       `wait_for_ui_element`, `invoke_element`, `set_spatial_focus`
       (process-global rect scoping `screenshot`/`find_text_on_screen`/
       `find_icon`) — `screen_highlight` validates args then returns
-      `-32010 ProviderUnavailable` (no overlay backend yet; post-v1)
+      `-32010 ProviderUnavailable` when no overlay backend exists; the
+      `zwlr_layer_shell_v1` `Overlay` backend landed at v1.1.0
 - [x] Focus tracking across window/app switches (`get_focused_element`
       re-scans the live tree for `State::Focused`, so focus resolution
       follows window/app switches)
@@ -230,11 +234,12 @@ them.)
       skeleton to every tool invocation: `key_id`, `args_hash` (never raw
       args), duration, outcome, `prev_hash` chaining; 30-day rotation
       (configurable via `ULTRANIX_MCP_AUDIT_RETENTION_DAYS`)
-- [x] Prometheus `/metrics` (4 shipped series — see ARCHITECTURE.md §7);
-      `/health` and `/readyz` endpoints; `ultranix-mcp keygen` CLI
-- [ ] Optional Sentry error reporting via `ULTRANIX_MCP_SENTRY_DSN` —
-      **planned, post-v1** (the variable is documented but no exporter is
-      wired)
+- [x] Prometheus `/metrics` (4 series at v1.0.0; 8 as of v1.1.0 — see
+      ARCHITECTURE.md §7); `/health` and `/readyz` endpoints;
+      `ultranix-mcp keygen` CLI
+- [x] Optional Sentry error reporting via `ULTRANIX_MCP_SENTRY_DSN` —
+      **shipped at v1.1.0** (opt-in; the `sentry-tracing` layer attaches
+      only when the DSN parses, malformed DSN warns and disables)
 - [x] Admin tools: `metrics`, `get_action_history`, `replay_action`,
       `clear_action_history`
 
@@ -276,13 +281,13 @@ Off-Hyprland fallback paths and real distribution.
       (`SUBSYSTEM=="uinput", MODE="0660", GROUP="ultranix-input"` — a
       dedicated group holding only the service user, never `input`)
 - [x] XDG Desktop Portal backend over `zbus`: `Screenshot` and
-      `RemoteDesktop` portals (universal last resort). RemoteDesktop is
-      input-only: `SelectSources` is used solely to obtain output geometry
-      for absolute positioning — the granted PipeWire video fd is dropped
-      unopened
-- [ ] PipeWire stream consumption for portal `RemoteDesktop` sessions —
-      deliberately out of scope for v1 (no pixel consumer on the portal
-      path)
+      `RemoteDesktop` portals (universal last resort). `RemoteDesktop`
+      drives portal input; as of v1.1.0 the capture path also consumes the
+      granted PipeWire stream when `Screenshot` is not advertised
+- [x] PipeWire stream consumption for portal `RemoteDesktop` sessions —
+      **shipped at v1.1.0** (`CreateSession → SelectSources → Start →
+      OpenPipeWireRemote` → one video buffer, BGRx/BGRA/RGBx/RGBA, 5 s
+      bounded grab, session always closed)
 - [x] Nested-Hyprland integration test rig for real-Wayland CI
       (`tests/nested.rs` + `scripts/nested-test.sh`, gated behind
       `ULTRANIX_MCP_LIVE_TESTS=1`)
@@ -322,14 +327,41 @@ session's portal impl), `pkgbuild` tooling
 
 ---
 
+## v1.1.0 — Post-v1 Wave (shipped)
+
+The items the v1.0.0 docs marked post-v1 that had a real implementation
+path — all delivered:
+
+- [x] **Layer-shell overlay** — `OverlayProvider` on `zwlr_layer_shell_v1`
+      powers a real `screen_highlight` (translucent, click-through,
+      per-output placement); `ProviderUnavailable` off-Wayland
+- [x] **Multi-match `find_element`** — `find_elements` returns up to 10
+      matches with name/role/states/bounds/center
+- [x] **X11 session support** — `scrot`/`xdotool`/`wmctrl` provider rungs
+      (`xrandr`/`xprop` pinned as provider-internal helpers only)
+- [x] **PipeWire stream consumption** — portal `RemoteDesktop` capture path
+      consumes the granted PipeWire fd when `Screenshot` is absent
+- [x] **Sentry** — opt-in via `ULTRANIX_MCP_SENTRY_DSN`
+- [x] **Four additional metrics** — `auth_failures_total`,
+      `backend_active`, `action_history_size`, `ocr_cache_entries`
+- [x] **OCR result cache** — blake3-keyed `DashMap`, 10 s TTL, 64-entry cap
+- [x] **Parallel AT-SPI traversal** — `join_all` child-proxy builds and
+      per-app scans (budgets/ordering unchanged)
+- [x] **`spawn_blocking` audit/history** — blocking store work moved off
+      the async executor
+- [x] **Throttled `type_text` focus checks** — first gap, then every 16th
+      char or ≥100 ms, plus post-loop
+- [x] **`server.json` registry manifest** — `mcp-publisher validate`-clean
+
+Still open from the original backlog: `wait_for_ui_element` repeats a full
+AT-SPI scan per poll (no element cache yet).
+
 ## Post-v1 Ideas
 
 Exploration backlog — not committed, priority by demand.
 
 - **KDE/GNOME native backends** — KWin scripting and Mutter RemoteDesktop /
   gnome-shell providers behind the existing traits
-- **X11 session support** — XCB/XTest input plus `scrot`/`xdotool`/`wmctrl`
-  (already on the command whitelist) for legacy sessions
 - **GPU EP acceleration** — extend `ort` beyond CPU to CUDA/OpenVINO/ROCm
   for interactive-latency icon finding
 - **Broader wlroots coverage** — Sway, Wayfire, river via the same

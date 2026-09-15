@@ -17,7 +17,12 @@ use crate::security::paths;
 use crate::security::sanitize::{SanitizeError, sanitize_arg};
 
 /// Binaries that may ever be spawned by `system_command`.
-pub const WHITELIST: &[&str] = &["grim", "slurp", "hyprctl", "scrot", "xdotool", "wmctrl"];
+/// Pin set — includes provider-internal helpers (`xrandr`, `xprop`) that
+/// are resolved-and-spawned by X11 providers but have no `validate_command`
+/// arm, so `system_command` cannot invoke them.
+pub const WHITELIST: &[&str] = &[
+    "grim", "slurp", "hyprctl", "scrot", "xdotool", "wmctrl", "xrandr", "xprop",
+];
 
 /// Schema-level cap on argv length (docs/TOOLS.md `system_command.args.maxItems`).
 pub const MAX_ARGS: usize = 16;

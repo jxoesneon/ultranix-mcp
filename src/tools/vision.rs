@@ -8,18 +8,18 @@ use std::time::Duration;
 use image::GenericImageView;
 use tokio::time::Instant;
 
-use rmcp::model::{CallToolResult, ContentBlock, ErrorCode, ErrorData, Tool};
+use rmcp::model::{CallToolResult, ContentBlock, ErrorData, Tool};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::{
     backend, backend_error, base64_encode, bounds_json, capture_provider, center_json,
-    element_not_found, invalid_params, json_result, parse_args, text_result, tool, tool_error,
-    tool_schema, ui_provider, vision_provider,
+    element_not_found, invalid_params, json_result, parse_args, provider_unavailable, text_result,
+    tool, tool_error, tool_schema, ui_provider, vision_provider,
 };
 use crate::providers::Providers;
-use crate::traits::Rect;
+use crate::traits::{ElementMatch, Rect};
 
 /// Session spatial-focus rect installed by `set_spatial_focus`
 /// (docs/TOOLS.md §Spatial Focus). Process-global: the dispatch layer
@@ -308,9 +308,8 @@ pub(super) fn tools() -> Vec<Tool> {
         ),
         tool::<HighlightParams>(
             "screen_highlight",
-            "Draw a translucent rectangle overlay at (x, y, w, h) for duration_ms. \
-             Overlay drawing is not yet implemented: the call validates its arguments \
-             then returns ProviderUnavailable until a layer-shell backend lands.",
+            "Draw a translucent rectangle overlay at (x, y, w, h) for duration_ms \
+             (wlr-layer-shell); purely visual — it does not affect capture or input.",
         ),
         tool::<ColorAtParams>(
             "color_at",
@@ -372,9 +371,22 @@ pub(super) async fn dispatch(
     })
 }
 
-/// `find_element`-shaped match entry for a rect-only hit.
+/// `find_element`-shaped match entry for a rect-only hit
+/// (`wait_for_ui_element`, which polls the single-match lookup).
 fn rect_match_json(rect: &Rect) -> Value {
     json!({"bounds": bounds_json(rect), "center": center_json(rect)})
+}
+
+/// `find_element` match entry — accessibility metadata plus geometry.
+/// Backends that expose only bounds report `""`/`[]` for the rest.
+fn element_match_json(m: &ElementMatch) -> Value {
+    json!({
+        "name": m.name,
+        "role": m.role,
+        "states": m.states,
+        "bounds": bounds_json(&m.bounds),
+        "center": center_json(&m.bounds),
+    })
 }
 
 /// Resolve `screenshot`'s `display` name to the output's layout rect via
@@ -484,26 +496,29 @@ async fn screen_highlight(
             "screen_highlight: duration_ms must be between 100 and 30000",
         ));
     }
-    // No overlay backend exists in the provider registry yet — per spec a
-    // no-op success is NOT returned; the call fails loudly with -32010
-    // (TOOLS.md: `screen_highlight` errors include ProviderUnavailable for a
-    // compositor lacking layer-shell; here the overlay provider itself is
-    // absent). The capture-slot check stays first so a backend-less
-    // registry still reports its more fundamental gap.
-    let _capture = capture_provider(providers)?;
-    Err(ErrorData::new(
-        ErrorCode(crate::error::codes::PROVIDER_UNAVAILABLE),
-        format!(
-            "provider unavailable: OverlayProvider — no layer-shell highlight backend \
-             is implemented; nothing was drawn at ({}, {}, {}, {})",
-            p.x, p.y, p.w, p.h
-        ),
-        Some(json!({
-            "kind": "ProviderUnavailable",
-            "provider": "OverlayProvider",
-            "detail": "screen_highlight overlay drawing is not yet implemented",
-        })),
-    ))
+    // `None` slot → -32010 ProviderUnavailable (compositor lacks
+    // layer-shell, or headless): a no-op success would be a lie.
+    let overlay = providers
+        .overlay
+        .as_deref()
+        .ok_or_else(|| provider_unavailable("OverlayProvider"))?;
+    backend!(
+        overlay
+            .highlight(
+                Rect {
+                    x: p.x,
+                    y: p.y,
+                    w: p.w,
+                    h: p.h
+                },
+                p.duration_ms
+            )
+            .await
+    );
+    Ok(text_result(format!(
+        "Highlighted ({}, {}, {}, {}) for {}ms",
+        p.x, p.y, p.w, p.h, p.duration_ms
+    )))
 }
 
 async fn color_at(
@@ -624,16 +639,17 @@ async fn find_element(
     // AT-SPI tree tools (they operate on the accessibility tree, not
     // pixels; docs/TOOLS.md §Spatial Focus).
     let ui = ui_provider(providers)?;
-    let hit = backend!(ui.find_element(&p.query).await);
+    // Up to 10 matches in tree order; backends that only expose the
+    // single-hit lookup report name/role/states as ""/[] via the
+    // trait's default `find_elements`.
+    let matches = backend!(ui.find_elements(&p.query, 10).await);
     // Not-found is a success result: absence of an element is data.
-    let out = match hit {
-        Some(rect) => json!({
-            "found": true,
-            "count": 1,
-            "matches": [rect_match_json(&rect)],
-        }),
-        None => json!({"found": false, "count": 0, "matches": []}),
-    };
+    let matches: Vec<Value> = matches.iter().map(element_match_json).collect();
+    let out = json!({
+        "found": !matches.is_empty(),
+        "count": matches.len(),
+        "matches": matches,
+    });
     Ok(json_result(&out))
 }
 
@@ -912,5 +928,133 @@ mod tests {
                 h: 8
             }
         );
+    }
+
+    // --- screen_highlight + find_element dispatch coverage -----------
+    //
+    // Inline test doubles (mock.rs stays untouched); nothing here opens
+    // a Wayland connection — `MockOverlay::highlight` is a no-op.
+
+    use std::sync::Arc;
+
+    fn args(v: Value) -> Map<String, Value> {
+        v.as_object().expect("test args must be an object").clone()
+    }
+
+    fn text_of(result: &CallToolResult) -> String {
+        result
+            .content
+            .first()
+            .and_then(ContentBlock::as_text)
+            .map(|t| t.text.clone())
+            .unwrap_or_default()
+    }
+
+    struct MockOverlay;
+
+    #[async_trait::async_trait]
+    impl crate::traits::OverlayProvider for MockOverlay {
+        async fn highlight(&self, _rect: Rect, _duration_ms: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// UI-automation double exposing only `find_element` — exercises the
+    /// trait's default `find_elements` wrapper (""/[] metadata).
+    struct RectOnlyUi;
+
+    #[async_trait::async_trait]
+    impl crate::traits::UIAutomationProvider for RectOnlyUi {
+        async fn get_root_json(&self, _depth: u32) -> anyhow::Result<Value> {
+            Ok(json!({}))
+        }
+        async fn get_focused_json(&self) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn find_element(&self, _query: &str) -> anyhow::Result<Option<Rect>> {
+            Ok(Some(Rect {
+                x: 10,
+                y: 20,
+                w: 30,
+                h: 40,
+            }))
+        }
+        async fn invoke_element(&self, _query: &str) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn screen_highlight_succeeds_with_overlay_provider() {
+        let providers = Providers {
+            overlay: Some(Arc::new(MockOverlay)),
+            ..Providers::empty()
+        };
+        let r = screen_highlight(
+            &args(json!({"x": 5, "y": 6, "w": 7, "h": 8, "duration_ms": 200})),
+            &providers,
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.is_error, Some(false));
+        assert_eq!(text_of(&r), "Highlighted (5, 6, 7, 8) for 200ms");
+    }
+
+    #[tokio::test]
+    async fn screen_highlight_without_overlay_is_provider_unavailable() {
+        let err = screen_highlight(
+            &args(json!({"x": 5, "y": 6, "w": 7, "h": 8, "duration_ms": 200})),
+            &Providers::empty(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code.0, -32010);
+        assert_eq!(err.data.unwrap()["provider"], "OverlayProvider");
+    }
+
+    #[tokio::test]
+    async fn screen_highlight_validates_before_provider_lookup() {
+        // Bad args are InvalidParams even with no overlay registered.
+        let err = screen_highlight(
+            &args(json!({"x": 0, "y": 0, "w": 0, "h": 5})),
+            &Providers::empty(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn find_element_reports_match_metadata_and_geometry() {
+        let providers = Providers {
+            ui_automation: Some(Arc::new(RectOnlyUi)),
+            ..Providers::empty()
+        };
+        let r = find_element(&args(json!({"query": "reload"})), &providers)
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(false));
+        let v: Value = serde_json::from_str(&text_of(&r)).unwrap();
+        assert_eq!(v["found"], true);
+        assert_eq!(v["count"], 1);
+        // Default find_elements: geometry-only backend → ""/[] metadata.
+        assert_eq!(v["matches"][0]["name"], "");
+        assert_eq!(v["matches"][0]["role"], "");
+        assert_eq!(v["matches"][0]["states"], json!([]));
+        assert_eq!(
+            v["matches"][0]["bounds"],
+            json!({"x":10,"y":20,"w":30,"h":40})
+        );
+        assert_eq!(v["matches"][0]["center"], json!({"x":25,"y":40}));
+    }
+
+    #[tokio::test]
+    async fn find_element_not_found_is_empty_match_list() {
+        let r = find_element(&args(json!({"query": "nothing"})), &Providers::all_mocks())
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(false));
+        let v: Value = serde_json::from_str(&text_of(&r)).unwrap();
+        assert_eq!(v, json!({"found": false, "count": 0, "matches": []}));
     }
 }

@@ -7,7 +7,7 @@ mod keyboard;
 mod mouse;
 mod vision;
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use rmcp::model::{CallToolResult, ContentBlock, ErrorCode, ErrorData, JsonObject, Tool};
 use schemars::JsonSchema;
@@ -189,7 +189,7 @@ async fn dispatch_secured(
     name: &str,
     args: &Map<String, Value>,
     providers: &Providers,
-    security: &crate::security::SecurityContext,
+    security: SecRef<'_>,
     session_id: &str,
     key_id: Option<&str>,
 ) -> Result<CallToolResult, ErrorData> {
@@ -237,6 +237,46 @@ fn outcome_of(result: &Result<CallToolResult, ErrorData>) -> &'static str {
 // Secured dispatch — consent gate + audit + whitelist-constrained exec.
 // ---------------------------------------------------------------------------
 
+/// Shared-or-borrowed [`crate::security::SecurityContext`] handle accepted
+/// by [`call_tool_secured`].
+///
+/// `UltraNixServer` holds the context in an `Arc`; passing that
+/// `&Arc<SecurityContext>` ([`SecRef::Shared`]) lets the hash-chained
+/// audit append move onto `tokio::task::spawn_blocking` like the
+/// encrypted-history write (EFF-1). A plain `&SecurityContext`
+/// ([`SecRef::Borrowed`]) has no `'static` handle to move, so its audit
+/// records are appended inline — the record bytes are identical either
+/// way; only the executor placement differs.
+#[derive(Clone, Copy)]
+pub enum SecRef<'a> {
+    /// Borrowed context — audit appends run on the current task.
+    Borrowed(&'a crate::security::SecurityContext),
+    /// `Arc`-shared context — audit appends run on `spawn_blocking`.
+    Shared(&'a Arc<crate::security::SecurityContext>),
+}
+
+impl<'a> From<&'a crate::security::SecurityContext> for SecRef<'a> {
+    fn from(ctx: &'a crate::security::SecurityContext) -> Self {
+        Self::Borrowed(ctx)
+    }
+}
+
+impl<'a> From<&'a Arc<crate::security::SecurityContext>> for SecRef<'a> {
+    fn from(ctx: &'a Arc<crate::security::SecurityContext>) -> Self {
+        Self::Shared(ctx)
+    }
+}
+
+impl std::ops::Deref for SecRef<'_> {
+    type Target = crate::security::SecurityContext;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(ctx) => ctx,
+            Self::Shared(ctx) => ctx,
+        }
+    }
+}
+
 /// `-32015 ConsentRequired` — destructive call needs a challenge retry.
 fn consent_required(token: &str, expires_in_ms: u64, tool: &str) -> ErrorData {
     ErrorData::new(
@@ -261,19 +301,67 @@ fn is_destructive(name: &str, args: &Map<String, Value>) -> bool {
     }
 }
 
+/// Append one hash-chained audit record. On the [`SecRef::Shared`] path
+/// the <1 KiB write (+ day-rollover rotation/prune) runs on
+/// `spawn_blocking` like the encrypted-history append (EFF-1); a borrowed
+/// context records inline — identical bytes, only the executor placement
+/// differs. Errors are swallowed: an audit sink fault must never fail a
+/// tool call.
+async fn audit_record(
+    security: SecRef<'_>,
+    tool: &str,
+    args_hash: &str,
+    outcome: &'static str,
+    duration_ms: u64,
+    ctx: crate::security::audit::CallContext<'_>,
+) {
+    match security {
+        SecRef::Shared(sec) => {
+            let sec = Arc::clone(sec);
+            let tool = tool.to_string();
+            let args_hash = args_hash.to_string();
+            // CallContext borrows caller strings — own them for the move.
+            let key_id = ctx.key_id.map(str::to_string);
+            let caller = ctx.caller.map(str::to_string);
+            let consent = ctx.consent.map(str::to_string);
+            let _ = tokio::task::spawn_blocking(move || {
+                sec.audit.record(
+                    &tool,
+                    &args_hash,
+                    outcome,
+                    duration_ms,
+                    crate::security::audit::CallContext {
+                        key_id: key_id.as_deref(),
+                        caller: caller.as_deref(),
+                        consent: consent.as_deref(),
+                    },
+                )
+            })
+            .await;
+        }
+        SecRef::Borrowed(sec) => {
+            let _ = sec.audit.record(tool, args_hash, outcome, duration_ms, ctx);
+        }
+    }
+}
+
 /// `tools/call` with the security pipeline applied: consent gate for the
 /// destructive class, real whitelist-constrained `system_command` exec,
 /// a hash-chained audit record for **every** call (accepted or rejected —
 /// SECURITY.md "Audit | Every invocation"), and a
 /// `ultranix_mcp_tool_calls_total` / `_duration_seconds` metric sample.
-pub async fn call_tool_secured(
+///
+/// `security` accepts `&SecurityContext` or `&Arc<SecurityContext>` (see
+/// [`SecRef`]); the latter moves the audit append off the runtime worker.
+pub async fn call_tool_secured<'a>(
     name: &str,
     args: Map<String, Value>,
     providers: &Providers,
-    security: &crate::security::SecurityContext,
+    security: impl Into<SecRef<'a>>,
     session_id: &str,
     key_id: Option<&str>,
 ) -> Result<CallToolResult, ErrorData> {
+    let security = security.into();
     let t0 = std::time::Instant::now();
     let mut args = args;
     let argsv = Value::Object(args.clone());
@@ -287,7 +375,8 @@ pub async fn call_tool_secured(
     if let Some(err) = category_gate(name, security.categories.as_deref()) {
         let elapsed = t0.elapsed();
         crate::metrics::record_call(name, elapsed, "error");
-        let _ = security.audit.record(
+        audit_record(
+            security,
             name,
             &hash,
             "error",
@@ -297,7 +386,8 @@ pub async fn call_tool_secured(
                 caller: Some(key_id.unwrap_or(session_id)),
                 consent: None,
             },
-        );
+        )
+        .await;
         return Err(err);
     }
 
@@ -333,7 +423,8 @@ pub async fn call_tool_secured(
         });
         if !ok {
             crate::metrics::record_call(name, t0.elapsed(), "consent_required");
-            let _ = security.audit.record(
+            audit_record(
+                security,
                 name,
                 &hash,
                 "consent_required",
@@ -343,7 +434,8 @@ pub async fn call_tool_secured(
                     caller: Some(key_id.unwrap_or(session_id)),
                     consent: None,
                 },
-            );
+            )
+            .await;
             let ch = match resolved_target.as_deref() {
                 Some(t) => security
                     .consent
@@ -374,7 +466,7 @@ pub async fn call_tool_secured(
     }
 
     let result = if name == "system_command" {
-        exec_system_command(&args, security).await
+        exec_system_command(&args, &security).await
     } else {
         // `dispatch_secured`, not `call_tool`: the metric sample below is
         // recorded with the full pipeline latency — routing through
@@ -390,7 +482,8 @@ pub async fn call_tool_secured(
     let elapsed = t0.elapsed();
     let outcome = outcome_of(&result);
     crate::metrics::record_call(name, elapsed, outcome);
-    let _ = security.audit.record(
+    audit_record(
+        security,
         name,
         &hash,
         outcome,
@@ -400,7 +493,8 @@ pub async fn call_tool_secured(
             caller: Some(key_id.unwrap_or(session_id)),
             consent: consent_stamp,
         },
-    );
+    )
+    .await;
 
     // Encrypted action history: every replayable invocation appends to
     // the context-scoped store (meta/history tools excluded — replaying
@@ -425,7 +519,14 @@ pub async fn call_tool_secured(
             duration_ms: elapsed.as_millis() as u64,
             outcome: outcome.to_string(),
         };
-        let _ = tokio::task::spawn_blocking(move || store.record(rec)).await;
+        let _ = tokio::task::spawn_blocking(move || {
+            let res = store.record(rec);
+            if res.is_ok() {
+                crate::metrics::set_action_history_size(store.len());
+            }
+            res
+        })
+        .await;
     }
     result
 }
@@ -1134,5 +1235,32 @@ mod tests {
                 "ultranix_mcp_tool_calls_total{tool=\"mouse_get_position\",outcome=\"ok\"}"
             )
         );
+    }
+
+    #[tokio::test]
+    async fn secured_dispatch_accepts_arc_context() {
+        // `&Arc<SecurityContext>` selects SecRef::Shared — the audit
+        // append runs on `spawn_blocking`, awaited before return.
+        let tmp = tempfile::tempdir().unwrap();
+        let sec = std::sync::Arc::new(security_in(tmp.path()));
+        let providers = Providers::all_mocks();
+
+        call_tool_secured(
+            "mouse_click",
+            args(json!({"x": 1, "y": 2})),
+            &providers,
+            &sec,
+            "sess-arc",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let content = std::fs::read_to_string(tmp.path().join("logs").join("audit.jsonl")).unwrap();
+        let line: Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(line["tool"], "mouse_click");
+        assert_eq!(line["caller"], "sess-arc");
+        // A replayable call also refreshed the history-size gauge.
+        assert!(crate::metrics::exposition().contains("ultranix_mcp_action_history_size"));
     }
 }

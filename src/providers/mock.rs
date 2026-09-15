@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::traits::{
-    BrowserProvider, CaptureProvider, Detection, Frame, InputProvider, Rect, UIAutomationProvider,
-    VisionProvider, WindowInfo, WindowProvider,
+    BrowserProvider, CaptureProvider, Detection, Frame, InputProvider, OverlayProvider, Rect,
+    UIAutomationProvider, VisionProvider, WindowInfo, WindowProvider,
 };
 
 pub struct MockCapture;
@@ -15,6 +15,7 @@ pub struct MockUiAutomation;
 pub struct MockWindow;
 pub struct MockVision;
 pub struct MockBrowser;
+pub struct MockOverlay;
 
 #[async_trait]
 impl CaptureProvider for MockCapture {
@@ -111,6 +112,13 @@ impl VisionProvider for MockVision {
     }
     async fn find_icon(&self, _frame: &Frame, _desc: &str) -> Result<Vec<Detection>> {
         Ok(vec![])
+    }
+}
+
+#[async_trait]
+impl OverlayProvider for MockOverlay {
+    async fn highlight(&self, _rect: Rect, _duration_ms: u64) -> Result<()> {
+        Ok(())
     }
 }
 

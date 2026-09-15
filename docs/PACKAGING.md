@@ -1,12 +1,13 @@
 # ultranix-mcp — Packaging & Distribution Specification
 
-**Status:** Implemented (v1.0.0) — the packaging artifacts described here ship
+**Status:** Implemented (v1.1.0) — the packaging artifacts described here ship
 under `packaging/`; registry/AUR/crates.io submissions are pending (see
 [REGISTRY_SUBMISSION.md](REGISTRY_SUBMISSION.md)).
 **Applies to:** ultranix-mcp ≥ 1.0.0 (Rust 2024, `rmcp` SDK)
 **Primary target:** CachyOS / Arch Linux + Hyprland (wlroots), with XDG-portal
 and uinput fallbacks covering GNOME / KDE / other desktops. X11-native
-providers are post-v1 (only portal/uinput rungs resolve on X11 today).
+providers (`scrot`/`xdotool`/`wmctrl`) shipped at v1.1.0 and resolve on X11
+sessions.
 
 This document defines every supported install path, the runtime permission
 model, the systemd integration, and the post-install verification procedure.
@@ -115,15 +116,17 @@ optdepends=(
   'xdg-desktop-portal-hyprland: screen-capture consent path on Hyprland'
   'xdg-desktop-portal-wlr: portal backend for other wlroots compositors'
   'xdg-desktop-portal-gnome: portal backend under GNOME'
-  'pipewire: only needed if portal RemoteDesktop stream consumption lands post-v1 (v1 portal input never opens the video fd)'
+  'pipewire: portal RemoteDesktop capture stream (v1.1.0+ consumes the video fd when Screenshot is not advertised)'
   'wl-clipboard: post-v1 clipboard tools (wl-copy/wl-paste) — NOT a v1 runtime dep'
   'at-spi2-core: semantic UI tree (a11y backend)'
   'onnxruntime: system ONNX Runtime for ORT_STRATEGY=system builds'
   'grim: whitelisted system_command capture helper (wlroots)'
   'slurp: whitelisted system_command region-picker (wlroots)'
-  'xdotool: X11 input fallback (post-v1)'
-  'scrot: X11 capture fallback (post-v1)'
-  'wmctrl: X11 window management fallback (post-v1)'
+  'xdotool: X11 input fallback + pointer position (v1.1.0+)'
+  'scrot: X11 capture fallback (v1.1.0+)'
+  'wmctrl: X11 window management fallback (v1.1.0+)'
+  'xrandr: X11 output geometry for the capture backend (v1.1.0+)'
+  'xprop: X11 _NET_WM_STATE reads for the window backend (v1.1.0+)'
 )
 install=ultranix-mcp.install
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
@@ -241,7 +244,7 @@ order; the permission requirements below are per-backend.
 | **AT-SPI2** | semantic UI tree, accessible-name targeting | Accessibility bus must be enabled; no extra privileges. | `at-spi2-core` installed; `org.a11y.Bus` reachable on the session bus (usually via `at-spi-bus-launcher` autostart or D-Bus activation). Under GNOME also: `gsettings set org.gnome.desktop.interface toolkit-accessibility true`. Under Hyprland ensure `exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP` so the a11y bus inherits the session. |
 | **hyprctl IPC** | window list/focus/move/resize | **None** — `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock` is user-owned. | Hyprland session. |
 | **CDP bridge** | browser automation (`web_query`) | **None** beyond a browser launched with `--remote-debugging-port=9222`; the bridge connects to `127.0.0.1:9222`. | Chromium-family browser. |
-| **X11 fallback** (post-v1) | capture + input on Xorg sessions | Runs as the session user; `DISPLAY` + `XAUTHORITY`. | `xdotool`, `scrot`, `wmctrl` installed. |
+| **X11 fallback** (v1.1.0+) | capture + input + window control on Xorg sessions | Runs as the session user; `DISPLAY` + `XAUTHORITY`. | `xdotool`, `scrot`, `wmctrl` installed (`xrandr`/`xprop` optional extras). |
 
 ### 5.1 Shipped udev rule — `packaging/99-ultranix-mcp-uinput.rules`
 
@@ -278,7 +281,7 @@ Also ensure the `uinput` module loads: `echo uinput > /etc/modules-load.d/uinput
 | `grim` / `slurp` | whitelisted `system_command` helpers on wlroots | Recommended |
 | `at-spi2-core` | AT-SPI2 backend | Recommended |
 | `onnxruntime` | system ONNX lib instead of bundled download | No |
-| `xdotool` / `scrot` / `wmctrl` | X11 fallback | No (post-v1) |
+| `xdotool` / `scrot` / `wmctrl` (+ `xrandr`/`xprop`) | X11 fallback rungs (shipped at v1.1.0) | No — X11 sessions only |
 
 ### 5.3 Environment & data directory
 
@@ -290,7 +293,7 @@ Also ensure the `uinput` module loads: `echo uinput > /etc/modules-load.d/uinput
 | `ULTRANIX_MCP_DISABLE_AUTH` | Dev-only auth bypass (`true`) — startup warning + `auth.disabled` audit event | `false` |
 | `ULTRANIX_MCP_HISTORY_SECRET` | AES-256-GCM key for `history.json` | per-install generated at first run (stored `0600` under `~/.ultranix-mcp/`); a dev fallback warns loudly |
 | `ULTRANIX_MCP_LOG_LEVEL` / `RUST_LOG` | tracing verbosity | `info` |
-| `ULTRANIX_MCP_SENTRY_DSN` | Optional Sentry error reporting — **planned, post-v1** (documented, not wired) | unset |
+| `ULTRANIX_MCP_SENTRY_DSN` | Optional Sentry error reporting — opt-in; unset/empty/malformed disables it (malformed warns at startup) | unset |
 | `ULTRANIX_MCP_BIND` | HTTP bind address (or `--bind` flag) | `127.0.0.1:3010` |
 
 Key-source precedence: `ULTRANIX_MCP_API_KEY` → `ULTRANIX_MCP_API_KEY_FILE`
@@ -480,8 +483,9 @@ Run in order on a live Hyprland session:
       `CaptureProvider=WlrCapture`, `InputProvider=WlrInput`,
       `WindowProvider=HyprctlWindow` on Hyprland; degraded sessions log the
       portal/uinput/`None` substitutions per the fallback chain.
-- [ ] HTTP mode `/readyz` reports which of the six providers resolved to
-      `Some` — the authoritative capability statement for the session.
+- [ ] HTTP mode `/readyz` reports which of the seven providers (including
+      `OverlayProvider` since v1.1.0) resolved to `Some` — the authoritative
+      capability statement for the session.
 - [ ] A `screenshot` tool call returns a frame with no portal prompt
       (wlroots path) — or a prompt appears once and is remembered (portal path).
 - [ ] `mouse_move` + `type_text` round-trip into a test window; `get_windows`

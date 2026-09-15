@@ -95,7 +95,8 @@ ladder architecture.
    "Linux desktop automation" repos are quietly X11-fossils; their MCP
    wrappers inherit the limitation.
 2. **Fragmentation tax.** Correct Linux coverage needs a *ladder*:
-   wlr protocols → portal → uinput (→ X11, post-v1) — plus per-compositor
+   wlr protocols → portal → uinput → X11 (scrot/xdotool/wmctrl, shipped at
+   v1.1.0) — plus per-compositor
    IPC. That is
    real engineering (a trait-provider architecture like UltraWin's), not a
    weekend wrapper — which is why the servers that *did* ship
@@ -133,10 +134,10 @@ ladder architecture.
   experience could sour users vs the zero-prompt Hyprland path. Mitigate
   with clear startup probe logging, `/readyz` provider reporting, and token
   persistence (see `docs/PACKAGING.md` §5).
-- **Compositor coverage reality.** "Linux" is N compositors; v1.0.0 quality
-  is Hyprland/wlroots + portal/uinput-degraded GNOME/KDE. X11-native
-  providers are **post-v1** — X11 sessions get only the portal/uinput rungs
-  today. Do not overclaim in launch messaging.
+- **Compositor coverage reality.** "Linux" is N compositors; v1.1.0 quality
+  is Hyprland/wlroots + portal/uinput-degraded GNOME/KDE + the
+  `scrot`/`xdotool`/`wmctrl` rungs on X11. Still do not overclaim in launch
+  messaging — X11 rungs are functional but thinner than the Hyprland path.
 - **No community signal yet** — same pre-distribution state ultramac
   documented. All value is currently latent.
 - **Copycat risk is low but real** — a compositor vendor (e.g. a KDE/GNOME

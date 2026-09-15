@@ -6,10 +6,10 @@ drive a Linux desktop. Adapted from `ultramac/docs/ENTERPRISE_PLAN.md`; the
 primitives (audit JSONL, encrypted history, Prometheus, key auth) are shared
 across the Ultra\* family so operators see one control model on every OS.
 
-**Status: v1.0.0 shipped.** The core governance surface (key auth, consent
-gate, audit JSONL, AES-256-GCM history, rate limiting, Prometheus metrics)
-is implemented; items still tagged *post-v1* below are the planned policy
-roadmap, not shipped features.
+**Status: v1.1.0 shipped.** The core governance surface (key auth, consent
+gate, audit JSONL, AES-256-GCM history, rate limiting, Prometheus metrics,
+opt-in Sentry) is implemented; items still tagged *post-v1* below are the
+planned policy roadmap, not shipped features.
 
 ---
 
@@ -124,8 +124,8 @@ tamper-evidence is provided by shipping it to SIEM, not by hiding it.
 
 ### 2.5 Prometheus observability
 
-`GET /metrics` on `127.0.0.1:3010` (HTTP mode) exposes the four metrics
-shipped at v1.0.0. The table below **mirrors `docs/ARCHITECTURE.md` §7
+`GET /metrics` on `127.0.0.1:3010` (HTTP mode) exposes the eight shipped
+metrics. The table below **mirrors `docs/ARCHITECTURE.md` §7
 verbatim** — that document owns the metric names, types, and labels; this
 copy exists for reader convenience and must not diverge:
 
@@ -133,16 +133,14 @@ copy exists for reader convenience and must not diverge:
 | --- | --- | --- | --- |
 | `ultranix_mcp_tool_calls_total` | Counter | `tool`, `outcome` | Tool call count by outcome |
 | `ultranix_mcp_tool_duration_seconds` | Histogram | `tool` | Per-tool execution latency |
-| `ultranix_mcp_rate_limit_rejections_total` | Counter | `category` | 429 rejections |
+| `ultranix_mcp_rate_limit_rejections_total` | Counter | `reason` | 429 rejections |
+| `ultranix_mcp_auth_failures_total` | Counter | `reason` | HTTP auth failures (401s) |
 | `ultranix_mcp_active_sessions` | Gauge | `transport` | Live stdio/HTTP sessions |
+| `ultranix_mcp_backend_active` | Gauge | `backend` | Backends initialised at startup (1 = active) |
+| `ultranix_mcp_action_history_size` | Gauge | — | Records retained in encrypted history |
+| `ultranix_mcp_ocr_cache_entries` | Gauge | — | Live entries in the OCR/icon result cache (shipped at v1.1.0) |
 
-**Planned post-v1 additions** (designed, not yet exported):
-`ultranix_mcp_auth_failures_total{transport}`,
-`ultranix_mcp_backend_active{backend}` (superseded today by `/readyz`
-provider reporting), `ultranix_mcp_action_history_size`,
-`ultranix_mcp_ocr_cache_entries` (with the post-v1 OCR cache).
-
-`/readyz` doubles as a governance surface: it reports which of the six
+`/readyz` doubles as a governance surface: it reports which of the seven
 providers resolved to `Some`, so monitoring can detect unexpected backend
 degradation (e.g. `CaptureProvider` falling from `WlrCapture` to portal
 or `None`).
@@ -162,11 +160,10 @@ scrape_configs:
 ```
 
 Alert candidates: `ultranix_mcp_rate_limit_rejections_total` growth,
-`outcome="error"` ratio on `ultranix_mcp_tool_calls_total` > 5%, and
-`/readyz` reporting a degraded provider set versus the wlroots baseline.
-Once the post-v1 metrics land, add growth in
-`ultranix_mcp_auth_failures_total` and `ultranix_mcp_backend_active`
-transitions to a weaker backend.
+`ultranix_mcp_auth_failures_total` growth, `outcome="error"` ratio on
+`ultranix_mcp_tool_calls_total` > 5%, `ultranix_mcp_backend_active`
+transitioning to a weaker backend, and `/readyz` reporting a degraded
+provider set versus the wlroots baseline.
 
 ---
 
@@ -181,15 +178,15 @@ primitives* auditors ask for:
 | **CC6.6 — Boundary protection** | Server binds localhost by default; no inbound remote-desktop surface; desktop control never crosses a network hop. |
 | **CC6.7 — Data in transit** | stdio = no transport exposure; HTTP = localhost TLS optional via reverse proxy; nothing leaves the host except what the MCP client already sends. |
 | **CC6.8 — Least privilege** | wlroots protocols need zero elevation; uinput uses a documented udev rule (dedicated `ultranix-input` group or seat `uaccess`), never root; `--category` caps capability; arg-constrained `system_command` whitelist with absolute binary pinning; consent gate on destructive tools; no `sudo` anywhere in the design. |
-| **CC7.2 — Monitoring/detection** | append-only `audit.jsonl`; denied-call auditing; Prometheus metrics incl. the rate-limit rejection counter (the auth-failure counter is a planned post-v1 addition). |
+| **CC7.2 — Monitoring/detection** | append-only `audit.jsonl`; denied-call auditing; Prometheus metrics incl. the rate-limit rejection and auth-failure counters. |
 | **CC7.3 — Security event evaluation** | `denial_reason` taxonomy distinguishes abuse (rate limit) from misconfig (whitelist) from attack (sanitization rejection). |
 | **CC8.1 — Change management** | semver releases on crates.io/AUR; committed `Cargo.lock`; `--locked` installs; SBOM via `cargo audit`/`cargo sbom` in CI. |
 | **A1.2 / C1.1 — Confidentiality** | AES-256-GCM history at rest; audit log carries hashes, not payloads; `~/.ultranix-mcp/` created `0700`. |
 
 **Data residency:** ultranix-mcp performs zero telemetry egress — no
-phone-home, no analytics. Sentry crash reporting is a **planned post-v1**
-integration (`ULTRANIX_MCP_SENTRY_DSN` is documented but not wired at
-v1.0.0); when it ships it will remain strictly opt-in. The single built-in network fetch is the **first-call ONNX
+phone-home, no analytics. Sentry error reporting is **strictly opt-in** via
+`ULTRANIX_MCP_SENTRY_DSN` (wired at v1.1.0; unset or malformed DSN leaves
+it disabled). The single built-in network fetch is the **first-call ONNX
 model download** into `~/.ultranix-mcp/models/` (SHA-256-pinned; see
 `docs/ARCHITECTURE.md` §6), which can be pre-seeded by fleet tooling to make
 deployment fully offline. All other egress is operator-added (Prometheus
@@ -303,8 +300,8 @@ Shipped controls vs. planned policy surface:
 | Audit skeleton (JSONL append + schema) | **Shipped (v1.0.0)** | `audit.jsonl` with `key_id`/`args_hash`/`prev_hash` chaining. |
 | API-key auth + disable flag | **Shipped (v1.0.0)** | The HTTP-transport auth surface (`uxcp_*` key check, `X-API-Key`/`Bearer` headers, key files, rotation overlap, auth audit events). Fail-closed bind semantics are intrinsic — the server refuses to bind `:3010` without a key unless `ULTRANIX_MCP_DISABLE_AUTH=true`. |
 | Rate limiting (10 req/s token bucket per client identity) | **Shipped (v1.0.0)** | HTTP-transport feature; `/metrics` and health endpoints exempt; env-tunable budget. |
-| Encrypted history + Prometheus | **Shipped (v1.0.0)** | AES-256-GCM `history.json`, the four shipped metrics, `/health`+`/readyz`. |
-| Sentry crash reporting | **Post-v1** | `ULTRANIX_MCP_SENTRY_DSN` documented, not wired. |
+| Encrypted history + Prometheus | **Shipped (v1.0.0)** | AES-256-GCM `history.json`, the shipped metrics (8 series as of v1.1.0), `/health`+`/readyz`. |
+| Sentry crash reporting | **Shipped (v1.1.0)** | Opt-in via `ULTRANIX_MCP_SENTRY_DSN`; malformed DSN warns and disables. |
 | **Tool whitelists** (`--allow-tools=`, deny-by-default profiles) | **Post-v1** | Finer than category: e.g. serve `screenshot` but not `type_text`. Not implemented at v1.0.0. |
 | **Read-only mode** (`--readonly`) | **Post-v1** | Serves only `vision` + non-mutating `admin` tools; every input tool is denied (`outcome=denied`, `denial_reason=readonly_mode`). Not implemented at v1.0.0. |
 | **Approval gates (beyond the shipped consent gate)** | **Post-v1** | Out-of-band confirmation for sensitive calls — e.g. text typed into password-focused fields — pluggable: local libnotify/dunst prompt on the desktop, or a webhook to an approver service. Builds on, does not replace, the `-32015 ConsentRequired` challenge. |

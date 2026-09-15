@@ -29,6 +29,8 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 
 use crate::traits::{CaptureProvider, Frame, Rect};
 
+use super::common::{OutputInfo, hyprctl_cursorpos, hyprctl_monitors};
+
 /// In-process wlr-screencopy capture backend.
 ///
 /// Stateless: every call opens a short-lived Wayland connection, which keeps
@@ -89,19 +91,6 @@ struct BufMeta {
     width: u32,
     height: u32,
     stride: u32,
-}
-
-#[derive(Clone, Default)]
-struct OutputInfo {
-    name: String,
-    make: String,
-    model: String,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    refresh_millihz: i32,
-    scale: i32,
 }
 
 // ---------------------------------------------------------------------------
@@ -209,22 +198,15 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for State {
                 if state.pending.is_some() {
                     return; // first usable format wins
                 }
-                if let Ok(fmt) = format.into_result() {
-                    let supported = matches!(
-                        fmt,
-                        wl_shm::Format::Xrgb8888
-                            | wl_shm::Format::Argb8888
-                            | wl_shm::Format::Xbgr8888
-                            | wl_shm::Format::Abgr8888
-                    );
-                    if supported {
-                        state.pending = Some(PendingBuf {
-                            format: fmt,
-                            width,
-                            height,
-                            stride,
-                        });
-                    }
+                if let Ok(fmt) = format.into_result()
+                    && shm_format_supported(fmt)
+                {
+                    state.pending = Some(PendingBuf {
+                        format: fmt,
+                        width,
+                        height,
+                        stride,
+                    });
                 }
             }
             Event::Flags { flags } => {
@@ -444,6 +426,19 @@ fn screen_info_blocking() -> Result<Value> {
 // Pixel conversion + PNG
 // ---------------------------------------------------------------------------
 
+/// wl_shm formats [`shm_to_rgba`] can decode — the four 32-bit 8888
+/// layouts only; anything else the compositor offers is declined so the
+/// `buffer` event loop keeps looking for a usable one.
+fn shm_format_supported(fmt: wl_shm::Format) -> bool {
+    matches!(
+        fmt,
+        wl_shm::Format::Xrgb8888
+            | wl_shm::Format::Argb8888
+            | wl_shm::Format::Xbgr8888
+            | wl_shm::Format::Abgr8888
+    )
+}
+
 /// Unpack a wl_shm 8888 frame into tightly-packed RGBA8888.
 /// XRGB/ARGB arrive in memory as B,G,R,X (little-endian); XBGR/ABGR as R,G,B,X.
 fn shm_to_rgba(
@@ -487,50 +482,6 @@ fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
         .write_image(rgba, width, height, image::ExtendedColorType::Rgba8)
         .context("PNG encode")?;
     Ok(out)
-}
-
-// ---------------------------------------------------------------------------
-// hyprctl helpers
-// ---------------------------------------------------------------------------
-
-/// Parse `hyprctl cursorpos` output. Accepts both the modern JSON form
-/// (`{"x":1017,"y":664}`) and the legacy `x, y` pair.
-fn parse_cursorpos(s: &str) -> Option<(i32, i32)> {
-    let t = s.trim();
-    if let Ok(v) = serde_json::from_str::<Value>(t) {
-        let x = v.get("x")?.as_i64()?;
-        let y = v.get("y")?.as_i64()?;
-        return Some((x as i32, y as i32));
-    }
-    let (xs, ys) = t.split_once(',')?;
-    Some((xs.trim().parse().ok()?, ys.trim().parse().ok()?))
-}
-
-/// Pinned `hyprctl -j cursorpos`, scrubbed env, bounded wait.
-async fn hyprctl_cursorpos(bin: &std::path::Path) -> Result<(i32, i32)> {
-    let mut cmd = crate::security::spawn::command(bin, &["-j", "cursorpos"]);
-    let out =
-        crate::security::spawn::output_within(&mut cmd, crate::security::spawn::SUBPROCESS_TIMEOUT)
-            .await
-            .context("run hyprctl cursorpos")?;
-    if !out.status.success() {
-        bail!("hyprctl cursorpos exited {}", out.status);
-    }
-    parse_cursorpos(&String::from_utf8_lossy(&out.stdout))
-        .ok_or_else(|| anyhow!("unparseable hyprctl cursorpos output"))
-}
-
-/// Pinned `hyprctl -j monitors`, scrubbed env, bounded wait.
-async fn hyprctl_monitors(bin: &std::path::Path) -> Result<Value> {
-    let mut cmd = crate::security::spawn::command(bin, &["-j", "monitors"]);
-    let out =
-        crate::security::spawn::output_within(&mut cmd, crate::security::spawn::SUBPROCESS_TIMEOUT)
-            .await
-            .context("run hyprctl monitors")?;
-    if !out.status.success() {
-        bail!("hyprctl monitors exited {}", out.status);
-    }
-    serde_json::from_slice(&out.stdout).context("parse hyprctl monitors JSON")
 }
 
 // ---------------------------------------------------------------------------
@@ -624,7 +575,53 @@ mod tests {
     }
 
     #[test]
+    fn shm_alpha_variants_match_their_companions() {
+        // ARGB8888 unpacks identically to XRGB8888 (alpha byte is
+        // discarded, output alpha forced opaque).
+        let bgrx = [0x20, 0x40, 0x60, 0x00];
+        assert_eq!(
+            shm_to_rgba(&bgrx, wl_shm::Format::Argb8888, 1, 1, 4, false),
+            vec![0x60, 0x40, 0x20, 0xFF]
+        );
+        // ABGR8888 unpacks identically to XBGR8888.
+        let rgbx = [0x60, 0x40, 0x20, 0x00];
+        assert_eq!(
+            shm_to_rgba(&rgbx, wl_shm::Format::Abgr8888, 1, 1, 4, false),
+            vec![0x60, 0x40, 0x20, 0xFF]
+        );
+    }
+
+    #[test]
+    fn shm_short_buffer_leaves_tail_zeroed() {
+        // Declared 2x2 but the buffer ends after one row — the row loop
+        // breaks instead of reading out of bounds; unwritten rows stay 0.
+        let raw = [0x20, 0x40, 0x60, 0x00, 0x21, 0x41, 0x61, 0x00];
+        let rgba = shm_to_rgba(&raw, wl_shm::Format::Xrgb8888, 2, 2, 8, false);
+        assert_eq!(
+            rgba,
+            vec![
+                0x60, 0x40, 0x20, 0xFF, 0x61, 0x41, 0x21, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0
+            ]
+        );
+    }
+
+    #[test]
+    fn shm_format_supported_accepts_only_8888() {
+        use wl_shm::Format;
+        assert!(shm_format_supported(Format::Xrgb8888));
+        assert!(shm_format_supported(Format::Argb8888));
+        assert!(shm_format_supported(Format::Xbgr8888));
+        assert!(shm_format_supported(Format::Abgr8888));
+        // 16-bit and palette formats must be declined — `shm_to_rgba`
+        // assumes 4 bytes per pixel.
+        assert!(!shm_format_supported(Format::Rgb565));
+        assert!(!shm_format_supported(Format::C8));
+        assert!(!shm_format_supported(Format::Nv12));
+    }
+
+    #[test]
     fn parse_cursorpos_json_and_pair() {
+        use crate::providers::common::parse_cursorpos;
         assert_eq!(parse_cursorpos("{\"x\":1017,\"y\":664}"), Some((1017, 664)));
         assert_eq!(parse_cursorpos("1234, 567"), Some((1234, 567)));
         assert_eq!(parse_cursorpos("  -12,3 \n"), Some((-12, 3)));

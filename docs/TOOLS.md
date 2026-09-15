@@ -2,9 +2,7 @@
 
 Complete API specification for every tool exposed by **ultranix-mcp**, the
 Rust MCP server for Linux desktop automation. This document describes the
-shipped v1.0.0 tool surface; the one tool that remains unimplemented at
-v1.0.0 (`screen_highlight` — it fails loudly with `-32010
-ProviderUnavailable`) is marked inline.
+shipped v1.1.0 tool surface.
 
 - **Server**: `ultranix-mcp` (Rust 2024, tokio, `rmcp` SDK)
 - **Transports**: stdio and streamable HTTP on `:3010` (canonical JSON-RPC
@@ -62,10 +60,11 @@ canonical normative fallback-chain table lives in
 
 | Provider | Responsibility | Primary mechanism | Fallback chain |
 | --- | --- | --- | --- |
-| `CaptureProvider` | Screenshots, pixel reads, highlight overlays | `wlr-screencopy` (the `wlr-layer-shell` highlight overlay is post-v1) | `grim`/`slurp` → XDG Desktop Portal `org.freedesktop.portal.Screenshot` (`scrot`/X11 rung is post-v1) |
-| `InputProvider` | Pointer and keyboard injection | `wlr-virtual-pointer` + `virtual-keyboard` (zwlr_virtual_pointer_manager_v1 / virtual-keyboard-unstable-v1) | `/dev/uinput` → XDG Portal `RemoteDesktop` (`xdotool`/X11 rung is post-v1) |
+| `CaptureProvider` | Screenshots, pixel reads | `wlr-screencopy` | `grim`/`slurp` → XDG Desktop Portal `org.freedesktop.portal.Screenshot`; where a backend advertises `RemoteDesktop` but not `Screenshot`, frames come from an ephemeral RemoteDesktop session's PipeWire stream. On X11 sessions the chain is `scrot` (`X11Capture`, backend name `"scrot"`) → portal |
+| `OverlayProvider` | Highlight overlays | `wlr-layer-shell` (`zwlr_layer_shell_v1`, `overlay` layer) | — (returns `ProviderUnavailable` when the compositor lacks layer-shell) |
+| `InputProvider` | Pointer and keyboard injection | `wlr-virtual-pointer` + `virtual-keyboard` (zwlr_virtual_pointer_manager_v1 / virtual-keyboard-unstable-v1) | `/dev/uinput` → XDG Portal `RemoteDesktop`. On X11 sessions `xdotool` (`X11Input`, backend name `"xdotool"`) is tried first, then uinput → portal |
 | `UIAutomationProvider` | Accessibility tree, element search, AT-SPI action invocation | AT-SPI2 via the `atspi` crate over D-Bus | — (returns `ProviderUnavailable` when the AT-SPI bus is absent) |
-| `WindowProvider` | Window enumeration and control | `hyprctl` IPC (`hyprctl -j`) over `$XDG_RUNTIME_DIR/hypr/` sockets | — (`wmctrl`/X11 rung is post-v1; provider resolves to `None` off-Hyprland) |
+| `WindowProvider` | Window enumeration and control | `hyprctl` IPC (`hyprctl -j`) over `$XDG_RUNTIME_DIR/hypr/` sockets | `wmctrl` + `xdotool`/`xprop` (`X11Window`, backend name `"wmctrl"`) on non-Hyprland X11 sessions; `None` elsewhere off-Hyprland |
 | `VisionProvider` | OCR and open-vocabulary detection | ONNX Runtime (`ort`): text OCR model + OWL-ViT | — (tools fail closed with `ProviderUnavailable`) |
 | `BrowserProvider` | DOM queries | Chrome DevTools Protocol at `127.0.0.1:9222` | — (requires the browser launched with `--remote-debugging-port=9222`) |
 | Server core | Timing, session state, history, metrics | tokio timers, `~/.ultranix-mcp/` stores | — |
@@ -87,7 +86,7 @@ canonical normative fallback-chain table lives in
 | `key_control` | keyboard | InputProvider | 1 |
 | `screenshot` | vision | CaptureProvider | 1 |
 | `screen_info` | vision | CaptureProvider + WindowProvider | 1 |
-| `screen_highlight` | vision | CaptureProvider | 2 |
+| `screen_highlight` | vision | OverlayProvider | 2 |
 | `color_at` | vision | CaptureProvider | 1 |
 | `set_spatial_focus` | vision | Server core (session state) | 2 |
 | `get_ui_tree` | vision | UIAutomationProvider | 2 |
@@ -215,6 +214,13 @@ interest:
 mid-sequence, the remaining injection is aborted and the tool returns
 `isError: true` with a `FocusChanged` explanation instead of typing into the
 wrong window. Single-shot actions (`mouse_click`, …) do not re-check focus.
+
+The mid-sequence re-check is **throttled**, not per-character: on the
+`delay_ms > 0` path, `type_text` re-reads focus at the first inter-key gap
+(so short sequences still abort mid-way), then at most every 16th character
+or when ≥100 ms have elapsed since the last check, plus a final post-loop
+check. Focus changes between checks are caught at the next checkpoint, not
+at the exact keystroke.
 
 ### Capture Output Writes
 
@@ -371,7 +377,8 @@ Example error response:
 ## Mouse Tools
 
 All mouse tools are implemented by `InputProvider`
-(wlr-virtual-pointer → uinput → portal RemoteDesktop) and shipped in **Phase 1**.
+(wlr-virtual-pointer → uinput → portal RemoteDesktop; `xdotool` first on
+X11 sessions) and shipped in **Phase 1**.
 Coordinates are logical layout-space integers (see
 [Coordinate System](#coordinate-system)).
 
@@ -481,8 +488,9 @@ Reading the pointer position is a **compositor query, not an input
 injection**: on Hyprland the position is read over compositor IPC
 (`hyprctl cursorpos`, served from the same
 `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/` socket used by
-`WindowProvider`). Backends that expose no pointer-position read channel
-(uinput, portal RemoteDesktop, xdotool-less X11) cannot service this tool.
+`WindowProvider`); on X11 sessions `xdotool getmouselocation --shell`
+supplies the read channel. Backends that expose no pointer-position read
+channel (uinput, portal RemoteDesktop) cannot service this tool.
 
 **inputSchema**
 
@@ -797,15 +805,11 @@ manager responds.
 
 ### `screen_highlight`
 
-> **v1.0.0 status — not yet implemented.** The tool validates its arguments
-> then fails loudly with `-32010 ProviderUnavailable`
-> (`data.provider: "OverlayProvider"` — no layer-shell highlight backend
-> exists yet); **nothing is drawn**. The wlr-layer-shell overlay below is
-> the post-v1 target contract.
-
-Draw a translucent rectangle overlay at `(x, y, w, h)` for `duration_ms`
-(wlr-layer-shell surface), purely visual feedback — it does not affect
-capture or input.
+Draw a translucent rectangle overlay at `(x, y, w, h)` for `duration_ms` —
+a `zwlr_layer_shell_v1` surface on the `overlay` layer with an empty input
+region, so clicks pass straight through. Purely visual feedback; it does
+not affect capture or input. On multi-monitor layouts the overlay is
+anchored to the output containing the rect's centre.
 
 **inputSchema**
 
@@ -828,8 +832,10 @@ capture or input.
 
 **Returns**: `text` — `"Highlighted (x, y, w, h) for <ms>ms"`.
 
-**Errors**: `InvalidParams`, `ProviderUnavailable` (compositor lacks
-layer-shell → no-op success is NOT returned; the call fails loudly).
+**Errors**: `InvalidParams`, `ProviderUnavailable` (the `OverlayProvider`
+slot is `None` — compositor lacks `zwlr_layer_shell_v1`, the session is
+X11, or it is headless; `-32010` carries `data.provider = "OverlayProvider"`;
+a no-op success is NOT returned, the call fails loudly).
 
 ### `color_at`
 
@@ -983,21 +989,35 @@ against `name`, `description`, and `role`.
 }
 ```
 
-**Returns**: `text` containing JSON — the single best match (the
-first hit in tree order), with its bounds and centre point:
+**Returns**: `text` containing JSON — up to 10 matches in tree order,
+each with its bounds, centre point, and whatever accessibility metadata
+the backend reports:
 
 ```json
 {
   "found": true,
-  "count": 1,
+  "count": 2,
   "matches": [
     {
+      "name": "Reload",
+      "role": "push button",
+      "states": ["focusable", "sensitive"],
       "bounds": { "x": 980, "y": 64, "w": 96, "h": 36 },
       "center": { "x": 1028, "y": 82 }
+    },
+    {
+      "name": "",
+      "role": "",
+      "states": [],
+      "bounds": { "x": 1090, "y": 64, "w": 96, "h": 36 },
+      "center": { "x": 1138, "y": 82 }
     }
   ]
 }
 ```
+
+Backends that expose only geometry report `"name"`/`"role"` as `""` and
+`"states"` as `[]`.
 
 Not found: `{"found": false, "count": 0, "matches": []}` (a **success**
 result — see [Conventions](#request--response-envelope)).
@@ -1283,8 +1303,14 @@ Execution rules:
 | `slurp` | `slurp [-f <format>] [-d] [-b <color>] [-c <color>]` — fixed flag set, no path arguments | everything else |
 | `hyprctl` | `hyprctl [-j] clients`, `activewindow`, `monitors`, `workspaces`; `hyprctl [-j] dispatch focuswindow|movewindow|resizewindow|workspace|movetoworkspace <args>` — `-j` (JSON output) is a sanctioned global flag | `dispatch exec`, `dispatch exec-once`, `keyword`, `setprop`, `reload`, and every other flag, dispatcher, or subcommand |
 | `scrot` | `scrot [-s] [-d <sec>]` — no caller `[file]` argument; same server-supplied captures-dir path as `grim` | any caller-chosen path or other flag |
-| `xdotool` | X11/XWayland fallback sessions only — registered only when the X11 input/window rungs are active (post-v1; not shipped at v1.0.0) | rejected with `ArgConstraintViolation` on native Wayland sessions |
+| `xdotool` | X11/XWayland fallback sessions only — accepted when the session probe resolved an X11 backend (the `X11Input`/`X11Window` rungs); args pass through under sanitization | rejected with `ArgConstraintViolation` on native Wayland sessions |
 | `wmctrl` | X11/XWayland fallback sessions only (same rule as `xdotool`) | rejected on native Wayland sessions |
+
+`xrandr` and `xprop` are pinned at startup alongside the command set but are
+**provider-internal only** — they have no per-binary validation arm, so
+`system_command` cannot invoke them (`CommandNotWhitelisted`). They exist to
+give the X11 providers display geometry (`xrandr`) and `_NET_WM_STATE`
+reads (`xprop`).
 
 `busctl` and `gdbus` are **not** in the command set: D-Bus interactions
 (portals, AT-SPI2) are performed in-process via `zbus`/`atspi`, never
@@ -1392,8 +1418,8 @@ or control bytes).
 
 ## Admin & Observability Tools
 
-Window tools use `WindowProvider` (`hyprctl` IPC); history/metrics tools are
-server core, Phase 4.
+Window tools use `WindowProvider` (`hyprctl` IPC; `wmctrl` + `xdotool` on
+non-Hyprland X11 sessions); history/metrics tools are server core, Phase 4.
 
 ### `window_control`
 
@@ -1664,8 +1690,8 @@ cleared by this tool. This is a destructive, consent-gated action (see
 | 1 — Hyprland I/O + security scaffolding | wlr capture+input, hyprctl windowing, arg-constrained exec; input sanitization, path whitelist, audit skeleton, consent gate | all mouse & keyboard tools; `screenshot`, `screen_info`, `color_at`; `sleep`, `mouse_move_path`, `system_command`; `window_control`, `get_windows`, `get_active_window` |
 | 2 — AT-SPI2 | Accessibility tree + action invocation | `set_spatial_focus`, `get_ui_tree`, `get_focused_element`, `find_element`, `invoke_element`, `wait_for_ui_element`, `screen_highlight` |
 | 3 — Vision + CDP | ONNX models, browser bridge | `find_text_on_screen`, `find_icon`, `web_query` |
-| 4 — Enterprise | HTTP auth surface (`uxcp_*` enforcement on `:3010`, fail-closed bind), rate limiting, AES-256-GCM history, replay, metrics (Sentry: planned post-v1) | `metrics`, `get_action_history`, `replay_action`, `clear_action_history` |
-| 5 — Portability | Non-Hyprland backends (KDE/GNOME via portal+uinput — shipped; X11 via `scrot`/`xdotool`/`wmctrl` — **post-v1**) | no new tools — widens where existing ones work |
+| 4 — Enterprise | HTTP auth surface (`uxcp_*` enforcement on `:3010`, fail-closed bind), rate limiting, AES-256-GCM history, replay, metrics; opt-in Sentry via `ULTRANIX_MCP_SENTRY_DSN` (wired at v1.1.0) | `metrics`, `get_action_history`, `replay_action`, `clear_action_history` |
+| 5 — Portability | Non-Hyprland backends (KDE/GNOME via portal+uinput; X11 via `scrot`/`xdotool`/`wmctrl` — shipped at v1.1.0; portal RemoteDesktop→PipeWire capture — v1.1.0) | no new tools — widens where existing ones work |
 
 Tools advertised in `tools/list` always reflect the *currently available*
 providers: a Phase-2 tool on a system without an AT-SPI bus is still listed

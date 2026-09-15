@@ -40,6 +40,8 @@ use xkbcommon::xkb::{self, Keysym};
 
 use crate::traits::InputProvider;
 
+use super::common::{OutputInfo, hyprctl_cursorpos};
+
 /// XKB keycodes are offset from evdev (Linux input-event) codes by 8.
 const XKB_EVDEV_OFFSET: u32 = 8;
 /// Axis value emitted per wheel step (libinput convention: one wheel
@@ -95,14 +97,6 @@ struct State {
     keyboard: Option<ZwpVirtualKeyboardV1>,
     outputs: Vec<wl_output::WlOutput>,
     output_info: Vec<OutputInfo>,
-}
-
-#[derive(Clone, Default)]
-struct OutputInfo {
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +344,36 @@ fn build_keycode_map(keymap: &xkb::Keymap) -> HashMap<u32, KeyBinding> {
 // Blocking protocol plumbing
 // ---------------------------------------------------------------------------
 
+/// Bounding box of all outputs in layout coordinates — the frame
+/// `motion_absolute` maps `[0, x_extent] x [0, y_extent]` onto. Outputs
+/// that never reported a mode (0×0) do not participate.
+fn layout_box_of(outputs: &[OutputInfo]) -> Result<(i32, i32, i32, i32)> {
+    let mut it = outputs.iter().filter(|o| o.width > 0 && o.height > 0);
+    let first = it
+        .next()
+        .ok_or_else(|| anyhow!("compositor advertised no usable wl_output geometry"))?;
+    let (mut x0, mut y0, mut x1, mut y1) = (
+        first.x,
+        first.y,
+        first.x + first.width,
+        first.y + first.height,
+    );
+    for o in it {
+        x0 = x0.min(o.x);
+        y0 = y0.min(o.y);
+        x1 = x1.max(o.x + o.width);
+        y1 = y1.max(o.y + o.height);
+    }
+    Ok((x0, y0, x1 - x0, y1 - y0))
+}
+
+/// Global `(x, y)` → coordinates inside the layout box
+/// `(bx, by, bw, bh)`, clamped so out-of-layout requests pin to the box
+/// edge rather than exiting the `[0, extent]` frame.
+fn to_box_local(x: i32, y: i32, bx: i32, by: i32, bw: i32, bh: i32) -> (u32, u32) {
+    ((x - bx).clamp(0, bw) as u32, (y - by).clamp(0, bh) as u32)
+}
+
 impl Inner {
     /// Milliseconds since the provider connected — a monotonic,
     /// compositor-acceptable source for protocol `time` arguments.
@@ -384,33 +408,12 @@ impl Inner {
     /// Bounding box of all outputs in layout coordinates — the frame
     /// `motion_absolute` maps `[0, x_extent] x [0, y_extent]` onto.
     fn layout_box(&self) -> Result<(i32, i32, i32, i32)> {
-        let mut it = self
-            .state
-            .output_info
-            .iter()
-            .filter(|o| o.width > 0 && o.height > 0);
-        let first = it
-            .next()
-            .ok_or_else(|| anyhow!("compositor advertised no usable wl_output geometry"))?;
-        let (mut x0, mut y0, mut x1, mut y1) = (
-            first.x,
-            first.y,
-            first.x + first.width,
-            first.y + first.height,
-        );
-        for o in it {
-            x0 = x0.min(o.x);
-            y0 = y0.min(o.y);
-            x1 = x1.max(o.x + o.width);
-            y1 = y1.max(o.y + o.height);
-        }
-        Ok((x0, y0, x1 - x0, y1 - y0))
+        layout_box_of(&self.state.output_info)
     }
 
     fn move_to(&mut self, x: i32, y: i32) -> Result<()> {
         let (bx, by, bw, bh) = self.layout_box()?;
-        let px = (x - bx).clamp(0, bw) as u32;
-        let py = (y - by).clamp(0, bh) as u32;
+        let (px, py) = to_box_local(x, y, bx, by, bw, bh);
         let ptr = self.pointer()?;
         // x_extent = layout box width maps px back to exactly `x`.
         ptr.motion_absolute(self.now_ms(), px, py, bw as u32, bh as u32);
@@ -435,8 +438,7 @@ impl Inner {
         // Validate before moving so a bad button name never moves the pointer.
         let code = button_code(button).ok_or_else(|| anyhow!("unknown button name {button:?}"))?;
         let (bx, by, bw, bh) = self.layout_box()?;
-        let px = (x - bx).clamp(0, bw) as u32;
-        let py = (y - by).clamp(0, bh) as u32;
+        let (px, py) = to_box_local(x, y, bx, by, bw, bh);
         let ptr = self.pointer()?;
         let t = self.now_ms();
         ptr.motion_absolute(t, px, py, bw as u32, bh as u32);
@@ -646,37 +648,6 @@ impl WlrInput {
                 .map(std::path::Path::to_path_buf),
         })
     }
-}
-
-// ---------------------------------------------------------------------------
-// hyprctl helpers
-// ---------------------------------------------------------------------------
-
-/// Parse `hyprctl cursorpos` output — modern JSON `{"x":N,"y":M}` or the
-/// legacy `x, y` pair.
-fn parse_cursorpos(s: &str) -> Option<(i32, i32)> {
-    let t = s.trim();
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
-        let x = v.get("x")?.as_i64()?;
-        let y = v.get("y")?.as_i64()?;
-        return Some((x as i32, y as i32));
-    }
-    let (xs, ys) = t.split_once(',')?;
-    Some((xs.trim().parse().ok()?, ys.trim().parse().ok()?))
-}
-
-/// Pinned `hyprctl -j cursorpos`, scrubbed env, bounded wait.
-async fn hyprctl_cursorpos(bin: &std::path::Path) -> Result<(i32, i32)> {
-    let mut cmd = crate::security::spawn::command(bin, &["-j", "cursorpos"]);
-    let out =
-        crate::security::spawn::output_within(&mut cmd, crate::security::spawn::SUBPROCESS_TIMEOUT)
-            .await
-            .context("run hyprctl cursorpos")?;
-    if !out.status.success() {
-        bail!("hyprctl cursorpos exited {}", out.status);
-    }
-    parse_cursorpos(&String::from_utf8_lossy(&out.stdout))
-        .ok_or_else(|| anyhow!("unparseable hyprctl cursorpos output"))
 }
 
 // ---------------------------------------------------------------------------
@@ -895,9 +866,146 @@ mod tests {
 
     #[test]
     fn parse_cursorpos_json_and_pair() {
+        use crate::providers::common::parse_cursorpos;
         assert_eq!(parse_cursorpos("{\"x\":1017,\"y\":664}"), Some((1017, 664)));
         assert_eq!(parse_cursorpos("1234, 567"), Some((1234, 567)));
         assert_eq!(parse_cursorpos("garbage"), None);
+    }
+
+    // ---- alias-table coverage (every arm is a line) --------------------
+
+    #[test]
+    fn button_code_covers_all_aliases() {
+        assert_eq!(button_code("lmb"), Some(0x110));
+        assert_eq!(button_code("rmb"), Some(0x111));
+        assert_eq!(button_code("mmb"), Some(0x112));
+        assert_eq!(button_code("thumb"), Some(0x113));
+        assert_eq!(button_code("thumb2"), Some(0x114));
+        assert_eq!(button_code("fwd"), Some(0x115));
+        assert_eq!(button_code("extra"), Some(0x114));
+        assert_eq!(button_code("side"), Some(0x113));
+    }
+
+    #[test]
+    fn keysym_for_name_covers_modifier_aliases() {
+        let raw = |n: &str| keysym_for_name(n).map(Keysym::raw);
+        assert_eq!(raw("control"), Some(xkb::keysyms::KEY_Control_L));
+        assert_eq!(raw("ctl"), Some(xkb::keysyms::KEY_Control_L));
+        assert_eq!(raw("lctrl"), Some(xkb::keysyms::KEY_Control_L));
+        assert_eq!(raw("rctrl"), Some(xkb::keysyms::KEY_Control_R));
+        assert_eq!(raw("shift"), Some(xkb::keysyms::KEY_Shift_L));
+        assert_eq!(raw("lshift"), Some(xkb::keysyms::KEY_Shift_L));
+        assert_eq!(raw("rshift"), Some(xkb::keysyms::KEY_Shift_R));
+        assert_eq!(raw("alt"), Some(xkb::keysyms::KEY_Alt_L));
+        assert_eq!(raw("lalt"), Some(xkb::keysyms::KEY_Alt_L));
+        assert_eq!(raw("ralt"), Some(xkb::keysyms::KEY_ISO_Level3_Shift));
+        assert_eq!(raw("altgr"), Some(xkb::keysyms::KEY_ISO_Level3_Shift));
+        assert_eq!(raw("win"), Some(xkb::keysyms::KEY_Super_L));
+        assert_eq!(raw("cmd"), Some(xkb::keysyms::KEY_Super_L));
+        assert_eq!(raw("meta"), Some(xkb::keysyms::KEY_Super_L));
+        assert_eq!(raw("lsuper"), Some(xkb::keysyms::KEY_Super_L));
+        assert_eq!(raw("rsuper"), Some(xkb::keysyms::KEY_Super_R));
+        assert_eq!(raw("hyper"), Some(xkb::keysyms::KEY_Hyper_L));
+    }
+
+    #[test]
+    fn keysym_for_name_covers_editing_and_nav_aliases() {
+        let raw = |n: &str| keysym_for_name(n).map(Keysym::raw);
+        assert_eq!(raw("enter"), Some(xkb::keysyms::KEY_Return));
+        assert_eq!(raw("newline"), Some(xkb::keysyms::KEY_Return));
+        assert_eq!(raw("spc"), Some(xkb::keysyms::KEY_space));
+        assert_eq!(raw("spacebar"), Some(xkb::keysyms::KEY_space));
+        assert_eq!(raw("bksp"), Some(xkb::keysyms::KEY_BackSpace));
+        assert_eq!(raw("bs"), Some(xkb::keysyms::KEY_BackSpace));
+        assert_eq!(raw("del"), Some(xkb::keysyms::KEY_Delete));
+        assert_eq!(raw("ins"), Some(xkb::keysyms::KEY_Insert));
+        assert_eq!(raw("pgup"), Some(xkb::keysyms::KEY_Page_Up));
+        assert_eq!(raw("pgdn"), Some(xkb::keysyms::KEY_Page_Down));
+        assert_eq!(raw("pagedown"), Some(xkb::keysyms::KEY_Page_Down));
+        assert_eq!(raw("caps"), Some(xkb::keysyms::KEY_Caps_Lock));
+        assert_eq!(raw("capslock"), Some(xkb::keysyms::KEY_Caps_Lock));
+        assert_eq!(raw("numlock"), Some(xkb::keysyms::KEY_Num_Lock));
+        assert_eq!(raw("scrolllock"), Some(xkb::keysyms::KEY_Scroll_Lock));
+        assert_eq!(raw("printscreen"), Some(xkb::keysyms::KEY_Print));
+        assert_eq!(raw("prtsc"), Some(xkb::keysyms::KEY_Print));
+        assert_eq!(raw("sysrq"), Some(xkb::keysyms::KEY_Print));
+        assert_eq!(raw("break"), Some(xkb::keysyms::KEY_Pause));
+    }
+
+    #[test]
+    fn keysym_for_name_unicode_single_char() {
+        // A single non-ASCII character resolves via utf32_to_keysym.
+        let sym = keysym_for_name("é").expect("é is a real keysym");
+        assert_ne!(sym.raw(), xkb::keysyms::KEY_NoSymbol);
+        assert_eq!(sym.raw(), xkb::utf32_to_keysym('é' as u32).raw());
+    }
+
+    #[test]
+    fn char_keysym_passes_through_unicode() {
+        // Non-ASCII chars map through utf32_to_keysym (no keymap at this
+        // level — the lookup happens later against the uploaded keymap).
+        assert_eq!(
+            char_keysym('€').raw(),
+            xkb::utf32_to_keysym('€' as u32).raw()
+        );
+        assert_ne!(char_keysym('€').raw(), xkb::keysyms::KEY_NoSymbol);
+    }
+
+    #[test]
+    fn build_keymap_env_defaults_compile() {
+        // The env-driven wrapper compiles *some* keymap on any machine
+        // with a working libxkbcommon (XKB_DEFAULT_* may legitimately
+        // select a non-us layout, so only structural properties hold).
+        let (text, keys) = build_keymap().expect("default keymap compiles");
+        assert!(text.contains("xkb_keymap"));
+        // Every standard layout binds Escape at level 0.
+        let esc = keys
+            .get(&xkb::keysyms::KEY_Escape)
+            .expect("keymap binds Escape");
+        assert!(!esc.shifted);
+    }
+
+    // ---- layout geometry ------------------------------------------------
+
+    #[test]
+    fn layout_box_of_merges_outputs() {
+        let o = |x, y, w, h| OutputInfo {
+            x,
+            y,
+            width: w,
+            height: h,
+            ..OutputInfo::default()
+        };
+        // Single output.
+        assert_eq!(
+            layout_box_of(&[o(0, 0, 1920, 1080)]).unwrap(),
+            (0, 0, 1920, 1080)
+        );
+        // Side-by-side + one offset upward → bounding box of the union
+        // (y spans -300..1140 → height 1440).
+        assert_eq!(
+            layout_box_of(&[o(0, 0, 1920, 1080), o(1920, -300, 2560, 1440)]).unwrap(),
+            (0, -300, 4480, 1440)
+        );
+        // Outputs without a mode (0×0) are ignored entirely.
+        assert_eq!(
+            layout_box_of(&[o(0, 0, 0, 0), o(10, 20, 100, 50)]).unwrap(),
+            (10, 20, 100, 50)
+        );
+        // Nothing usable → error (pointer framing has no extent).
+        assert!(layout_box_of(&[]).is_err());
+        assert!(layout_box_of(&[o(0, 0, 0, 0)]).is_err());
+    }
+
+    #[test]
+    fn to_box_local_clamps_into_extent() {
+        // Inside the box → offset from its origin.
+        assert_eq!(to_box_local(100, 200, 10, 20, 1000, 500), (90, 180));
+        // Left/above the box → 0; right/below → extent.
+        assert_eq!(to_box_local(-5, -5, 10, 20, 1000, 500), (0, 0));
+        assert_eq!(to_box_local(5000, 9000, 10, 20, 1000, 500), (1000, 500));
+        // Exactly on the box edge.
+        assert_eq!(to_box_local(10, 20, 10, 20, 1000, 500), (0, 0));
     }
 
     #[test]

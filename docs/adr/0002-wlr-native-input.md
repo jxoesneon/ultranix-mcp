@@ -51,7 +51,7 @@ Constraints:
 - **ydotool is rejected** — it adds a privileged daemon dependency with no
   capability gain over direct uinput access.
 - **xdotool** is retained only inside the X11 fallback chain (XWayland sessions)
-  — *post-v1 rung: the X11-native providers are not shipped at v1.0.0.*
+  — *the X11-native providers shipped at v1.1.0 (not part of v1.0.0).*
 
 ## Consequences
 
@@ -85,4 +85,4 @@ Constraints:
 - Ship the udev rule in `packaging/` and surface a `get_action_history`-adjacent
   diagnostic when uinput is probed but `/dev/uinput` is not writable.
 - Add integration coverage for both paths: real Hyprland session (wlr-native)
-  and Xvfb+xdotool (X11 chain — post-v1) per TESTING_STRATEGY.md.
+  and Xvfb+xdotool (X11 chain — rungs shipped at v1.1.0) per TESTING_STRATEGY.md.
