@@ -239,6 +239,29 @@ async fn system_command(args: &Map<String, Value>) -> Result<CallToolResult, Err
     })))
 }
 
+/// Normalise one matched DOM node into the spec element shape
+/// (`{tag, id, classes, text, bounds, attributes}` — docs/TOOLS.md
+/// `web_query`). `rect` is accepted as an alias for `bounds` (CDP stub
+/// spelling); missing keys are filled with null/empty values.
+fn element_json(m: &Value) -> Value {
+    let get = |k: &str| m.get(k).cloned().unwrap_or(Value::Null);
+    json!({
+        "tag": get("tag"),
+        "id": get("id"),
+        "classes": m.get("classes").cloned().unwrap_or_else(|| json!([])),
+        "text": get("text"),
+        "bounds": m
+            .get("bounds")
+            .or_else(|| m.get("rect"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "attributes": m
+            .get("attributes")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+    })
+}
+
 async fn web_query(
     args: &Map<String, Value>,
     providers: &Providers,
@@ -257,16 +280,26 @@ async fn web_query(
     let browser = browser_provider(providers)?;
     backend!(browser.ensure_ready().await);
     let mut result = backend!(browser.query_selector(&p.selector).await);
-    // Normalise to the documented {found, element?} envelope: providers may
-    // return a raw {"matches": [...]} payload in Phase 0.
-    if let Some(obj) = result.as_object_mut()
-        && !obj.contains_key("found")
-    {
-        let found = obj
-            .get("matches")
+    // Normalise to the documented {found, element?, bounds_space}
+    // envelope: providers may return a raw {"matches": [...]} payload —
+    // the first match becomes `element`.
+    if let Some(obj) = result.as_object_mut() {
+        let first = obj
+            .remove("matches")
+            .as_ref()
             .and_then(Value::as_array)
-            .is_some_and(|m| !m.is_empty());
+            .and_then(|m| m.first().cloned());
+        if let Some(el) = obj.get("element").cloned().or(first) {
+            obj.insert("element".into(), element_json(&el));
+        }
+        let found = obj
+            .get("found")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| obj.contains_key("element"));
         obj.insert("found".into(), Value::Bool(found));
+        // Viewport CSS pixels — no window-position mapping exists yet.
+        obj.entry("bounds_space")
+            .or_insert_with(|| json!("viewport"));
     }
     Ok(json_result(&result))
 }

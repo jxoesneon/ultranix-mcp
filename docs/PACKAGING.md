@@ -1,9 +1,12 @@
 # ultranix-mcp — Packaging & Distribution Specification
 
-**Status:** Approved design · Spec phase
-**Applies to:** ultranix-mcp ≥ 0.1.0 (Rust 2024, `rmcp` SDK)
+**Status:** Implemented (v1.0.0) — the packaging artifacts described here ship
+under `packaging/`; registry/AUR/crates.io submissions are pending (see
+[REGISTRY_SUBMISSION.md](REGISTRY_SUBMISSION.md)).
+**Applies to:** ultranix-mcp ≥ 1.0.0 (Rust 2024, `rmcp` SDK)
 **Primary target:** CachyOS / Arch Linux + Hyprland (wlroots), with XDG-portal
-fallbacks covering GNOME / KDE / other desktops. X11 support lands in Phase 5.
+and uinput fallbacks covering GNOME / KDE / other desktops. X11-native
+providers are post-v1 (only portal/uinput rungs resolve on X11 today).
 
 This document defines every supported install path, the runtime permission
 model, the systemd integration, and the post-install verification procedure.
@@ -14,14 +17,14 @@ MCP client wiring.
 
 ## 1. Distribution matrix
 
-| Channel | Artifact | Audience | Phase required |
+| Channel | Artifact | Audience | Status |
 | --- | --- | --- | --- |
-| crates.io | `cargo install ultranix-mcp` | Rust toolchain users, all distros | Phase 1 |
-| AUR `ultranix-mcp` | source build (PKGBUILD) | Arch/CachyOS users | Phase 1 |
-| AUR `ultranix-mcp-bin` | prebuilt release binary | fast install, no toolchain | Phase 1 |
-| AUR `ultranix-mcp-git` | builds `main` HEAD | bleeding-edge testers | Phase 1 |
-| Nix flake | `github:jxoesneon/ultranix-mcp` | NixOS / nixpkgs users | Phase 5 |
-| GitHub Releases | `x86_64-unknown-linux-gnu` tarball + `.deb`-less raw binary | generic distros, CI | Phase 1 |
+| crates.io | `cargo install ultranix-mcp` | Rust toolchain users, all distros | publish pending |
+| AUR `ultranix-mcp` | source build (PKGBUILD) | Arch/CachyOS users | PKGBUILD shipped; submission pending |
+| AUR `ultranix-mcp-bin` | prebuilt release binary | fast install, no toolchain | pending |
+| AUR `ultranix-mcp-git` | builds `main` HEAD | bleeding-edge testers | PKGBUILD shipped; submission pending |
+| Nix flake | `github:jxoesneon/ultranix-mcp` | NixOS / nixpkgs users | post-v1 |
+| GitHub Releases | `x86_64-unknown-linux-gnu` tarball + `.deb`-less raw binary | generic distros, CI | live via `release.yml` |
 
 There is deliberately **no Docker image in the distribution matrix**:
 desktop automation is inherently single-seat — the server must share the
@@ -49,6 +52,12 @@ cargo install ultranix-mcp --locked
 # Binary lands at ~/.cargo/bin/ultranix-mcp
 ```
 
+> **Build-time caveat:** the `ort` crate's `download-binaries` feature
+> fetches the prebuilt ONNX Runtime shared library **during the build** —
+> `cargo install` therefore needs network access mid-build (and fails on
+> offline builders). Packagers may instead set `ORT_STRATEGY=system` to
+> link a distro `onnxruntime` package.
+
 Publish requirements (enforced in `Cargo.toml` before `cargo publish`):
 
 - `license = "ISC"`, `edition = "2024"`, `rust-version` pinned to the MSRV.
@@ -63,24 +72,19 @@ Publish requirements (enforced in `Cargo.toml` before `cargo publish`):
   fetch of `libonnxruntime`; packagers may set
   `ORT_STRATEGY=system` to link a distro `onnxruntime` package instead).
 
-Build-time feature flags:
+Build-time feature flags — **as shipped at v1.0.0** the crate exposes only
+the two ONNX execution-provider switches (`default = []`, everything below
+is compiled in unconditionally):
 
 | Flag | Default | Effect |
 | --- | --- | --- |
-| `backend-wlroots` | on | wlr-screencopy + wlr-virtual-pointer + virtual-keyboard |
-| `backend-uinput` | on | `/dev/uinput` evdev input fallback |
-| `backend-portal` | on | XDG portal capture via `zbus` |
-| `backend-x11` | off (Phase 5) | xdotool/scrot/wmctrl subprocess fallback |
-| `a11y` | on | AT-SPI2 semantic UI tree (Phase 2) |
-| `vision` | on | `ort` ONNX inference, model dir `~/.ultranix-mcp/models/` |
-| `cdp` | on | Chrome DevTools Protocol browser bridge (Phase 3) |
+| `vision-cuda` | off | CUDA execution provider for `ort` (implies `ort/load-dynamic` — a matching ONNX Runtime build must be provided via `ORT_DYLIB_PATH`) |
+| `vision-openvino` | off | OpenVINO execution provider (same `load-dynamic` caveat) |
 
-Minimal install for headless/non-vision use:
-
-```bash
-cargo install ultranix-mcp --locked --no-default-features \
-  --features backend-wlroots,backend-portal
-```
+A per-backend feature split (`backend-wlroots`/`backend-uinput`/
+`backend-portal`/`backend-x11`/`a11y`/`vision`/`cdp`) remains the packaging
+target for a post-v1 trim-down release; a minimal
+`--no-default-features` install is not yet meaningful.
 
 ---
 
@@ -96,7 +100,7 @@ The shipped file lives at `packaging/ultranix-mcp/PKGBUILD` (with
 ```bash
 # Maintainer: <name> <email>
 pkgname=ultranix-mcp
-pkgver=0.1.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="Wayland-native, security-first MCP server for Linux desktop automation (Hyprland-first)"
 arch=('x86_64' 'aarch64')
@@ -111,15 +115,15 @@ optdepends=(
   'xdg-desktop-portal-hyprland: screen-capture consent path on Hyprland'
   'xdg-desktop-portal-wlr: portal backend for other wlroots compositors'
   'xdg-desktop-portal-gnome: portal backend under GNOME'
-  'pipewire: stream transport for the portal RemoteDesktop path'
+  'pipewire: only needed if portal RemoteDesktop stream consumption lands post-v1 (v1 portal input never opens the video fd)'
   'wl-clipboard: post-v1 clipboard tools (wl-copy/wl-paste) — NOT a v1 runtime dep'
-  'at-spi2-core: semantic UI tree (Phase 2 a11y backend)'
+  'at-spi2-core: semantic UI tree (a11y backend)'
   'onnxruntime: system ONNX Runtime for ORT_STRATEGY=system builds'
   'grim: whitelisted system_command capture helper (wlroots)'
   'slurp: whitelisted system_command region-picker (wlroots)'
-  'xdotool: X11 input fallback (Phase 5)'
-  'scrot: X11 capture fallback (Phase 5)'
-  'wmctrl: X11 window management fallback (Phase 5)'
+  'xdotool: X11 input fallback (post-v1)'
+  'scrot: X11 capture fallback (post-v1)'
+  'wmctrl: X11 window management fallback (post-v1)'
 )
 install=ultranix-mcp.install
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
@@ -171,7 +175,7 @@ must not silently `udevadm trigger` inside `.install`; prompt the user.
 
 - `pkgname=ultranix-mcp-git`, `source=('git+https://github.com/jxoesneon/ultranix-mcp.git')`.
 - `pkgver()` derives from `git describe --tags --long` →
-  `0.1.0.rNN.g<sha>`; `provides=('ultranix-mcp')`,
+  `1.0.0.rNN.g<sha>`; `provides=('ultranix-mcp')`,
   `conflicts=('ultranix-mcp' 'ultranix-mcp-bin')`.
 - Builds with `cargo build --release` (no `--frozen`; lockfile still honored).
 - Standard `-git` disclaimer applies: for testers; `main` may be between
@@ -179,7 +183,7 @@ must not silently `udevadm trigger` inside `.install`; prompt the user.
 
 ---
 
-## 4. Optional Nix flake (Phase 5)
+## 4. Optional Nix flake (post-v1 — not yet shipped)
 
 `flake.nix` exposes `packages.<system>.default` via
 `rustPlatform.buildRustPackage`, a `devShells.default` with the full native
@@ -199,7 +203,7 @@ deps, and a `nixosModules.default` user-service module.
       let pkgs = nixpkgs.legacyPackages.${system}; in {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "ultranix-mcp";
-          version = "0.1.0";
+          version = "1.0.0";
           src = self;
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = [ pkgs.pkg-config ];
@@ -234,10 +238,10 @@ order; the permission requirements below are per-backend.
 | **wlroots-native** (wlr-virtual-pointer-unstable-v1, virtual-keyboard-unstable-v1) | mouse + keyboard injection | **None.** No root, no group, no portal prompt on Hyprland. | Same as above. |
 | **uinput/evdev** (input fallback) | `/dev/uinput` event injection | Write access to `/dev/uinput` — per the documented rule (`docs/ARCHITECTURE.md` §5): `MODE="0660", GROUP="ultranix-input"` with the service user in the **dedicated** `ultranix-input` group. A seat-scoped `uaccess` variant is also supported. **Never** reuse `GROUP="input"` — that group can read *real* input devices, i.e. it is a keylogger permission (see `docs/THREAT_MODEL.md` §4.1). | Install rule `99-ultranix-mcp-uinput.rules` (§5.1), `udevadm control --reload`, `groupadd ultranix-input`, `usermod -aG ultranix-input $USER`, re-login. Add **only** the service user to the group. No root daemon, no `ydotoold`. |
 | **XDG portal** (`org.freedesktop.portal.Screenshot` + `RemoteDesktop` via `zbus`) | capture + input fallback | **None**, but the user must accept the compositor/portal **consent dialog** on first use. Portal session tokens are persisted to avoid repeated prompts; failures degrade to `None`, never escalate. | `xdg-desktop-portal` + a backend (`-hyprland`, `-wlr`, `-gnome`, `-kde`) installed; PipeWire for the `RemoteDesktop` stream. |
-| **AT-SPI2** (Phase 2) | semantic UI tree, accessible-name targeting | Accessibility bus must be enabled; no extra privileges. | `at-spi2-core` installed; `org.a11y.Bus` reachable on the session bus (usually via `at-spi-bus-launcher` autostart or D-Bus activation). Under GNOME also: `gsettings set org.gnome.desktop.interface toolkit-accessibility true`. Under Hyprland ensure `exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP` so the a11y bus inherits the session. |
+| **AT-SPI2** | semantic UI tree, accessible-name targeting | Accessibility bus must be enabled; no extra privileges. | `at-spi2-core` installed; `org.a11y.Bus` reachable on the session bus (usually via `at-spi-bus-launcher` autostart or D-Bus activation). Under GNOME also: `gsettings set org.gnome.desktop.interface toolkit-accessibility true`. Under Hyprland ensure `exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP` so the a11y bus inherits the session. |
 | **hyprctl IPC** | window list/focus/move/resize | **None** — `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock` is user-owned. | Hyprland session. |
-| **CDP bridge** (Phase 3) | browser automation (`web_query`) | **None** beyond a browser launched with `--remote-debugging-port=9222`; the bridge connects to `127.0.0.1:9222`. | Chromium-family browser. |
-| **X11 fallback** (Phase 5) | capture + input on Xorg sessions | Runs as the session user; `DISPLAY` + `XAUTHORITY`. | `xdotool`, `scrot`, `wmctrl` installed. |
+| **CDP bridge** | browser automation (`web_query`) | **None** beyond a browser launched with `--remote-debugging-port=9222`; the bridge connects to `127.0.0.1:9222`. | Chromium-family browser. |
+| **X11 fallback** (post-v1) | capture + input on Xorg sessions | Runs as the session user; `DISPLAY` + `XAUTHORITY`. | `xdotool`, `scrot`, `wmctrl` installed. |
 
 ### 5.1 Shipped udev rule — `packaging/99-ultranix-mcp-uinput.rules`
 
@@ -272,9 +276,9 @@ Also ensure the `uinput` module loads: `echo uinput > /etc/modules-load.d/uinput
 | `wl-clipboard` (`wl-copy`/`wl-paste`) | clipboard get/set tools — a **post-v1** category, not in the v1 tool catalog | No — post-v1 optional only; not a current runtime dependency |
 | `xdg-desktop-portal-*` + `pipewire` | portal `Screenshot`/`RemoteDesktop` fallback + consent UX | Recommended |
 | `grim` / `slurp` | whitelisted `system_command` helpers on wlroots | Recommended |
-| `at-spi2-core` | AT-SPI2 backend | Recommended (Phase 2) |
+| `at-spi2-core` | AT-SPI2 backend | Recommended |
 | `onnxruntime` | system ONNX lib instead of bundled download | No |
-| `xdotool` / `scrot` / `wmctrl` | X11 fallback | No (Phase 5) |
+| `xdotool` / `scrot` / `wmctrl` | X11 fallback | No (post-v1) |
 
 ### 5.3 Environment & data directory
 
@@ -286,12 +290,13 @@ Also ensure the `uinput` module loads: `echo uinput > /etc/modules-load.d/uinput
 | `ULTRANIX_MCP_DISABLE_AUTH` | Dev-only auth bypass (`true`) — startup warning + `auth.disabled` audit event | `false` |
 | `ULTRANIX_MCP_HISTORY_SECRET` | AES-256-GCM key for `history.json` | per-install generated at first run (stored `0600` under `~/.ultranix-mcp/`); a dev fallback warns loudly |
 | `ULTRANIX_MCP_LOG_LEVEL` / `RUST_LOG` | tracing verbosity | `info` |
-| `ULTRANIX_MCP_SENTRY_DSN` | Optional Sentry error reporting | unset (disabled) |
+| `ULTRANIX_MCP_SENTRY_DSN` | Optional Sentry error reporting — **planned, post-v1** (documented, not wired) | unset |
 | `ULTRANIX_MCP_BIND` | HTTP bind address (or `--bind` flag) | `127.0.0.1:3010` |
 
 Key-source precedence: `ULTRANIX_MCP_API_KEY` → `ULTRANIX_MCP_API_KEY_FILE`
-→ `~/.ultranix-mcp/api-keys` (convention fallback, one key per line, mode
-`0600` required — see `docs/API_KEY_MANAGEMENT.md` §3).
+→ `~/.ultranix-mcp/api-keys/*.json` (convention fallback — a directory of
+key-record files, JSON or line format, mode `0600` enforced per file; see
+`docs/API_KEY_MANAGEMENT.md` §3).
 
 Startup flags (the other half of configuration): `--transport stdio|http`
 (the canonical selector; `--stdio` is an accepted alias), `--bind <addr:port>`,
@@ -472,7 +477,7 @@ Run in order on a live Hyprland session:
 - [ ] `ultranix-mcp --transport stdio` starts; an MCP `initialize` handshake
       succeeds and `tools/list` returns all 32 tools (unfiltered run).
 - [ ] Startup probe logs (`RUST_LOG=info`) show provider resolution —
-      `CaptureProvider=WlrScreencopy`, `InputProvider=WlrVirtualInput`,
+      `CaptureProvider=WlrCapture`, `InputProvider=WlrInput`,
       `WindowProvider=HyprctlWindow` on Hyprland; degraded sessions log the
       portal/uinput/`None` substitutions per the fallback chain.
 - [ ] HTTP mode `/readyz` reports which of the six providers resolved to
@@ -514,7 +519,10 @@ Unchanged and canonical (§2): `cargo install ultranix-mcp --locked` lands
 the binary at `~/.cargo/bin/ultranix-mcp`. `cargo install` ships no unit or
 udev rule — for supervised operation copy `packaging/ultranix-mcp.service`
 to `~/.config/systemd/user/` and point `ExecStart` at
-`%h/.cargo/bin/ultranix-mcp`.
+`%h/.cargo/bin/ultranix-mcp`. **Build-time caveat:** `ort` fetches the
+prebuilt ONNX Runtime shared library mid-build, so the install requires
+network access (or `ORT_STRATEGY=system` against a distro `onnxruntime`) —
+see §2.
 
 ### Non-Arch distro notes (Fedora, Debian/Ubuntu, …)
 

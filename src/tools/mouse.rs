@@ -1,6 +1,8 @@
 //! Mouse tools (7) — all backed by `InputProvider`.
 //! Coordinates are Hyprland logical layout-space integers.
 
+use std::collections::HashSet;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use rmcp::model::{CallToolResult, ErrorData, Tool};
@@ -14,7 +16,33 @@ use super::{
 };
 use crate::providers::Providers;
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+/// Session button-state tracker for `mouse_button_control`
+/// (docs/TOOLS.md: "the server tracks button state per session").
+/// Process-global — dispatch carries no session handle yet, so the held
+/// set is shared across callers. `mouse_click`/`mouse_drag` are transient
+/// down+up sequences and do not enter the set.
+static HELD_BUTTONS: LazyLock<Mutex<HashSet<MouseButton>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn button_is_held(button: MouseButton) -> bool {
+    HELD_BUTTONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&button)
+}
+
+fn set_button_held(button: MouseButton, held: bool) {
+    let mut set = HELD_BUTTONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if held {
+        set.insert(button);
+    } else {
+        set.remove(&button);
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum MouseButton {
     #[default]
@@ -299,9 +327,22 @@ async fn mouse_button_control(
     providers: &Providers,
 ) -> Result<CallToolResult, ErrorData> {
     let p: ButtonControlParams = parse_args("mouse_button_control", args)?;
-    let input = input_provider(providers)?;
     let down = matches!(p.action, ButtonAction::Down);
+    let held = button_is_held(p.button);
+    // Spec: "releasing an unpressed button is a no-op success" — and the
+    // symmetric press of an already-held button is equally a no-op: the
+    // requested end state already holds, so no event is injected.
+    if down == held {
+        return Ok(text_result(format!(
+            "{} button {}",
+            p.button.as_str(),
+            p.action.as_str()
+        )));
+    }
+    let input = input_provider(providers)?;
     backend!(input.mouse_button(p.button.as_str(), down).await);
+    // Only a successful injection mutates the tracked state.
+    set_button_held(p.button, down);
     Ok(text_result(format!(
         "{} button {}",
         p.button.as_str(),

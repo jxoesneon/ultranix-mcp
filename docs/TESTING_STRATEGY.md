@@ -1,7 +1,8 @@
 # Testing Strategy
 
-> **Status:** Approved specification (pre-implementation). Defines the test
-> pyramid, environments, and gates for ultranix-mcp Phases 0–5.
+> **Status:** Implemented — describes the test pyramid shipped with v1.0.0
+> (Phases 0–5 complete). X11-specific items remain *post-v1* and are marked
+> inline.
 
 ultranix-mcp automates a live GUI session, which makes naive end-to-end testing
 host-dependent and flaky. The strategy therefore follows ultrawin's proven
@@ -22,7 +23,7 @@ graph TB
     subgraph "Tier 2 — Session integration (CI job + pre-release)"
         HYPR[Real Hyprland session<br/>verified CachyOS env]
         NESTED[Nested compositor<br/>cage / weston --headless]
-        XVFB[X11 fallback<br/>Xvfb + xdotool]
+        XVFB["X11 fallback (post-v1)<br/>Xvfb + xdotool"]
     end
 
     subgraph "Tier 3 — Human gate (per release)"
@@ -74,8 +75,9 @@ fn handler_with(p: Providers) -> UltranixHandler { /* Option<Arc<dyn ..>> DI */ 
 - **Every tool** has a `None`-provider test asserting the structured
   capability-unavailable error (ADR 0004) — not a panic, not a transport error.
 - **Every provider fallback chain** has a selection unit test: stub the probe
-  results, assert the chosen implementation order (wlr → uinput → portal →
-  `None`; hyprctl → wmctrl → `None`; AT-SPI2 → `None`; CPU → OpenVINO → CUDA →
+  results, assert the chosen implementation order (wlr → grim/slurp → portal →
+  `None`; wlr-input → uinput → portal → `None`; hyprctl → `None` — the
+  `wmctrl` rung is post-v1; AT-SPI2 → `None`; CPU → OpenVINO → CUDA →
   `None`).
 - **Negative-argument tests** per tool: missing required field, wrong type,
   out-of-range coordinates, oversized strings.
@@ -144,7 +146,7 @@ Environment: CachyOS + Hyprland/Wayland + PipeWire + xdg-desktop-portal-hyprland
 | `type_text` / `key_control` | text arrives in a target `foot`/`gtk4-demo` field |
 | `get_windows`, `get_active_window`, `window_control` | consistent with `hyprctl -j clients` within 100ms |
 | `get_ui_tree`, `get_focused_element`, `find_element` | live AT-SPI2 tree from a launched GTK test app; `find_element` bounds land inside the window's reported geometry |
-| `find_text_on_screen` | OCR a window rendered with known text; ≥1 expected word found with correct bounds; second call within 10s hits OCR cache (<1ms) |
+| `find_text_on_screen` | OCR a window rendered with known text; ≥1 expected word found with correct bounds; (post-v1: second call within 10s hits OCR cache <1ms) |
 | `find_icon` | OWL-ViT locates a known icon in a test scene |
 | `web_query` | Chromium with `--remote-debugging-port=9222`; CSS selector eval returns expected node |
 | Degradation drill | restart without `HYPRLAND_INSTANCE_SIGNATURE` / AT-SPI2 bus stopped → `/readyz` reports `None`; tools return capability-unavailable |
@@ -160,13 +162,13 @@ For CI where a full seat is unavailable:
 - Enables **parallel, hermetic** GUI integration runs — no DISPLAY contention,
   torn down per job.
 
-### 2.3 X11 fallback testing
+### 2.3 X11 fallback testing (post-v1 — X11 provider rungs not yet shipped)
 
 - `Xvfb :99` + `fluxbox`-style minimal WM; provider chain must resolve
-  `scrot`/`xdotool`/`wmctrl` implementations.
+  `scrot`/`xdotool`/`wmctrl` implementations once the X11-native providers
+  land.
 - Assertions: `screenshot` returns a valid frame via `scrot`, `mouse_click`
-  dispatches via `xdotool`, `get_windows` lists via `wmctrl` — proving the
-  Phase 5 portability chain end-to-end.
+  dispatches via `xdotool`, `get_windows` lists via `wmctrl`.
 - Also validates that wlroots/portal probes correctly *decline* in an X11
   environment (no false-positive backend selection).
 
@@ -184,7 +186,7 @@ For CI where a full seat is unavailable:
 | fuzz smoke | `cargo fuzz run tool_args -- -max_total_time=60` | blocking (nightly: 15min) |
 | integration — Hyprland | Tier 2.1 on a real-session runner (self-hosted CachyOS/Hyprland box) | release-blocking |
 | integration — nested | `cage`/`weston --headless` job | blocking where seatd available |
-| integration — X11 | `Xvfb` job | blocking |
+| integration — X11 | `Xvfb` job | post-v1 (X11 rungs unshipped) |
 
 **Miri consideration:** `cargo miri test` runs on the pure-logic subset
 (sanitization, whitelist matching, history codec, cache TTL logic) — providers
@@ -209,12 +211,12 @@ Executed on the verified environment before tagging:
 - [ ] `system_command` accepts `hyprctl -j activewindow`; rejects `sh -c`, `curl`, `busctl`, `../../etc` path arg, and `hyprctl dispatch exec`; first destructive call → `-32015 ConsentRequired`, retry with `consent_token` succeeds
 - [ ] `screenshot` <50ms (wlr path); `mouse_click` dispatch <10ms; `get_ui_tree` <500ms; `find_text_on_screen` uncached <2s
 - [ ] `history.json` encrypted at rest (not greppable); `replay_action` reproduces a recorded `mouse_click`
-- [ ] `get_action_history` → `clear_action_history` → history empty, gauge `ultranix_mcp_action_history_size` = 0
+- [ ] `get_action_history` → `clear_action_history` → history empty (post-v1: gauge `ultranix_mcp_action_history_size` = 0)
 - [ ] Kill AT-SPI2 bus → `/readyz` reports provider `None`; `get_ui_tree` returns structured capability error; restore → next boot resolves again
 - [ ] Non-Hyprland Wayland session (GNOME/KDE): portal/uinput chain resolves; documented degraded tools behave per spec
-- [ ] X11 session (or Xvfb): scrot/xdotool/wmctrl chain works end-to-end
+- [ ] X11 session (or Xvfb): scrot/xdotool/wmctrl chain works end-to-end — **post-v1**
 - [ ] Model cache: `find_icon` downloads once to `~/.ultranix-mcp/models/`; second boot reuses; digest mismatch re-fetches
-- [ ] Prometheus: all 8 metrics present, correct types/labels; Sentry (when `ULTRANIX_MCP_SENTRY_DSN` set) captures a forced error
+- [ ] Prometheus: all 4 shipped metrics present, correct types/labels; (post-v1: Sentry captures a forced error when `ULTRANIX_MCP_SENTRY_DSN` is set — not wired at v1.0.0)
 - [ ] `--category=vision` serves exactly the 12 vision tools; `--category` omitted serves all 32
 - [ ] Upgrade path: stop unit → replace binary → start; `history.json` and logs preserved under `~/.ultranix-mcp/`
 
@@ -225,6 +227,6 @@ Executed on the verified environment before tagging:
 | 0 — scaffold + mocks | all Tier-1 harness, goldens, CI matrix skeleton |
 | 1 — Hyprland I/O | Tier-2.1 capture/input/window tests; Tier-1 security-scaffolding tests (arg constraints, consent gate, audit hash chain); nested-compositor job |
 | 2 — AT-SPI2 | UI-tree/focus/find integration; `None`-degradation drill |
-| 3 — vision + CDP | OCR/icon goldens, cache-TTL test, `web_query` on :9222 |
+| 3 — vision + CDP | OCR/icon goldens, `web_query` on :9222; OCR cache-TTL test lands post-v1 with the cache |
 | 4 — enterprise | full security table, metrics/health assertions, crypto round-trip |
-| 5 — portability | Xvfb job, non-Hyprland Wayland run, packaging smoke test |
+| 5 — portability | non-Hyprland Wayland run, packaging smoke test; Xvfb job lands with the post-v1 X11 rungs |

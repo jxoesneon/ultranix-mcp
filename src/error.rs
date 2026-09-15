@@ -4,12 +4,19 @@ use rmcp::model::ErrorCode;
 
 /// JSON-RPC error codes used across the tool surface.
 pub mod codes {
+    /// Command outside the whitelist / argument constraint violation
+    /// (docs/TOOLS.md error table — both share `-32003`).
+    pub const COMMAND_NOT_WHITELISTED: i32 = -32003;
+    /// Argument rejected by the command whitelist.
+    pub const ARG_CONSTRAINT_VIOLATION: i32 = -32003;
+    /// Path argument outside the path whitelist roots.
+    pub const PATH_NOT_WHITELISTED: i32 = -32004;
+    /// Input rejected by the sanitization layer (metachars, control bytes).
+    pub const SANITIZATION_REJECTED: i32 = -32006;
     /// Backend present in the registry but unavailable at call time.
     pub const PROVIDER_UNAVAILABLE: i32 = -32010;
     /// Destructive tool invoked without a valid consent token.
     pub const CONSENT_REQUIRED: i32 = -32015;
-    /// Argument rejected by the command/path whitelist.
-    pub const ARG_CONSTRAINT_VIOLATION: i32 = -32020;
 }
 
 /// Tool-level failures that map onto MCP `CallToolResult` / JSON-RPC errors.
@@ -71,9 +78,12 @@ mod tests {
     #[test]
     fn code_constants_match_tools_taxonomy() {
         // docs/TOOLS.md freezes these values on the wire.
+        assert_eq!(codes::COMMAND_NOT_WHITELISTED, -32003);
+        assert_eq!(codes::ARG_CONSTRAINT_VIOLATION, -32003);
+        assert_eq!(codes::PATH_NOT_WHITELISTED, -32004);
+        assert_eq!(codes::SANITIZATION_REJECTED, -32006);
         assert_eq!(codes::PROVIDER_UNAVAILABLE, -32010);
         assert_eq!(codes::CONSENT_REQUIRED, -32015);
-        assert_eq!(codes::ARG_CONSTRAINT_VIOLATION, -32020);
     }
 
     #[test]

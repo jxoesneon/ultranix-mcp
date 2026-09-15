@@ -105,6 +105,9 @@ struct HistoryParams {
     #[serde(default = "default_history_limit")]
     #[schemars(range(min = 1, max = 1000))]
     limit: u32,
+    /// Case-insensitive substring filter on the recorded tool name
+    /// (e.g. "mouse" matches mouse_click, mouse_drag, …)
+    action: Option<String>,
 }
 
 fn default_history_limit() -> u32 {
@@ -163,7 +166,7 @@ pub(super) fn tools() -> Vec<Tool> {
         ),
         tool::<HistoryParams>(
             "get_action_history",
-            "Read the encrypted action history, newest-first.",
+            "Read the encrypted action history, newest-first; `action` filters to tool names containing it.",
         ),
         replay_tool(),
         tool::<ClearHistoryParams>(
@@ -363,6 +366,32 @@ async fn window_control(
     )))
 }
 
+/// Whether the recorded arguments contain a redacted placeholder
+/// (`"<redacted:N chars>"`, written by the history store for
+/// `type_text.text`) — such records can never be replayed faithfully.
+fn args_contain_redacted(v: &Value) -> bool {
+    match v {
+        Value::String(s) => s.starts_with("<redacted:"),
+        Value::Array(a) => a.iter().any(args_contain_redacted),
+        Value::Object(o) => o.values().any(args_contain_redacted),
+        _ => false,
+    }
+}
+
+/// `get_windows` wire shape: `window_json` plus the spec fields the
+/// `WindowInfo` trait does not carry yet (`floating`, `fullscreen`, `pid`,
+/// `monitor` — docs/TOOLS.md `get_windows`). Emitted as `null` — reported
+/// but unknown — until the trait grows them.
+fn window_json_full(w: &WindowInfo) -> Value {
+    let mut v = window_json(w);
+    if let Some(o) = v.as_object_mut() {
+        for key in ["floating", "fullscreen", "pid", "monitor"] {
+            o.entry(key).or_insert(Value::Null);
+        }
+    }
+    v
+}
+
 async fn get_windows(
     args: &Map<String, Value>,
     providers: &Providers,
@@ -371,7 +400,7 @@ async fn get_windows(
     let window = window_provider(providers)?;
     let windows = backend!(window.list_windows().await);
     Ok(json_result(&Value::Array(
-        windows.iter().map(window_json).collect(),
+        windows.iter().map(window_json_full).collect(),
     )))
 }
 
@@ -383,7 +412,7 @@ async fn get_active_window(
     let window = window_provider(providers)?;
     let active = backend!(window.active_window().await);
     let out = match active {
-        Some(w) => window_json(&w),
+        Some(w) => window_json_full(&w),
         None => json!({"focused": null}),
     };
     Ok(json_result(&out))
@@ -422,9 +451,23 @@ async fn get_action_history(
             "get_action_history: limit must be between 1 and 1000",
         ));
     }
+    let needle = p.action.as_deref().map(str::to_lowercase);
+    // When filtering, read the full retained window first so the limit
+    // applies to *matching* records, not the newest `limit` prefix.
+    let budget = if needle.is_some() {
+        store.len()
+    } else {
+        p.limit as usize
+    };
     let actions: Vec<Value> = store
-        .list(p.limit as usize)
+        .list(budget)
         .iter()
+        .filter(|r| {
+            needle
+                .as_deref()
+                .is_none_or(|n| r.tool.to_lowercase().contains(n))
+        })
+        .take(p.limit as usize)
         .map(record_json)
         .collect();
     Ok(json_result(&json!({
@@ -447,9 +490,11 @@ async fn replay_action(
         ));
     }
     if let Some(id) = &p.id
-        && id.chars().count() != 26
+        && id.parse::<ulid::Ulid>().is_err()
     {
-        return Err(invalid_params("replay_action: id must be a 26-char ULID"));
+        return Err(invalid_params(
+            "replay_action: id must be a 26-char ULID (Crockford Base32)",
+        ));
     }
     let _ = &p.consent_token;
     let rec = match (p.index, p.id.as_deref()) {
@@ -463,6 +508,12 @@ async fn replay_action(
             "replay_action: {} is not replayable",
             rec.tool
         )));
+    }
+    if args_contain_redacted(&rec.args_json) {
+        return Err(invalid_params(
+            "replay_action: record is redacted — secret arguments were never \
+             stored, so the call cannot be faithfully replayed",
+        ));
     }
     let rec_args = rec.args_json.as_object().cloned().unwrap_or_default();
     // The replayed call goes back through dispatch. On the secured path it
@@ -681,6 +732,81 @@ mod tests {
                 .unwrap_err();
             assert_eq!(err.code.0, INVALID_PARAMS, "{tool} must not replay");
         }
+    }
+
+    #[tokio::test]
+    async fn history_action_filter_is_case_insensitive_substring() {
+        let (_tmp, store) = tmp_store();
+        record(&store, "mouse_click", json!({"x": 1, "y": 2}));
+        record(&store, "mouse_drag", json!({"from_x": 0}));
+        record(&store, "type_text", json!({"text": "secret"}));
+
+        // Substring match — "mouse" selects both mouse_* records.
+        let res = get_action_history(&args(json!({"action": "MOUSE"})), &store)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_str(&text_of(&res)).unwrap();
+        assert_eq!(body["count"], 2);
+        let tools: Vec<&str> = body["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["tool"].as_str().unwrap())
+            .collect();
+        assert_eq!(tools, ["mouse_drag", "mouse_click"]);
+
+        // Non-matching filter → empty result, still a success.
+        let res = get_action_history(&args(json!({"action": "zzz"})), &store)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_str(&text_of(&res)).unwrap();
+        assert_eq!(body["count"], 0);
+
+        // Filter composes with `limit`.
+        let res = get_action_history(&args(json!({"action": "mouse", "limit": 1})), &store)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_str(&text_of(&res)).unwrap();
+        assert_eq!(body["count"], 1);
+        assert_eq!(body["actions"][0]["tool"], "mouse_drag");
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_malformed_ulid() {
+        let (_tmp, store) = tmp_store();
+        let p = providers();
+        for bad in [
+            "tooshort",
+            // Right length, wrong alphabet ('!' is not Crockford Base32).
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!",
+            // Right length, but I/L/O/U are excluded from Crockford Base32.
+            "ILOU1LOU1LOU1LOU1LOU1LOU12",
+        ] {
+            let err = replay_action(&args(json!({"id": bad})), &p, &store, None)
+                .await
+                .unwrap_err();
+            assert_eq!(err.code.0, INVALID_PARAMS, "{bad} must be rejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_refuses_redacted_records() {
+        let (_tmp, store) = tmp_store();
+        // `type_text` args are redacted at record time by the store.
+        let rec = record(
+            &store,
+            "type_text",
+            json!({"text": "s3cret", "delay_ms": 0}),
+        );
+        assert_eq!(
+            rec.args_json["text"], "<redacted:6 chars>",
+            "store must have redacted the fixture"
+        );
+        let err = replay_action(&args(json!({"id": rec.id})), &providers(), &store, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code.0, INVALID_PARAMS);
+        assert!(err.message.contains("redacted"));
     }
 
     #[tokio::test]

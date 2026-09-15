@@ -9,9 +9,12 @@
 //!   half-close, read the reply until EOF. Every request is a fresh
 //!   connection — the compositor answers each connection synchronously, so a
 //!   lingering socket would stall it.
-//! * **`hyprctl` binary (fallback)** — the absolute path of the `hyprctl`
-//!   found on `PATH` at construction time, invoked as
-//!   `hyprctl -j <sub>` / `hyprctl dispatch …`. Used only when the socket
+//! * **`hyprctl` binary (fallback)** — the canonicalized absolute path of
+//!   the `hyprctl` pinned from `PATH` at construction time (the same
+//!   [`crate::security::whitelist`] resolver `SecurityContext` uses), so
+//!   a later `PATH` hijack cannot substitute a trojan. Invoked as
+//!   `hyprctl -j <sub>` / `hyprctl dispatch …` under a scrubbed
+//!   environment ([`crate::security::spawn`]). Used only when the socket
 //!   cannot be probed (e.g. an older compositor without the runtime dir).
 //!
 //! `dispatch` only ever emits the fixed dispatcher set
@@ -50,6 +53,13 @@ impl HyprctlWindow {
     /// (a connect-and-drop; Hyprland idles waiting for the request body)
     /// and finally the presence of `hyprctl` on `PATH`.
     pub fn new() -> Option<Self> {
+        Self::with_pins(&crate::security::whitelist::resolve_binaries())
+    }
+
+    /// [`Self::new`] against a caller-supplied pin set — the testable
+    /// seam: hermetic tests resolve a fresh `PinnedBins` over a tempdir
+    /// `PATH` instead of the process-wide snapshot.
+    pub fn with_pins(pins: &crate::security::whitelist::PinnedBins) -> Option<Self> {
         let his = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
         if his.is_empty() {
             return None;
@@ -61,7 +71,9 @@ impl HyprctlWindow {
                 });
             }
         }
-        let bin = find_on_path("hyprctl")?;
+        // Pin the whitelisted `hyprctl` once — the canonicalized path is
+        // immune to a later `PATH` change (S-1).
+        let bin = pins.get("hyprctl").map(Path::to_path_buf)?;
         Some(Self {
             transport: Transport::Hyprctl(bin),
         })
@@ -161,20 +173,6 @@ fn socket_candidates(his: &std::ffi::OsStr) -> Vec<PathBuf> {
         .collect()
 }
 
-/// First executable named `name` on `PATH`.
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|c| {
-            c.is_file()
-                && c.metadata()
-                    .map(|m| m.permissions().mode() & 0o111 != 0)
-                    .unwrap_or(false)
-        })
-}
-
 /// One socket round-trip: connect, write the request verbatim, half-close,
 /// read the reply to EOF. A fresh short-lived connection per request is
 /// mandatory — an unclosed connection blocks the compositor's synchronous
@@ -193,15 +191,14 @@ async fn socket_request(path: &Path, request: &str) -> Result<String> {
         .context("hyprland socket request timed out")?
 }
 
-/// Run `hyprctl <argv>` and return the captured output.
+/// Run the pinned `hyprctl <argv>` under the scrubbed spawn environment
+/// and return the captured output, bounded by [`IPC_TIMEOUT`].
 async fn hyprctl_output(bin: &Path, argv: &[&str]) -> Result<std::process::Output> {
-    tokio::time::timeout(
-        IPC_TIMEOUT,
-        tokio::process::Command::new(bin).args(argv).output(),
-    )
-    .await
-    .context("hyprctl timed out")?
-    .with_context(|| format!("failed to spawn {}", bin.display()))
+    let mut cmd = crate::security::spawn::command(bin, argv);
+    tokio::time::timeout(IPC_TIMEOUT, cmd.output())
+        .await
+        .context("hyprctl timed out")?
+        .with_context(|| format!("failed to spawn {}", bin.display()))
 }
 
 /// `hyprctl <argv>` → stdout, failing on non-zero exit.

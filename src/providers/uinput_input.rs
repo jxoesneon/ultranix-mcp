@@ -42,7 +42,7 @@
 //! cover only the pure mapping/parsing functions and the writability
 //! probe, which opens but never creates a device.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -85,6 +85,10 @@ const KEY_LEFTSHIFT: i32 = 42;
 /// removing the kernel node.
 pub struct UinputInput {
     inner: Arc<Mutex<Inner>>,
+    /// Pinned `hyprctl` absolute path, when it was on `PATH` at
+    /// construction — the `cursor_position` helper (S-1). Spawned under
+    /// the scrubbed environment + timeout of [`crate::security::spawn`].
+    hyprctl: Option<PathBuf>,
 }
 
 /// Compile-time contract: `InputProvider` requires `Send + Sync`.
@@ -398,12 +402,18 @@ fn parse_monitors(bytes: &[u8]) -> Option<(i32, i32)> {
 }
 
 /// Best-effort desktop extent via `hyprctl -j monitors` (sync; used only
-/// at construction time). `None` off Hyprland.
+/// at construction time). `None` off Hyprland — the binary is the pinned
+/// whitelisted path under a scrubbed env, and the wait is bounded so a
+/// wedged helper cannot stall provider detection.
 fn hyprctl_screen_size() -> Option<(i32, i32)> {
-    let out = std::process::Command::new("hyprctl")
-        .args(["-j", "monitors"])
-        .output()
-        .ok()?;
+    let bin = crate::security::whitelist::resolve_binaries()
+        .get("hyprctl")?
+        .to_path_buf();
+    let mut cmd = crate::security::spawn::std_command(&bin, &["-j", "monitors"]);
+    let out = crate::security::spawn::std_output_within(
+        &mut cmd,
+        crate::security::spawn::SUBPROCESS_TIMEOUT,
+    )?;
     if !out.status.success() {
         return None;
     }
@@ -521,6 +531,9 @@ impl UinputInput {
                     wheel_acc: 0.0,
                     hwheel_acc: 0.0,
                 })),
+                hyprctl: crate::security::whitelist::resolve_binaries()
+                    .get("hyprctl")
+                    .map(Path::to_path_buf),
             }),
             Err(e) => {
                 tracing::debug!("uinput backend unavailable: {e:#}");
@@ -662,12 +675,13 @@ fn parse_cursorpos(s: &str) -> Option<(i32, i32)> {
     Some((xs.trim().parse().ok()?, ys.trim().parse().ok()?))
 }
 
-async fn hyprctl_cursorpos() -> Result<(i32, i32)> {
-    let out = tokio::process::Command::new("hyprctl")
-        .args(["-j", "cursorpos"])
-        .output()
-        .await
-        .context("run hyprctl cursorpos")?;
+/// Pinned `hyprctl -j cursorpos`, scrubbed env, bounded wait.
+async fn hyprctl_cursorpos(bin: &Path) -> Result<(i32, i32)> {
+    let mut cmd = crate::security::spawn::command(bin, &["-j", "cursorpos"]);
+    let out =
+        crate::security::spawn::output_within(&mut cmd, crate::security::spawn::SUBPROCESS_TIMEOUT)
+            .await
+            .context("run hyprctl cursorpos")?;
     if !out.status.success() {
         bail!("hyprctl cursorpos exited {}", out.status);
     }
@@ -739,7 +753,9 @@ impl InputProvider for UinputInput {
     /// uinput has no read channel: prefer live `hyprctl cursorpos`, else
     /// the last absolute position this provider emitted, else an error.
     async fn cursor_position(&self) -> Result<(i32, i32)> {
-        if let Ok(pos) = hyprctl_cursorpos().await {
+        if let Some(bin) = &self.hyprctl
+            && let Ok(pos) = hyprctl_cursorpos(bin).await
+        {
             return Ok(pos);
         }
         let inner = Arc::clone(&self.inner);

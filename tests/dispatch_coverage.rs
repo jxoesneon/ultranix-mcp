@@ -12,11 +12,11 @@
 
 mod common;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use common::{args, assert_error_code, assert_success, valid_args};
+use common::{args, assert_error_code, assert_success, focus_lock, valid_args};
 use rmcp::model::{CallToolResult, ErrorData};
 use serde_json::{Map, Value, json};
 use ultranix_mcp::providers::Providers;
@@ -35,7 +35,10 @@ const PROVIDER_UNAVAILABLE: i32 = -32010;
 const SANITIZATION_REJECTED: i32 = -32006;
 const ELEMENT_NOT_FOUND: i32 = -32016;
 const CONSENT_REQUIRED: i32 = -32015;
-const ARG_CONSTRAINT: i32 = -32020;
+/// `-32003` covers both not-whitelisted commands and argument
+/// constraint violations (docs/TOOLS.md error table).
+const COMMAND_NOT_WHITELISTED: i32 = -32003;
+const ARG_CONSTRAINT: i32 = -32003;
 
 const SESSION: &str = "coverage-session";
 
@@ -239,6 +242,36 @@ impl UIAutomationProvider for UiFound {
     }
     async fn invoke_element(&self, _query: &str) -> anyhow::Result<bool> {
         Ok(self.invoke_ok)
+    }
+}
+
+/// Overrides `invoke_element_action`: only `"expand"` is "supported".
+/// `invoke_element` returning `true` would make the trait-default's
+/// press→default-action mapping report ok — so a `press` call reporting
+/// `action_not_supported` proves the *named* method ran.
+struct UiNamedAction;
+
+#[async_trait]
+impl UIAutomationProvider for UiNamedAction {
+    async fn get_root_json(&self, _depth: u32) -> anyhow::Result<Value> {
+        Ok(json!({"role": "root", "children": []}))
+    }
+    async fn get_focused_json(&self) -> anyhow::Result<Value> {
+        Ok(json!({"role": "application", "name": "hit"}))
+    }
+    async fn find_element(&self, _query: &str) -> anyhow::Result<Option<Rect>> {
+        Ok(Some(Rect {
+            x: 10,
+            y: 20,
+            w: 30,
+            h: 40,
+        }))
+    }
+    async fn invoke_element(&self, _query: &str) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+    async fn invoke_element_action(&self, _query: &str, action: &str) -> anyhow::Result<bool> {
+        Ok(action == "expand")
     }
 }
 
@@ -473,13 +506,50 @@ impl CaptureProvider for FailCapture {
     }
 }
 
+/// Records the `region` passed to `capture_frame` — proves spatial-focus
+/// scoping actually reaches the capture backend.
+#[derive(Default)]
+struct SpyCapture {
+    last: Mutex<Option<Rect>>,
+}
+
+impl SpyCapture {
+    fn last_region(&self) -> Option<Rect> {
+        *self.last.lock().unwrap()
+    }
+}
+
+#[async_trait]
+impl CaptureProvider for SpyCapture {
+    async fn capture_frame(&self, r: Option<Rect>) -> anyhow::Result<Frame> {
+        *self.last.lock().unwrap() = r;
+        // Pixel content is irrelevant — the vision fixtures ignore it.
+        Ok(Frame {
+            png: vec![],
+            width: r.map_or(1920, |r| r.w.max(1)) as u32,
+            height: r.map_or(1080, |r| r.h.max(1)) as u32,
+        })
+    }
+    async fn cursor_position(&self) -> anyhow::Result<(i32, i32)> {
+        Ok((0, 0))
+    }
+    async fn screen_info(&self) -> anyhow::Result<Value> {
+        Ok(json!({"monitors":[{"name":"mock","width":1920,"height":1080}]}))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 1. Happy paths — every tool through the secured pipeline.
 // ---------------------------------------------------------------------------
 
 /// All non-gated tools return Ok with non-empty content under all-mocks.
+/// (`screen_highlight` is excluded: it honestly reports -32010 until the
+/// layer-shell overlay backend lands — covered below.)
 #[tokio::test]
 async fn happy_path_every_ungated_tool() {
+    // This test installs a spatial-focus rect via valid_args; hold the
+    // lock so no other test observes it, and clear before returning.
+    let _focus = focus_lock().await;
     let c = ctx(Providers::all_mocks());
     for name in [
         "mouse_click",
@@ -493,7 +563,6 @@ async fn happy_path_every_ungated_tool() {
         "key_control",
         "screenshot",
         "screen_info",
-        "screen_highlight",
         "color_at",
         "set_spatial_focus",
         "get_ui_tree",
@@ -514,6 +583,9 @@ async fn happy_path_every_ungated_tool() {
         let res = secured(&c, name, valid_args(name)).await;
         assert_success(&res, name);
     }
+    secured(&c, "set_spatial_focus", args(json!({"clear": true})))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -677,6 +749,67 @@ async fn mouse_button_control_down_and_up() {
     }
 }
 
+/// Button-state tracking (TOOLS.md `mouse_button_control`): releasing an
+/// unpressed button is a no-op *success*, as is re-pressing a held one.
+/// Uses `middle` — no other test ever holds it.
+#[tokio::test]
+async fn mouse_button_control_tracks_held_state() {
+    let c = ctx(Providers::all_mocks());
+    // up without a prior down → no-op success, nothing injected.
+    let res = secured(
+        &c,
+        "mouse_button_control",
+        args(json!({"button": "middle", "action": "up"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(text_of(&res), "middle button up");
+    // down then a redundant down → both succeed; second is a no-op.
+    for _ in 0..2 {
+        let res = secured(
+            &c,
+            "mouse_button_control",
+            args(json!({"button": "middle", "action": "down"})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(text_of(&res), "middle button down");
+    }
+    let res = secured(
+        &c,
+        "mouse_button_control",
+        args(json!({"button": "middle", "action": "up"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(text_of(&res), "middle button up");
+}
+
+/// Held state is only mutated on successful injection: a failing backend
+/// leaves the tracker untouched and reports isError.
+#[tokio::test]
+async fn mouse_button_control_failed_down_is_not_tracked() {
+    let c = ctx(providers_with(|p| p.input = Some(Arc::new(FailInput))));
+    let res = secured(
+        &c,
+        "mouse_button_control",
+        args(json!({"button": "middle", "action": "down"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res.is_error, Some(true));
+    // A subsequent up is still the unpressed no-op success path.
+    let c = ctx(Providers::all_mocks());
+    let res = secured(
+        &c,
+        "mouse_button_control",
+        args(json!({"button": "middle", "action": "up"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res.is_error, Some(false));
+}
+
 #[tokio::test]
 async fn mouse_tools_backend_error_is_tool_error() {
     let c = ctx(providers_with(|p| p.input = Some(Arc::new(FailInput))));
@@ -724,6 +857,30 @@ async fn type_text_fast_and_delayed_paths() {
     .await
     .unwrap();
     assert_eq!(text_of(&res), "Typed 5 characters");
+}
+
+/// Mid-sequence abort: the delayed path re-checks the active window
+/// between key events (§Focus Safety) instead of waiting for the post-hoc
+/// check.
+#[tokio::test]
+async fn type_text_delayed_aborts_mid_sequence_on_focus_change() {
+    let c = ctx(providers_with(|p| {
+        p.input = Some(Arc::new(MockInput));
+        p.window = Some(Arc::new(FocusFlipper {
+            calls: AtomicUsize::new(0),
+        }));
+    }));
+    let res = secured(
+        &c,
+        "type_text",
+        args(json!({"text": "hello", "delay_ms": 1})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res.is_error, Some(true));
+    let t = text_of(&res);
+    assert!(t.contains("FocusChanged"), "{t}");
+    assert!(t.contains("aborted"), "{t}");
 }
 
 #[tokio::test]
@@ -871,14 +1028,20 @@ async fn type_text_backend_failure_is_tool_error() {
 
 #[tokio::test]
 async fn screenshot_scope_variants_return_image() {
+    let _focus = focus_lock().await;
+    // Ensure no leftover focus rect skews the "full layout" scope.
     let c = ctx(Providers::all_mocks());
+    secured(&c, "set_spatial_focus", args(json!({"clear": true})))
+        .await
+        .unwrap();
     for (a, needle) in [
         (json!({}), "full layout"),
         (
             json!({"region": {"x": 1, "y": 2, "w": 3, "h": 4}}),
             "region (1,2,3,4)",
         ),
-        (json!({"display": "eDP-1"}), "display eDP-1"),
+        // MockCapture's screen_info advertises one output named "mock".
+        (json!({"display": "mock"}), "display mock"),
     ] {
         let res = secured(&c, "screenshot", args(a)).await.unwrap();
         assert_eq!(res.is_error, Some(false));
@@ -886,6 +1049,55 @@ async fn screenshot_scope_variants_return_image() {
         assert!(text_of(&res).contains(needle));
         assert!(res.content[1].as_image().is_some());
     }
+}
+
+#[tokio::test]
+async fn screenshot_display_resolution_arms() {
+    let _focus = focus_lock().await;
+    let c = ctx(Providers::all_mocks());
+    secured(&c, "set_spatial_focus", args(json!({"clear": true})))
+        .await
+        .unwrap();
+
+    // Unknown output name → InvalidParams listing the known outputs.
+    let res = secured(&c, "screenshot", args(json!({"display": "eDP-9"}))).await;
+    assert_error_code(&res, &[INVALID_PARAMS], "unknown display");
+
+    // screen_info failing → isError (not InvalidParams).
+    let c = ctx(providers_with(|p| p.capture = Some(Arc::new(FailCapture))));
+    let res = secured(&c, "screenshot", args(json!({"display": "x"})))
+        .await
+        .unwrap();
+    assert_eq!(res.is_error, Some(true));
+    assert!(text_of(&res).contains("screencopy failed"));
+}
+
+/// `screenshot` with no explicit region captures the spatial-focus rect.
+#[tokio::test]
+async fn screenshot_uses_spatial_focus_scope() {
+    let _focus = focus_lock().await;
+    let c = ctx(Providers::all_mocks());
+    secured(
+        &c,
+        "set_spatial_focus",
+        args(json!({"x": 7, "y": 8, "w": 9, "h": 10})),
+    )
+    .await
+    .unwrap();
+    let res = secured(&c, "screenshot", args(json!({}))).await.unwrap();
+    assert!(text_of(&res).contains("spatial focus (7,8,9,10)"));
+    // Explicit region still wins over the focus rect.
+    let res = secured(
+        &c,
+        "screenshot",
+        args(json!({"region": {"x":0,"y":0,"w":2,"h":2}})),
+    )
+    .await
+    .unwrap();
+    assert!(text_of(&res).contains("region (0,0,2,2)"));
+    secured(&c, "set_spatial_focus", args(json!({"clear": true})))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -908,24 +1120,52 @@ async fn screen_info_highlight_color_at() {
     let res = secured(&c, "screen_info", args(json!({}))).await.unwrap();
     assert!(json_of(&res)["monitors"].is_array());
 
+    // No overlay backend exists — the call validates then reports
+    // -32010 ProviderUnavailable (a no-op success would be a lie).
     let res = secured(
         &c,
         "screen_highlight",
         args(json!({"x": 5, "y": 6, "w": 7, "h": 8, "duration_ms": 200})),
     )
-    .await
-    .unwrap();
-    assert!(text_of(&res).contains("Highlighted (5, 6, 7, 8)"));
+    .await;
+    assert_error_code(&res, &[PROVIDER_UNAVAILABLE], "screen_highlight");
+    let e = res.unwrap_err();
+    assert_eq!(e.data.unwrap()["provider"], "OverlayProvider");
 
+    // Real 1x1 capture decoded: the mock's PNG is white → #FFFFFF.
     let res = secured(&c, "color_at", args(json!({"x": 9, "y": 9})))
         .await
         .unwrap();
     let v = json_of(&res);
     assert_eq!(v["hex"], "#FFFFFF");
+    assert_eq!(v["r"], 255);
+    assert_eq!(v["g"], 255);
+    assert_eq!(v["b"], 255);
+    assert_eq!(v["a"], 255);
+    assert_eq!(v["x"], 9);
+    assert_eq!(v["y"], 9);
+}
+
+/// `color_at` rejects points outside the layout bounds with -32602
+/// (mock advertises a single 1920x1080 output at the origin).
+#[tokio::test]
+async fn color_at_out_of_bounds_rejected() {
+    let c = ctx(Providers::all_mocks());
+    for (x, y) in [(1920, 0), (0, 1080), (-1, 0), (0, -1)] {
+        let res = secured(&c, "color_at", args(json!({"x": x, "y": y}))).await;
+        assert_error_code(&res, &[INVALID_PARAMS], &format!("color_at {x},{y}"));
+    }
+    // A backend that cannot enumerate outputs skips the check.
+    let c = ctx(providers_with(|p| p.capture = Some(Arc::new(FailCapture))));
+    let res = secured(&c, "color_at", args(json!({"x": 9, "y": 9})))
+        .await
+        .unwrap();
+    assert_eq!(res.is_error, Some(true)); // capture fails, not InvalidParams
 }
 
 #[tokio::test]
 async fn set_spatial_focus_arms() {
+    let _focus = focus_lock().await;
     let c = ctx(Providers::all_mocks());
     let res = secured(
         &c,
@@ -1017,8 +1257,13 @@ async fn find_element_found_and_not_found() {
 
 #[tokio::test]
 async fn find_text_on_screen_ocr_paths() {
-    // Mock OCR → no detections → found:false.
+    let _focus = focus_lock().await;
+    // Mock OCR → no detections → found:false. (Explicit region wins over
+    // the focus rect; ensure none is installed.)
     let c = ctx(Providers::all_mocks());
+    secured(&c, "set_spatial_focus", args(json!({"clear": true})))
+        .await
+        .unwrap();
     let res = secured(
         &c,
         "find_text_on_screen",
@@ -1045,7 +1290,11 @@ async fn find_text_on_screen_ocr_paths() {
 
 #[tokio::test]
 async fn find_icon_with_detections() {
+    let _focus = focus_lock().await;
     let c = ctx(Providers::all_mocks());
+    secured(&c, "set_spatial_focus", args(json!({"clear": true})))
+        .await
+        .unwrap();
     let res = secured(&c, "find_icon", args(json!({"description": "gear"})))
         .await
         .unwrap();
@@ -1061,6 +1310,92 @@ async fn find_icon_with_detections() {
     let v = json_of(&res);
     assert_eq!(v["found"], true);
     assert_eq!(v["detections"][0]["label"], "hamburger");
+}
+
+/// Spatial focus narrows `find_text_on_screen`/`find_icon`: the focus
+/// rect is passed to `capture_frame` and frame-local detections are
+/// re-mapped into layout coordinates.
+#[tokio::test]
+async fn find_text_and_icon_scoped_by_spatial_focus() {
+    let _focus = focus_lock().await;
+    let spy = Arc::new(SpyCapture::default());
+    let c = ctx(providers_with(|p| {
+        p.vision = Some(Arc::new(OcrVision));
+        p.capture = Some(spy.clone());
+    }));
+    secured(
+        &c,
+        "set_spatial_focus",
+        args(json!({"x": 50, "y": 60, "w": 70, "h": 80})),
+    )
+    .await
+    .unwrap();
+
+    let res = secured(&c, "find_text_on_screen", args(json!({"text": "hello"})))
+        .await
+        .unwrap();
+    assert_eq!(
+        spy.last_region(),
+        Some(Rect {
+            x: 50,
+            y: 60,
+            w: 70,
+            h: 80
+        })
+    );
+    // Detection local (1,2,10,5) → layout (51,62,10,5).
+    let v = json_of(&res);
+    assert_eq!(v["found"], true);
+    assert_eq!(
+        v["matches"][0]["bounds"],
+        json!({"x":51,"y":62,"w":10,"h":5})
+    );
+    assert_eq!(v["matches"][0]["center"], json!({"x":56,"y":64}));
+
+    // An explicit `region` overrides the focus rect.
+    let res = secured(
+        &c,
+        "find_text_on_screen",
+        args(json!({"text": "hello", "region": {"x":0,"y":0,"w":20,"h":20}})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        spy.last_region(),
+        Some(Rect {
+            x: 0,
+            y: 0,
+            w: 20,
+            h: 20
+        })
+    );
+    assert_eq!(v["found"], true);
+    let v = json_of(&res);
+    assert_eq!(v["matches"][0]["bounds"], json!({"x":1,"y":2,"w":10,"h":5}));
+
+    // find_icon scopes the same way — the focus rect applies again (the
+    // explicit `region` above was per-call, not persistent).
+    let res = secured(&c, "find_icon", args(json!({"description": "gear"})))
+        .await
+        .unwrap();
+    assert_eq!(
+        spy.last_region(),
+        Some(Rect {
+            x: 50,
+            y: 60,
+            w: 70,
+            h: 80
+        })
+    );
+    let v = json_of(&res);
+    assert_eq!(
+        v["detections"][0]["bounds"],
+        json!({"x":53,"y":64,"w":8,"h":8})
+    );
+
+    secured(&c, "set_spatial_focus", args(json!({"clear": true})))
+        .await
+        .unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -1118,11 +1453,18 @@ async fn invoke_element_arms() {
     .await;
     assert_error_code(&res, &[ELEMENT_NOT_FOUND], "invoke_element no match");
 
-    // Match + action supported, and each action spelling.
+    // Match + press supported via the trait-default mapping; the other
+    // action spellings reach the provider as named actions — a backend
+    // without named-action support reports them as action_not_supported.
     let c = ctx(providers_with(|p| {
         p.ui_automation = Some(Arc::new(UiFound { invoke_ok: true }))
     }));
-    for action in ["press", "focus", "expand", "collapse"] {
+    for (action, result) in [
+        ("press", "ok"),
+        ("focus", "action_not_supported"),
+        ("expand", "action_not_supported"),
+        ("collapse", "action_not_supported"),
+    ] {
         let res = secured(
             &c,
             "invoke_element",
@@ -1132,7 +1474,7 @@ async fn invoke_element_arms() {
         .unwrap();
         let v = json_of(&res);
         assert_eq!(v["action"], action);
-        assert_eq!(v["action_result"], "ok");
+        assert_eq!(v["action_result"], result, "{action}");
         assert_eq!(v["element"]["center"], json!({"x":25,"y":40}));
     }
     // Default action arm.
@@ -1149,6 +1491,34 @@ async fn invoke_element_arms() {
         &c,
         "invoke_element",
         args(json!({"query": "btn", "action": "focus"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(json_of(&res)["action_result"], "action_not_supported");
+}
+
+/// The requested action name must reach the provider — a backend that
+/// honours AT-SPI named actions sees `"expand"`, not a silent `"press"`.
+#[tokio::test]
+async fn invoke_element_passes_named_action_through() {
+    let c = ctx(providers_with(|p| {
+        p.ui_automation = Some(Arc::new(UiNamedAction))
+    }));
+    // "expand" is supported by this backend…
+    let res = secured(
+        &c,
+        "invoke_element",
+        args(json!({"query": "btn", "action": "expand"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(json_of(&res)["action_result"], "ok");
+    // …and "press" is not — the named method ran (the trait default would
+    // have mapped press → invoke_element → ok).
+    let res = secured(
+        &c,
+        "invoke_element",
+        args(json!({"query": "btn", "action": "press"})),
     )
     .await
     .unwrap();
@@ -1224,14 +1594,24 @@ async fn web_query_envelope_normalization() {
         .unwrap();
     assert_eq!(json_of(&res)["found"], false);
 
-    // Non-empty matches → found:true synthesized.
+    // Non-empty matches → first match normalised into the spec element
+    // shape, `bounds_space` defaulted, `matches` folded away.
     let c = ctx(providers_with(|p| {
-        p.browser = Some(Arc::new(RawBrowser(json!({"matches": [{"tag": "a"}]}))))
+        p.browser = Some(Arc::new(RawBrowser(
+            json!({"matches": [{"tag": "a", "rect": {"x":1,"y":2,"w":3,"h":4}}]}),
+        )))
     }));
     let res = secured(&c, "web_query", args(json!({"selector": "a"})))
         .await
         .unwrap();
-    assert_eq!(json_of(&res)["found"], true);
+    let v = json_of(&res);
+    assert_eq!(v["found"], true);
+    assert_eq!(v["bounds_space"], "viewport");
+    assert_eq!(v["element"]["tag"], "a");
+    assert_eq!(v["element"]["classes"], json!([]));
+    assert_eq!(v["element"]["attributes"], json!({}));
+    assert_eq!(v["element"]["bounds"], json!({"x":1,"y":2,"w":3,"h":4}));
+    assert!(v.get("matches").is_none());
 
     // Envelope already present → passthrough.
     let c = ctx(providers_with(|p| {
@@ -1341,6 +1721,11 @@ async fn get_windows_and_active_window() {
     let v = json_of(&res);
     assert_eq!(v[0]["address"], "0x0");
     assert_eq!(v[0]["workspace"]["id"], 1);
+    // Spec fields the WindowInfo trait does not carry yet are reported as
+    // null — present, honestly unknown (docs/TOOLS.md get_windows).
+    for key in ["floating", "fullscreen", "pid", "monitor"] {
+        assert!(v[0].get(key).is_some_and(Value::is_null), "{key} missing");
+    }
 
     let res = secured(&c, "get_active_window", args(json!({})))
         .await
@@ -1706,7 +2091,7 @@ async fn allow_destructive_bypasses_consent() {
 
     // system_command reaches the real exec path (not the Phase-0 stub).
     let res = secured(&c, "system_command", args(json!({"command": "nope"}))).await;
-    assert_error_code(&res, &[ARG_CONSTRAINT], "unpinned command");
+    assert_error_code(&res, &[COMMAND_NOT_WHITELISTED], "unpinned command");
 }
 
 // ---------------------------------------------------------------------------
@@ -1763,16 +2148,29 @@ async fn system_command_secured_exec_paths() {
         Err(e) => assert_eq!(e.code.0, ARG_CONSTRAINT, "hyprctl exec: {e:?}"),
     }
 
-    // Whitelist rejections all map to -32020.
-    for a in [
-        json!({"command": "hyprctl", "args": ["keyword", "gaps_in", "0"]}),
-        json!({"command": "xdotool", "args": ["getactivewindow"]}),
-        json!({"command": "slurp", "args": ["-o"]}),
-        json!({"command": "grim", "args": ["-t", "png"]}),
-        json!({"command": "slurp", "args": ["a;rm"]}),
+    // Whitelist rejections map per failure class (docs/TOOLS.md):
+    // constraint violations → -32003, metacharacters → -32006.
+    for (a, code) in [
+        (
+            json!({"command": "hyprctl", "args": ["keyword", "gaps_in", "0"]}),
+            ARG_CONSTRAINT,
+        ),
+        (
+            json!({"command": "xdotool", "args": ["getactivewindow"]}),
+            ARG_CONSTRAINT,
+        ),
+        (json!({"command": "slurp", "args": ["-o"]}), ARG_CONSTRAINT),
+        (
+            json!({"command": "grim", "args": ["-t", "png"]}),
+            ARG_CONSTRAINT,
+        ),
+        (
+            json!({"command": "slurp", "args": ["a;rm"]}),
+            SANITIZATION_REJECTED,
+        ),
     ] {
         let res = secured(&c, "system_command", args(a.clone())).await;
-        assert_error_code(&res, &[ARG_CONSTRAINT], &format!("system_command {a}"));
+        assert_error_code(&res, &[code], &format!("system_command {a}"));
     }
 }
 

@@ -1,8 +1,8 @@
 # API Key Management — ultranix-mcp
 
-**Status**: Specification phase — describes the approved authentication design.
-Applies to the **streamable-HTTP transport only** (`:3010`). The stdio
-transport never requires a key — see §7 for why.
+**Status**: Implemented (v1.0.0) — describes the shipped authentication
+design. Applies to the **streamable-HTTP transport only** (`:3010`). The
+stdio transport never requires a key — see §7 for why.
 
 ---
 
@@ -43,8 +43,10 @@ Alternative with `dd`/`/dev/urandom`:
 echo "uxcp_$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 ```
 
-A `ultranix-mcp keygen` convenience subcommand producing the identical format
-is planned; the shell command above is the portable reference and works today.
+The shipped `ultranix-mcp keygen` subcommand produces the identical format —
+it prints a fresh key to stdout and never writes to the key directory or any
+file; storing it (`ULTRANIX_MCP_API_KEY`, a key file, or a record under
+`~/.ultranix-mcp/api-keys/`) is the operator's job.
 
 **Do not** derive keys from passwords, timestamps, or `uuidgen` (128 bits,
 weak RNG on some systems). Do not reuse keys across environments.
@@ -61,7 +63,7 @@ configured (to surface stale keys):
 | -------- | ------ | ----- |
 | 1 | `ULTRANIX_MCP_API_KEY` environment variable | Single key, or comma-separated list `key1,key2` for rotation overlap |
 | 2 | `ULTRANIX_MCP_API_KEY_FILE` → path to a file containing one key per line | File must be mode `0600`; the server **refuses to start** if it is group/world-readable |
-| 3 | `~/.ultranix-mcp/api-keys` | Convention fallback; same `0600` requirement |
+| 3 | `~/.ultranix-mcp/api-keys/*.json` | Convention fallback: a **directory** of key-record files scanned in sorted order. Each `*.json` file holds either a JSON record/array (`{"key": "uxcp_…", "expires_at"?: "<RFC 3339>", "key_id"?: "…", "scopes"?: ["…"]}`) or the line format (`key [expires=<RFC 3339>]`, `#` comments allowed). `0600` enforced per file; non-`.json` entries are ignored |
 
 Rules:
 
@@ -137,10 +139,11 @@ systemctl --user restart ultranix-mcp
 A key record may carry an expiry timestamp, which makes rotation
 self-enforcing rather than purely procedural:
 
-- In a key file (`ULTRANIX_MCP_API_KEY_FILE` or
-  `~/.ultranix-mcp/api-keys`), append `expires=<RFC 3339 timestamp>` after
+- In a key file (`ULTRANIX_MCP_API_KEY_FILE` or a `*.json` record under
+  `~/.ultranix-mcp/api-keys/`), append `expires=<RFC 3339 timestamp>` after
   the key on the same line, whitespace-separated:
-  `uxcp_… expires=2025-09-01T00:00:00Z`.
+  `uxcp_… expires=2025-09-01T00:00:00Z` — or use the JSON record's
+  `"expires_at"` field.
 - For the env source, `ULTRANIX_MCP_API_KEY_EXPIRES` takes a
   comma-separated list aligned positionally with `ULTRANIX_MCP_API_KEY`.
 

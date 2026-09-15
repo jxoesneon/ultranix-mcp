@@ -41,7 +41,7 @@ desktop-automation family.
   surface (auth/audit/encryption/consent), and a tri-OS sibling tool
   contract** — compositor protocols where they exist (Hyprland needs *zero*
   privilege), portal/uinput fallbacks everywhere else, AT-SPI2 for
-  deterministic semantic targeting (`invoke_element` lands in Phase 2), and
+  deterministic semantic targeting (`invoke_element` ships at v1.0.0), and
   the Ultra\*-family governance surface (audit JSONL, `uxcp_*` auth, rate
   limiting, AES-256-GCM history, Prometheus).
 
@@ -95,7 +95,8 @@ ladder architecture.
    "Linux desktop automation" repos are quietly X11-fossils; their MCP
    wrappers inherit the limitation.
 2. **Fragmentation tax.** Correct Linux coverage needs a *ladder*:
-   wlr protocols → portal → uinput → X11 — plus per-compositor IPC. That is
+   wlr protocols → portal → uinput (→ X11, post-v1) — plus per-compositor
+   IPC. That is
    real engineering (a trait-provider architecture like UltraWin's), not a
    weekend wrapper — which is why the servers that *did* ship
    (hypruse, kde-mcp, gnome-ui-mcp, screen-mcp) are each locked to one
@@ -116,13 +117,12 @@ ladder architecture.
 
 ## 4. Competitive threats & honest weaknesses
 
-- **hypruse is ahead on semantic actions today.** It already ships AT-SPI
-  `click_ui`-style element actions and cursor-position workarounds on
-  Hyprland — capabilities ultranix-mcp does not answer until
-  `invoke_element` (Phase 2) and `mouse_get_position` (via
-  `hyprctl cursorpos` on Hyprland, `ProviderUnavailable` elsewhere) land.
-  Until Phase 2, the semantic-action gap is real; launch messaging must not
-  imply otherwise. The counters that *do* exist from Phase 1 are the
+- **hypruse is still ahead on some semantic-action ergonomics.** ultranix-mcp
+  v1.0.0 ships `invoke_element` (AT-SPI action invocation) and
+  `mouse_get_position` (via `hyprctl cursorpos` on Hyprland,
+  `ProviderUnavailable` elsewhere), closing the Phase-2 gap — but
+  hypruse's cursor-position workarounds and element-action depth remain
+  the reference to beat. The counters that differentiate are the
   governance surface and the cross-compositor ladder.
 - **Pure-vision commoditization.** If "computer use" models get good enough
   to click screenshots blind, semantic-UI advantage shrinks. Counter:
@@ -133,9 +133,10 @@ ladder architecture.
   experience could sour users vs the zero-prompt Hyprland path. Mitigate
   with clear startup probe logging, `/readyz` provider reporting, and token
   persistence (see `docs/PACKAGING.md` §5).
-- **Compositor coverage reality.** "Linux" is N compositors; Phase-1 quality
-  is Hyprland/wlroots + portal-degraded GNOME/KDE. X11 is Phase 5. Do not
-  overclaim in launch messaging.
+- **Compositor coverage reality.** "Linux" is N compositors; v1.0.0 quality
+  is Hyprland/wlroots + portal/uinput-degraded GNOME/KDE. X11-native
+  providers are **post-v1** — X11 sessions get only the portal/uinput rungs
+  today. Do not overclaim in launch messaging.
 - **No community signal yet** — same pre-distribution state ultramac
   documented. All value is currently latent.
 - **Copycat risk is low but real** — a compositor vendor (e.g. a KDE/GNOME
@@ -180,8 +181,9 @@ enterprise tier targets the smaller set of
 organizations standardizing Linux workstations/VDI for AI-augmented dev
 teams — where governance, not tool count, is the buying criterion. Pricing
 bands follow the family analysis: free OSS core; **$19–49/mo enterprise**
-(priority support, policy knobs, audit-export, per-key scoping) once Phase-4
-features land.
+(priority support, policy knobs, audit-export, per-key scoping) once the
+post-v1 policy surface lands — the v1.0.0 governance core (auth, consent,
+audit, rate limiting) is already shipped.
 
 ---
 
@@ -204,9 +206,9 @@ features land.
    (`docs/PACKAGING.md` §5), the provider fallback chains, and the honest
    Wayland-portability story are the content that earns trust in this
    audience.
-6. **Enterprise lane.** Ship Phase-4 governance docs + SIEM snippets early;
-   the SOC2-posture language differentiates against every Linux alternative
-   even before the paid tier exists.
+6. **Enterprise lane.** The governance docs + SIEM snippets are shipped
+   (`docs/ENTERPRISE_PLAN.md` §5); the SOC2-posture language differentiates
+   against every Linux alternative even before the paid tier exists.
 
 ---
 
@@ -216,11 +218,11 @@ features land.
 - Registry listings count + referral traffic; `awesome-mcp` merge.
 - Community: Hyprland/Arch channel mentions, stars, third-party dotfiles
   adopting the service unit.
-- Enterprise: policy-knob feature requests (leading indicator of Phase-4
+- Enterprise: policy-knob feature requests (leading indicator of post-v1
   pull), SIEM-config questions, read-only-mode deployments.
 
 ---
 
-*Spec · companion to `docs/PACKAGING.md` (distribution) and
+*Companion to `docs/PACKAGING.md` (distribution) and
 `docs/ENTERPRISE_PLAN.md` (governance). Ecosystem figures inherited from
 `ultramac/docs/MARKET_ANALYSIS.md` — verify before external citation.*

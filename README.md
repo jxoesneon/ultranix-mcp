@@ -1,11 +1,11 @@
 # ultranix-mcp
 
-[![Version](https://img.shields.io/badge/version-0.1.0--spec-blue.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](Cargo.toml)
 [![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%28Wayland%20%2B%20Hyprland%29-lightgrey.svg)](https://hyprland.org/)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org/)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-rmcp-purple.svg)](https://github.com/modelcontextprotocol/rust-sdk)
-[![Status](https://img.shields.io/badge/status-specification-lightblue.svg)](ROADMAP.md)
+[![Status](https://img.shields.io/badge/status-1.0.0%20implemented-brightgreen.svg)](ROADMAP.md)
 
 **ultranix-mcp is the enterprise-grade, secure Linux desktop-automation layer
 for AI agents.** It gives Model Context Protocol (MCP) clients — Claude
@@ -23,10 +23,10 @@ combine a cross-compositor fallback ladder, a full governance surface, and a
 tri-OS sibling contract — organisations can let agents control a Linux
 desktop without giving up control themselves.
 
-> **Status:** This repository currently contains the *approved design
-> specification* for v0.1.0. Implementation lands phase-by-phase as described
-> in [ROADMAP.md](ROADMAP.md). The verified target environment is
-> **CachyOS (Arch) + Hyprland on Wayland**, PipeWire,
+> **Status:** v1.0.0 implemented. Phases 0–5 of
+> [ROADMAP.md](ROADMAP.md) have shipped — see
+> [CHANGELOG.md](CHANGELOG.md) for per-release notes. The verified target
+> environment is **CachyOS (Arch) + Hyprland on Wayland**, PipeWire,
 > `xdg-desktop-portal-hyprland`, and a live AT-SPI2 bus, on Rust 1.98.1.
 
 ---
@@ -40,7 +40,12 @@ desktop without giving up control themselves.
   `virtual-keyboard-unstable-v1`, with full modifier and keymap handling.
 - **📸 Intelligent Vision** — in-process `wlr-screencopy-unstable-v1` capture,
   ONNX Runtime OCR (`ort` crate), and OWL-ViT icon finding. Region
-  screenshots, color sampling, spatial focus, and element-highlight overlays.
+  screenshots, color sampling (`color_at`), and session spatial focus
+  (`set_spatial_focus` scopes `screenshot`/`find_text_on_screen`/`find_icon`).
+  *Caveat:* `screen_highlight` is not yet implemented — it validates its
+  arguments then fails loudly with `-32010 ProviderUnavailable` (no
+  layer-shell overlay backend exists yet; post-v1 — see
+  [docs/TOOLS.md](docs/TOOLS.md)).
 - **🪟 Window Management** — list, focus, move, resize, close, and inspect
   windows through Hyprland's `hyprctl` IPC socket (`hyprctl -j` JSON:
   `clients`, `activewindow`, `dispatch`, `workspaces`).
@@ -81,9 +86,13 @@ tool surface testable without a Wayland session.
 provider to the best available backend:
 
 1. **wlroots-native** — in-process Wayland protocols (Hyprland; no root)
-2. **uinput/evdev** — kernel-level input injection for non-wlroots sessions
+2. **`grim`/`slurp` (capture) + `uinput`/`evdev` (input)** — whitelisted
+   helper binaries and kernel-level input for non-wlroots sessions
 3. **XDG Desktop Portal** — `Screenshot` and `RemoteDesktop` over `zbus`
    (universal fallback, subject to portal consent)
+
+X11-native provider rungs (`scrot`/`xdotool`/`wmctrl`) are post-v1 — on X11
+sessions only the portal/uinput rungs resolve.
 
 ```mermaid
 graph TB
@@ -190,11 +199,14 @@ ultranix-mcp when governance, trust, and session portability matter.
 
 ## 📦 Installation
 
-### Option 1: AUR (planned)
+### Option 1: AUR (packaging shipped, submission pending)
 
-Arch-family packages (`ultranix-mcp`, `ultranix-mcp-bin`,
-`ultranix-mcp-git`) are planned as part of Phase 5 — see
-[ROADMAP.md](ROADMAP.md#phase-5--portability--packaging).
+Arch-family PKGBUILDs (`ultranix-mcp`, `ultranix-mcp-git`) ship in
+[`packaging/`](packaging/) — AUR submission is tracked on
+[ROADMAP.md](ROADMAP.md#phase-5--portability--packaging). A
+`cargo install ultranix-mcp` path is supported once the crate is
+published; see [docs/PACKAGING.md](docs/PACKAGING.md) §2 for the
+build-time `ort` network-fetch caveat.
 
 ### Option 2: Build from source
 
@@ -231,7 +243,7 @@ Arch-family packages (`ultranix-mcp`, `ultranix-mcp-bin`,
     ./target/release/ultranix-mcp --transport stdio
 
     # Streamable HTTP transport on :3010 (requires ULTRANIX_MCP_API_KEY)
-    ./target/release/ultranix-mcp --transport http --port 3010
+    ./target/release/ultranix-mcp --transport http --bind 127.0.0.1:3010
 
     # Filter to a subset of tool categories (reduce context overhead)
     ./target/release/ultranix-mcp --transport stdio --category=mouse,keyboard
@@ -291,13 +303,14 @@ following variables are supported:
 | `ULTRANIX_MCP_HISTORY_SECRET` | Secret key for AES-256-GCM encryption of `history.json`. | _Generated per install under `~/.ultranix-mcp/` (mode `0700`); a dev fallback warns loudly_ | No |
 | `ULTRANIX_MCP_DISABLE_AUTH` | Escape hatch: disable HTTP auth (dev only; stdio is always unauthenticated). | `false` | No |
 | `ULTRANIX_MCP_LOG_LEVEL` | `tracing` verbosity (`error`, `warn`, `info`, `debug`, `trace`). | `info` | No |
-| `PORT` | Port for the streamable-HTTP server. | `3010` | No |
-| `ULTRANIX_MCP_SENTRY_DSN` | DSN for optional Sentry error tracking. | _Disabled_ | No |
+| `ULTRANIX_MCP_BIND` | Bind address for the streamable-HTTP server (equivalent to the `--bind` flag). | `127.0.0.1:3010` | No |
+| `ULTRANIX_MCP_SENTRY_DSN` | DSN for Sentry error tracking — **planned, post-v1**: the variable is documented but not yet wired to any exporter. | _Not implemented_ | No |
 
-**Key-file fallback.** When neither `ULTRANIX_MCP_API_KEY` nor
-`ULTRANIX_MCP_API_KEY_FILE` is set, the server reads
-`~/.ultranix-mcp/api-keys` (one `uxcp_*` key per line, mode `0600`
-required) — see [docs/API_KEY_MANAGEMENT.md](docs/API_KEY_MANAGEMENT.md) §3
+**Key-dir fallback.** When neither `ULTRANIX_MCP_API_KEY` nor
+`ULTRANIX_MCP_API_KEY_FILE` is set, the server scans
+`~/.ultranix-mcp/api-keys/*.json` — one key-record file per key (JSON
+record or line format, mode `0600` enforced per file) — see
+[docs/API_KEY_MANAGEMENT.md](docs/API_KEY_MANAGEMENT.md) §3
 for the full source-precedence rules.
 
 **Data directory.** Runtime state lives under `~/.ultranix-mcp/`:
@@ -322,7 +335,7 @@ capabilities. ultranix-mcp selects the least-privileged backend that works:
     packaged udev rule (`GROUP="ultranix-input"` — a dedicated group holding
     only the service user; never the broad `input` group, which grants
     keylogger-level read access to every evdev node). Setup is opt-in and
-    documented in Phase 5.
+    documented in [packaging/README-uinput.md](packaging/README-uinput.md).
 3.  **XDG Desktop Portal** — `Screenshot`/`RemoteDesktop` via `zbus`; the
     portal mediates a per-app consent dialog through
     `xdg-desktop-portal-hyprland`.
@@ -372,9 +385,10 @@ catalog (full schemas, per-tool errors, and consent semantics).*
 
 ## 📈 Roadmap
 
-See [ROADMAP.md](ROADMAP.md) for the six-phase delivery plan (scaffold →
-Hyprland I/O → AT-SPI2 → vision/CDP → enterprise → portability/packaging)
-and [CHANGELOG.md](CHANGELOG.md) for release notes.
+See [ROADMAP.md](ROADMAP.md) for the six-phase delivery plan — all of
+Phases 0–5 (scaffold → Hyprland I/O → AT-SPI2 → vision/CDP → enterprise →
+portability/packaging) shipped as of v1.0.0 — and
+[CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## 📚 Documentation
 

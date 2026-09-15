@@ -261,6 +261,18 @@ pub fn assert_success(res: &Result<CallToolResult, ErrorData>, ctx: &str) {
     }
 }
 
+/// Serializes tests that mutate or depend on the process-global
+/// spatial-focus rect (`set_spatial_focus` state is a static in
+/// `tools::vision`, so parallel tests must not interleave a `set` with
+/// another test's `screenshot`/`find_*` assertions). Hold the guard for
+/// the whole test and leave the rect cleared. Async-aware mutex so the
+/// guard can be held across `.await` without tripping
+/// `clippy::await_holding_lock`.
+pub async fn focus_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static L: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    L.lock().await
+}
+
 /// Assert a dispatch result is a JSON-RPC error with one of `codes`.
 pub fn assert_error_code(res: &Result<CallToolResult, ErrorData>, codes: &[i32], ctx: &str) {
     match res {

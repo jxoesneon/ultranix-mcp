@@ -37,7 +37,7 @@ already exist for sessions/apps where AT-SPI2 yields nothing.
 
 ## Decision
 
-- **`UIAutomationProvider` is implemented by `AtspiAutomation`** over the session
+- **`UIAutomationProvider` is implemented by `AtspiUi`** over the session
   D-Bus using the `atspi` crate.
 - The provider exposes `get_root_json` (recursive tree), `get_focused_json`, and
   `find_element(query) -> Option<bounds>` semantics matching ultrawin's trait

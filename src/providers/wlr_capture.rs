@@ -6,7 +6,10 @@
 //! an anonymous temp file, then converts the frame to PNG via `image`.
 //!
 //! `cursor_position`/`screen_info` prefer `hyprctl` (live on Hyprland) and
-//! degrade to `wl_output` geometry when it is absent.
+//! degrade to `wl_output` geometry when it is absent. The binary is the
+//! canonicalized path pinned at construction via
+//! [`crate::security::whitelist`] and spawned under the scrubbed
+//! environment + timeout of [`crate::security::spawn`].
 
 use std::fs::File;
 use std::io::{Read, Seek};
@@ -30,7 +33,11 @@ use crate::traits::{CaptureProvider, Frame, Rect};
 ///
 /// Stateless: every call opens a short-lived Wayland connection, which keeps
 /// the provider `Send + Sync` without holding protocol objects across awaits.
-pub struct WlrCapture;
+pub struct WlrCapture {
+    /// Pinned `hyprctl` absolute path, when it was on `PATH` at
+    /// construction — `cursor_position`/`screen_info` helpers (S-1).
+    hyprctl: Option<std::path::PathBuf>,
+}
 
 impl WlrCapture {
     /// Probe the session: `WAYLAND_DISPLAY` must resolve and the compositor
@@ -38,7 +45,11 @@ impl WlrCapture {
     pub fn new() -> Option<Self> {
         std::env::var_os("WAYLAND_DISPLAY")?;
         probe().ok()?;
-        Some(Self)
+        Some(Self {
+            hyprctl: crate::security::whitelist::resolve_binaries()
+                .get("hyprctl")
+                .map(std::path::Path::to_path_buf),
+        })
     }
 }
 
@@ -495,12 +506,13 @@ fn parse_cursorpos(s: &str) -> Option<(i32, i32)> {
     Some((xs.trim().parse().ok()?, ys.trim().parse().ok()?))
 }
 
-async fn hyprctl_cursorpos() -> Result<(i32, i32)> {
-    let out = tokio::process::Command::new("hyprctl")
-        .args(["-j", "cursorpos"])
-        .output()
-        .await
-        .context("run hyprctl cursorpos")?;
+/// Pinned `hyprctl -j cursorpos`, scrubbed env, bounded wait.
+async fn hyprctl_cursorpos(bin: &std::path::Path) -> Result<(i32, i32)> {
+    let mut cmd = crate::security::spawn::command(bin, &["-j", "cursorpos"]);
+    let out =
+        crate::security::spawn::output_within(&mut cmd, crate::security::spawn::SUBPROCESS_TIMEOUT)
+            .await
+            .context("run hyprctl cursorpos")?;
     if !out.status.success() {
         bail!("hyprctl cursorpos exited {}", out.status);
     }
@@ -508,12 +520,13 @@ async fn hyprctl_cursorpos() -> Result<(i32, i32)> {
         .ok_or_else(|| anyhow!("unparseable hyprctl cursorpos output"))
 }
 
-async fn hyprctl_monitors() -> Result<Value> {
-    let out = tokio::process::Command::new("hyprctl")
-        .args(["-j", "monitors"])
-        .output()
-        .await
-        .context("run hyprctl monitors")?;
+/// Pinned `hyprctl -j monitors`, scrubbed env, bounded wait.
+async fn hyprctl_monitors(bin: &std::path::Path) -> Result<Value> {
+    let mut cmd = crate::security::spawn::command(bin, &["-j", "monitors"]);
+    let out =
+        crate::security::spawn::output_within(&mut cmd, crate::security::spawn::SUBPROCESS_TIMEOUT)
+            .await
+            .context("run hyprctl monitors")?;
     if !out.status.success() {
         bail!("hyprctl monitors exited {}", out.status);
     }
@@ -533,16 +546,21 @@ impl CaptureProvider for WlrCapture {
     }
 
     async fn cursor_position(&self) -> Result<(i32, i32)> {
-        hyprctl_cursorpos().await
+        match &self.hyprctl {
+            Some(bin) => hyprctl_cursorpos(bin).await,
+            None => Err(anyhow!("hyprctl unavailable (not pinned at startup)")),
+        }
     }
 
     async fn screen_info(&self) -> Result<Value> {
-        match hyprctl_monitors().await {
-            Ok(v) => Ok(v),
-            Err(_) => tokio::task::spawn_blocking(screen_info_blocking)
-                .await
-                .context("screen_info task")?,
+        if let Some(bin) = &self.hyprctl
+            && let Ok(v) = hyprctl_monitors(bin).await
+        {
+            return Ok(v);
         }
+        tokio::task::spawn_blocking(screen_info_blocking)
+            .await
+            .context("screen_info task")?
     }
 }
 

@@ -21,6 +21,7 @@ pub mod history;
 pub mod paths;
 pub mod ratelimit;
 pub mod sanitize;
+pub mod spawn;
 pub mod whitelist;
 
 /// The security subsystem, built once at startup and shared by every tool
@@ -50,13 +51,22 @@ pub struct SecurityContext {
     /// [`ConsentGate::allow_destructive`]; gated calls still write their
     /// audit record stamped `"consent": "bypassed"`.
     pub allow_destructive: bool,
+    /// Launch-time `--category` filter mirrored onto the context so the
+    /// secured dispatch path — including `replay_action`'s re-entry —
+    /// enforces it without signature churn
+    /// (docs/API_VERSIONING.md "Category Filters"; `None` = all
+    /// categories enabled). [`UltraNixServer::with_security`] copies
+    /// the server's configured set here.
+    pub categories: Option<Vec<String>>,
     /// State root this context was built for — the lazy
     /// [`history::HistoryStore`] opens `<data_dir>/history.json` here.
     data_dir: PathBuf,
     /// Process-lazy encrypted action history. Root-scoped (unlike
     /// `HistoryStore::shared`, which resolves the ambient state dir), so
-    /// tests and isolated contexts stay hermetic.
-    history: std::sync::OnceLock<history::HistoryStore>,
+    /// tests and isolated contexts stay hermetic. `Arc`-held so secured
+    /// dispatch can move the blocking record/write path onto
+    /// `spawn_blocking` (EFF-1).
+    history: std::sync::OnceLock<std::sync::Arc<history::HistoryStore>>,
 }
 
 impl SecurityContext {
@@ -98,9 +108,21 @@ impl SecurityContext {
             pins: whitelist::resolve_binaries(),
             x11_active,
             allow_destructive,
+            categories: None,
             data_dir: data_dir.as_ref().to_path_buf(),
             history: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Lazily-opened AES-256-GCM action history at
+    /// `<data_dir>/history.json`, behind an `Arc` so blocking record
+    /// calls can be handed to `tokio::task::spawn_blocking`.
+    fn history_store(&self) -> anyhow::Result<&std::sync::Arc<history::HistoryStore>> {
+        if let Some(store) = self.history.get() {
+            return Ok(store);
+        }
+        let store = std::sync::Arc::new(history::HistoryStore::open(&self.data_dir)?);
+        Ok(self.history.get_or_init(|| store))
     }
 
     /// Lazily-opened AES-256-GCM action history at
@@ -108,11 +130,13 @@ impl SecurityContext {
     /// cached for the context's lifetime; a transient race between two
     /// first callers resolves to a single store (`get_or_init`).
     pub fn history(&self) -> anyhow::Result<&history::HistoryStore> {
-        if let Some(store) = self.history.get() {
-            return Ok(store);
-        }
-        let store = history::HistoryStore::open(&self.data_dir)?;
-        Ok(self.history.get_or_init(|| store))
+        self.history_store().map(std::sync::Arc::as_ref)
+    }
+
+    /// Owned handle to the same lazily-opened store as [`Self::history`]
+    /// — for `spawn_blocking` call sites that must own what they send.
+    pub fn history_arc(&self) -> anyhow::Result<std::sync::Arc<history::HistoryStore>> {
+        self.history_store().map(std::sync::Arc::clone)
     }
 }
 

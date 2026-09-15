@@ -37,7 +37,7 @@ Constraints:
 
 ## Decision
 
-- **Primary input path: wlroots-native protocols.** `WlrVirtualInput` implements
+- **Primary input path: wlroots-native protocols.** `WlrInput` implements
   `InputProvider` over `zwlr_virtual_pointer_v1` + `virtual-keyboard-unstable-v1`,
   in-process over the existing Wayland connection.
 - **uinput/evdev** is the first fallback (`UinputInput`), gated by a documented
@@ -50,7 +50,8 @@ Constraints:
   exposing neither wlroots protocols nor writable uinput.
 - **ydotool is rejected** — it adds a privileged daemon dependency with no
   capability gain over direct uinput access.
-- **xdotool** is retained only inside the X11 fallback chain (XWayland sessions).
+- **xdotool** is retained only inside the X11 fallback chain (XWayland sessions)
+  — *post-v1 rung: the X11-native providers are not shipped at v1.0.0.*
 
 ## Consequences
 
@@ -77,11 +78,11 @@ Constraints:
   globals). The startup probe binds the globals and fails to `None` cleanly.
 - `virtual-keyboard-unstable-v1` requires delivering a keymap before key events;
   the provider must keep a cached keymap and handle `keymap`/`modifiers` state —
-  modest implementation complexity owned inside `WlrVirtualInput`.
+  modest implementation complexity owned inside `WlrInput`.
 
 **Follow-ups:**
 
 - Ship the udev rule in `packaging/` and surface a `get_action_history`-adjacent
   diagnostic when uinput is probed but `/dev/uinput` is not writable.
 - Add integration coverage for both paths: real Hyprland session (wlr-native)
-  and Xvfb+xdotool (X11 chain) per TESTING_STRATEGY.md.
+  and Xvfb+xdotool (X11 chain — post-v1) per TESTING_STRATEGY.md.

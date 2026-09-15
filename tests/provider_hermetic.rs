@@ -37,6 +37,7 @@ use std::sync::{Mutex, MutexGuard};
 use serde_json::json;
 use ultranix_mcp::providers::grim_capture::GrimCapture;
 use ultranix_mcp::providers::hyprctl::HyprctlWindow;
+use ultranix_mcp::security::whitelist::PinnedBins;
 use ultranix_mcp::traits::{CaptureProvider, Rect, WindowProvider};
 
 /// Serializes every env/PATH-mutating test in this binary. Non-mutating
@@ -292,7 +293,8 @@ async fn grim_full_capture_returns_real_png() {
     write_exe(dir.path(), "grim", &grim_script());
     env.set("PATH", path_with(dir.path()));
 
-    let cap = GrimCapture::new().expect("fake grim must resolve on PATH");
+    let cap =
+        GrimCapture::with_pins(&PinnedBins::resolve()).expect("fake grim must resolve on PATH");
     let frame = cap.capture_frame(None).await.unwrap();
     assert_eq!(&frame.png[..4], b"\x89PNG");
     assert_eq!((frame.width, frame.height), (1, 1));
@@ -311,7 +313,7 @@ async fn grim_region_capture_pipes_slurp_geometry_into_grim() {
     write_exe(dir.path(), "slurp", "#!/bin/sh\necho '0,0 2x2'\n");
     env.set("PATH", path_with(dir.path()));
 
-    let cap = GrimCapture::new().unwrap();
+    let cap = GrimCapture::with_pins(&PinnedBins::resolve()).unwrap();
     let frame = cap
         .capture_frame(Some(Rect {
             x: 5,
@@ -333,7 +335,7 @@ async fn grim_region_capture_fails_with_slurp() {
     write_exe(dir.path(), "slurp", "#!/bin/sh\nexit 1\n");
     env.set("PATH", path_with(dir.path()));
 
-    let cap = GrimCapture::new().unwrap();
+    let cap = GrimCapture::with_pins(&PinnedBins::resolve()).unwrap();
     let rect = Rect {
         x: 0,
         y: 0,
@@ -360,7 +362,7 @@ async fn grim_failure_and_garbage_output_are_errors() {
     env.set("PATH", path_with(dir.path()));
 
     write_exe(dir.path(), "grim", "#!/bin/sh\nexit 1\n");
-    let cap = GrimCapture::new().unwrap();
+    let cap = GrimCapture::with_pins(&PinnedBins::resolve()).unwrap();
     let err = cap.capture_frame(None).await.unwrap_err();
     assert!(err.to_string().contains("grim exited"), "{err}");
 
@@ -384,7 +386,7 @@ async fn grim_without_extras_uses_rect_geometry_and_reports_no_cursor() {
     // the builtin-only grim script still runs.
     env.set("PATH", dir.path());
 
-    let cap = GrimCapture::new().unwrap();
+    let cap = GrimCapture::with_pins(&PinnedBins::resolve()).unwrap();
     // No slurp → the requested rect goes verbatim to `grim -g`.
     let frame = cap
         .capture_frame(Some(Rect {
@@ -418,7 +420,7 @@ async fn grim_cursor_and_screen_info_via_fake_hyprctl() {
     );
     env.set("PATH", path_with(dir.path()));
 
-    let cap = GrimCapture::new().unwrap();
+    let cap = GrimCapture::with_pins(&PinnedBins::resolve()).unwrap();
     assert_eq!(cap.cursor_position().await.unwrap(), (11, 22));
     let info = cap.screen_info().await.unwrap();
     assert_eq!(info[0]["name"], json!("eDP-1"));
@@ -436,7 +438,7 @@ fn grim_new_returns_none_when_absent_from_path() {
     let mut env = EnvGuard::new();
     let dir = tempfile::tempdir().unwrap(); // empty — no grim anywhere
     env.set("PATH", dir.path());
-    assert!(GrimCapture::new().is_none());
+    assert!(GrimCapture::with_pins(&PinnedBins::resolve()).is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -462,8 +464,9 @@ fn hyprctl_new_returns_none_without_socket_or_binary() {
     env.set("HYPRLAND_INSTANCE_SIGNATURE", unique_his());
     env.set("XDG_RUNTIME_DIR", rt.path());
     env.set("PATH", bin.path());
-    // Unique HIS ⇒ /tmp/hypr/<his>/.socket.sock can't exist either.
-    assert!(HyprctlWindow::new().is_none());
+    // Unique HIS ⇒ /tmp/hypr/<his>/.socket.sock can't exist either —
+    // and the fresh pin set over the empty PATH carries no hyprctl.
+    assert!(HyprctlWindow::with_pins(&PinnedBins::resolve()).is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -478,7 +481,7 @@ fn binary_transport(dir: &Path, rt: &Path, env: &mut EnvGuard) -> HyprctlWindow 
     env.set("HYPRLAND_INSTANCE_SIGNATURE", unique_his());
     env.set("XDG_RUNTIME_DIR", rt);
     env.set("PATH", path_with(dir));
-    HyprctlWindow::new().expect("fake hyprctl must resolve on PATH")
+    HyprctlWindow::with_pins(&PinnedBins::resolve()).expect("fake hyprctl must resolve on PATH")
 }
 
 #[tokio::test]

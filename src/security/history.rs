@@ -224,17 +224,21 @@ impl HistoryStore {
             outcome: entry.outcome,
         };
 
-        // Build the post-append record set first so a failed write leaves
-        // memory consistent with the untouched file.
-        let mut candidate = inner.records.clone();
-        candidate.push(rec.clone());
-        if candidate.len() > self.max_records {
-            let excess = candidate.len() - self.max_records;
-            candidate.drain(..excess);
+        // Append in place, then persist the post-eviction tail as a
+        // borrowed slice — the serializer walks the slice directly, so
+        // neither `records` nor its clone is materialized (EFF-1). A
+        // failed write pops the pushed record, leaving memory consistent
+        // with the untouched file.
+        inner.records.push(rec.clone());
+        let keep_from = inner.records.len().saturating_sub(self.max_records);
+        if let Err(e) = self.persist(&key, &inner.records[keep_from..]) {
+            inner.records.pop();
+            return Err(e);
         }
-        self.persist(&key, &candidate)?;
+        if keep_from > 0 {
+            inner.records.drain(..keep_from);
+        }
 
-        inner.records = candidate;
         inner.next_index += 1;
         Ok(rec)
     }
@@ -345,6 +349,10 @@ impl HistoryStore {
         {
             Sha256::digest(secret.as_bytes()).into()
         } else if self.key_path.exists() {
+            // Enforce the `0600` contract *before* reading (S-8): a
+            // group/world-readable key file is a hard failure, same as
+            // the API-key file rule in `security::auth`.
+            crate::security::auth::enforce_private_file(&self.key_path)?;
             let raw = fs::read(&self.key_path)
                 .with_context(|| format!("read {}", self.key_path.display()))?;
             raw.try_into().map_err(|_| {
@@ -367,13 +375,20 @@ impl HistoryStore {
         Ok(key)
     }
 
-    /// Serialize + encrypt + atomically replace `history.json`.
+    /// Serialize + encrypt + atomically replace `history.json`. The
+    /// payload borrows `records` — serializing a `&[ActionRecord]`
+    /// produces the same JSON array without cloning the vector.
     fn persist(&self, key: &[u8; 32], records: &[ActionRecord]) -> anyhow::Result<()> {
-        let payload = FilePayload {
+        #[derive(Serialize)]
+        struct PayloadRef<'a> {
+            version: u32,
+            records: &'a [ActionRecord],
+        }
+        let plaintext = serde_json::to_vec(&PayloadRef {
             version: FORMAT_VERSION,
-            records: records.to_vec(),
-        };
-        let plaintext = serde_json::to_vec(&payload).context("serialize history payload")?;
+            records,
+        })
+        .context("serialize history payload")?;
 
         let mut nonce = [0u8; NONCE_LEN];
         rand::fill(&mut nonce);
@@ -534,6 +549,53 @@ mod tests {
         assert!(!text.contains("640"));
         // nonce + ciphertext + tag, larger than the plaintext is possible.
         assert!(bytes.len() > NONCE_LEN + 16);
+    }
+
+    /// Force the `history.key` file path (not the env secret) while
+    /// `guard` runs; restores the prior env state on drop.
+    fn without_env_secret() -> impl Drop {
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                // SAFETY: serialized by ENV_LOCK; restores exactly what
+                // the test found.
+                unsafe {
+                    match self.0.take() {
+                        Some(v) => std::env::set_var(SECRET_ENV, v),
+                        None => std::env::remove_var(SECRET_ENV),
+                    }
+                }
+            }
+        }
+        let saved = std::env::var_os(SECRET_ENV);
+        // SAFETY: serialized by ENV_LOCK, restored by the guard.
+        unsafe { std::env::remove_var(SECRET_ENV) };
+        Restore(saved)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn group_readable_key_file_is_refused() {
+        let _env = env_guard();
+        let _secret = without_env_secret();
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        // A pre-existing key file with loose mode must fail *before* its
+        // bytes are trusted (S-8) — same rule as API-key files.
+        let key = tmp.path().join(KEY_FILE);
+        fs::write(&key, [7u8; 32]).unwrap();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let store = HistoryStore::open(tmp.path()).unwrap();
+        let err = store.record(entry("sleep", json!({"ms": 1}))).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("group/world-readable"),
+            "unexpected error: {err:#}"
+        );
+
+        // Tightening the mode restores the store.
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+        store.record(entry("sleep", json!({"ms": 1}))).unwrap();
     }
 
     #[test]

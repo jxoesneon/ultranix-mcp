@@ -1,6 +1,7 @@
 # Headless & Remote Authentication — ultranix-mcp
 
-**Status**: Specification phase.
+**Status**: Implemented (v1.0.0) — everything here describes shipped behaviour
+except the Unix-socket listener, which remains a planned hardening option.
 **Audience**: operators running ultranix-mcp over SSH, on a headless box, or
 under `systemd --user` without an active graphical seat.
 
@@ -162,8 +163,9 @@ below. cargo-install users substitute
 
 The env file (`%h/.config/ultranix-mcp/env`, mode `0600`) carries
 `ULTRANIX_MCP_API_KEY` (or `ULTRANIX_MCP_API_KEY_FILE` pointing at a key
-file; `~/.ultranix-mcp/api-keys`, mode `0600`, is the convention fallback
-source when neither is set — see `docs/API_KEY_MANAGEMENT.md` §3), the
+file; `~/.ultranix-mcp/api-keys/*.json` — key-record files, mode `0600` each —
+is the convention fallback source when neither is set; see
+`docs/API_KEY_MANAGEMENT.md` §3), the
 optional `ULTRANIX_MCP_API_KEY_EXPIRES` key-expiry metadata,
 `ULTRANIX_MCP_HISTORY_SECRET`, and any `ULTRANIX_MCP_BIND`/`--bind` override; the
 listener defaults to `127.0.0.1:3010`.

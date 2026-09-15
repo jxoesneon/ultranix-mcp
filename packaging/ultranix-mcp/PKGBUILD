@@ -1,6 +1,6 @@
 # Maintainer: jxoesneon <jxoesneon@users.noreply.github.com>
 pkgname=ultranix-mcp
-pkgver=0.5.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="Wayland-native, security-first MCP server for Linux desktop automation (Hyprland-first)"
 arch=('x86_64' 'aarch64')
@@ -15,15 +15,15 @@ optdepends=(
   'xdg-desktop-portal-hyprland: screen-capture consent path on Hyprland'
   'xdg-desktop-portal-wlr: portal backend for other wlroots compositors'
   'xdg-desktop-portal-gnome: portal backend under GNOME'
-  'pipewire: stream transport for the portal RemoteDesktop path'
+  'pipewire: only needed if portal RemoteDesktop stream consumption lands post-v1 (v1 portal input never opens the video fd)'
   'wl-clipboard: post-v1 clipboard tools (wl-copy/wl-paste) — NOT a v1 runtime dep'
   'at-spi2-core: semantic UI tree (a11y backend)'
   'onnxruntime: system ONNX Runtime for ORT_STRATEGY=system builds'
   'grim: whitelisted system_command capture helper (wlroots)'
   'slurp: whitelisted system_command region-picker (wlroots)'
-  'xdotool: X11 input fallback'
-  'scrot: X11 capture fallback'
-  'wmctrl: X11 window management fallback'
+  'xdotool: X11 input fallback (post-v1)'
+  'scrot: X11 capture fallback (post-v1)'
+  'wmctrl: X11 window management fallback (post-v1)'
 )
 install=ultranix-mcp.install
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")

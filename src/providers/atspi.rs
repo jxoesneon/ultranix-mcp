@@ -61,6 +61,28 @@ const MAX_SEARCH_NODES: usize = 16_384;
 /// window is treated as absent rather than blocking provider detection.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Per-call D-Bus budget for AT-SPI interactions — a wedged registry or
+/// application must not hang a tool call. Callers degrade exactly like a
+/// failed call (`None`/`Err`/defaulted field), so a timeout is just one
+/// more failure shape.
+const DBUS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Run a D-Bus future under [`DBUS_TIMEOUT`]; elapsed surfaces as an
+/// error. Covers `zbus::Error`- and `AtspiError`-returning calls alike.
+async fn dbus<F, T, E>(fut: F) -> Result<T>
+where
+    F: Future<Output = std::result::Result<T, E>>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    match tokio::time::timeout(DBUS_TIMEOUT, fut).await {
+        Err(_) => Err(anyhow::anyhow!(
+            "atspi call timed out after {DBUS_TIMEOUT:?}"
+        )),
+        Ok(Err(e)) => Err(anyhow::Error::new(e)),
+        Ok(Ok(v)) => Ok(v),
+    }
+}
+
 /// `UIAutomationProvider` over AT-SPI2.
 ///
 /// The `zbus::Connection` inside `AccessibilityConnection` binds to the
@@ -302,27 +324,28 @@ impl AtspiUi {
     }
 
     /// Async half of [`Self::new`]: session bus → `org.a11y.Bus` owner →
-    /// a11y-bus connection → registry root answers `child_count`.
+    /// a11y-bus connection → registry root answers `child_count`. The
+    /// whole probe additionally sits under [`PROBE_TIMEOUT`]; each call
+    /// is still wrapped so a mid-probe wedge cannot eat the whole budget.
     async fn probe() -> Option<()> {
-        let session = zbus::Connection::session().await.ok()?;
-        let reply = session
-            .call_method(
-                Some("org.freedesktop.DBus"),
-                "/org/freedesktop/DBus",
-                Some("org.freedesktop.DBus"),
-                "NameHasOwner",
-                &"org.a11y.Bus",
-            )
-            .await
-            .ok()?;
+        let session = dbus(zbus::Connection::session()).await.ok()?;
+        let reply = dbus(session.call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "NameHasOwner",
+            &"org.a11y.Bus",
+        ))
+        .await
+        .ok()?;
         if !reply.body().deserialize::<bool>().ok()? {
             return None;
         }
 
         // Resolves the a11y bus address via org.a11y.Bus and connects.
-        let conn = AccessibilityConnection::new().await.ok()?;
-        let root = conn.root_accessible_on_registry().await.ok()?;
-        root.child_count().await.ok()?;
+        let conn = dbus(AccessibilityConnection::new()).await.ok()?;
+        let root = dbus(conn.root_accessible_on_registry()).await.ok()?;
+        dbus(root.child_count()).await.ok()?;
         Some(())
     }
 
@@ -332,7 +355,7 @@ impl AtspiUi {
     async fn conn(&self) -> Result<&AccessibilityConnection> {
         self.conn
             .get_or_try_init(|| async {
-                AccessibilityConnection::new()
+                dbus(AccessibilityConnection::new())
                     .await
                     .context("atspi bus connect failed")
             })
@@ -357,63 +380,71 @@ impl AtspiUi {
     /// `ObjectRefExt::as_accessible_proxy`, which borrows the ref).
     async fn accessible_at(&self, obj: &ObjectRefOwned) -> Option<AccessibleProxy<'static>> {
         let name: BusName = obj.name()?.clone().into();
-        AccessibleProxy::builder(self.bus().await.ok()?)
-            .destination(name)
-            .ok()?
-            .path(obj.path().clone())
-            .ok()?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await
-            .ok()
+        dbus(
+            AccessibleProxy::builder(self.bus().await.ok()?)
+                .destination(name)
+                .ok()?
+                .path(obj.path().clone())
+                .ok()?
+                .cache_properties(CacheProperties::No)
+                .build(),
+        )
+        .await
+        .ok()
     }
 
     /// Build a `ComponentProxy` for the same object — no interface check;
     /// callers treat method errors as "no component data".
     async fn component_at(&self, obj: &ObjectRefOwned) -> Option<ComponentProxy<'_>> {
         let name: BusName = obj.name()?.clone().into();
-        ComponentProxy::builder(self.bus().await.ok()?)
-            .destination(name)
-            .ok()?
-            .path(obj.path().to_owned())
-            .ok()?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await
-            .ok()
+        dbus(
+            ComponentProxy::builder(self.bus().await.ok()?)
+                .destination(name)
+                .ok()?
+                .path(obj.path().to_owned())
+                .ok()?
+                .cache_properties(CacheProperties::No)
+                .build(),
+        )
+        .await
+        .ok()
     }
 
     async fn action_at(&self, obj: &ObjectRefOwned) -> Option<ActionProxy<'_>> {
         let name: BusName = obj.name()?.clone().into();
-        ActionProxy::builder(self.bus().await.ok()?)
-            .destination(name)
-            .ok()?
-            .path(obj.path().to_owned())
-            .ok()?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await
-            .ok()
+        dbus(
+            ActionProxy::builder(self.bus().await.ok()?)
+                .destination(name)
+                .ok()?
+                .path(obj.path().to_owned())
+                .ok()?
+                .cache_properties(CacheProperties::No)
+                .build(),
+        )
+        .await
+        .ok()
     }
 
     async fn application_at(&self, obj: &ObjectRefOwned) -> Option<ApplicationProxy<'_>> {
         let name: BusName = obj.name()?.clone().into();
-        ApplicationProxy::builder(self.bus().await.ok()?)
-            .destination(name)
-            .ok()?
-            .path(obj.path().to_owned())
-            .ok()?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await
-            .ok()
+        dbus(
+            ApplicationProxy::builder(self.bus().await.ok()?)
+                .destination(name)
+                .ok()?
+                .path(obj.path().to_owned())
+                .ok()?
+                .cache_properties(CacheProperties::No)
+                .build(),
+        )
+        .await
+        .ok()
     }
 
     /// Screen-space extents of an element, `None` when it exposes no
     /// Component interface (or the call otherwise fails).
     async fn extents_at(&self, obj: &ObjectRefOwned) -> Option<Rect> {
         let comp = self.component_at(obj).await?;
-        let (x, y, w, h) = comp.get_extents(CoordType::Screen).await.ok()?;
+        let (x, y, w, h) = dbus(comp.get_extents(CoordType::Screen)).await.ok()?;
         Some(Rect { x, y, w, h })
     }
 
@@ -424,15 +455,13 @@ impl AtspiUi {
             None => None,
         };
         Node {
-            name: acc.name().await.unwrap_or_default(),
-            role: acc
-                .get_role()
+            name: dbus(acc.name()).await.unwrap_or_default(),
+            role: dbus(acc.get_role())
                 .await
                 .map(role_kebab)
                 .unwrap_or_else(|_| "unknown".into()),
-            description: acc.description().await.unwrap_or_default(),
-            states: acc
-                .get_state()
+            description: dbus(acc.description()).await.unwrap_or_default(),
+            states: dbus(acc.get_state())
                 .await
                 .map(|ss| ss.iter().map(state_name).collect())
                 .unwrap_or_default(),
@@ -459,7 +488,7 @@ impl AtspiUi {
             let mut node = self.node_meta(acc).await;
 
             if depth_left > 0 {
-                if let Ok(refs) = acc.get_children().await {
+                if let Ok(refs) = dbus(acc.get_children()).await {
                     for r in refs {
                         if r.is_null() || budget.visited >= budget.limit {
                             if budget.visited >= budget.limit {
@@ -486,7 +515,7 @@ impl AtspiUi {
 
     /// Children of `acc` as accessible proxies (dead/skipped refs dropped).
     async fn children_of(&self, acc: &AccessibleProxy<'_>) -> Vec<AccessibleProxy<'_>> {
-        let Ok(refs) = acc.get_children().await else {
+        let Ok(refs) = dbus(acc.get_children()).await else {
             return Vec::new();
         };
         let mut out = Vec::with_capacity(refs.len());
@@ -505,13 +534,10 @@ impl AtspiUi {
     /// the [`State::Active`] window is searched first (TOOLS.md searches
     /// "the focused application's tree"; remaining apps are the fallback).
     async fn ordered_apps(&self) -> Result<Vec<ObjectRefOwned>> {
-        let root = self
-            .conn()
-            .await?
-            .root_accessible_on_registry()
+        let root = dbus(self.conn().await?.root_accessible_on_registry())
             .await
             .context("atspi registry root unreachable")?;
-        let mut apps = root.get_children().await.unwrap_or_default();
+        let mut apps = dbus(root.get_children()).await.unwrap_or_default();
         apps.retain(|r| !r.is_null());
 
         // Find the app with an Active-state top-level window.
@@ -521,7 +547,7 @@ impl AtspiUi {
                 continue;
             };
             for w in self.children_of(&app).await {
-                if w.get_state()
+                if dbus(w.get_state())
                     .await
                     .map(|s| s.contains(State::Active))
                     .unwrap_or(false)
@@ -541,33 +567,30 @@ impl AtspiUi {
     /// needs (a `role:` query costs one D-Bus call, not three).
     async fn node_matches(&self, acc: &AccessibleProxy<'_>, query: &Query) -> bool {
         match query {
-            Query::Role(v) => acc
-                .get_role()
+            Query::Role(v) => dbus(acc.get_role())
                 .await
                 .map(|r| norm(&role_kebab(r)).contains(&norm(v)))
                 .unwrap_or(false),
-            Query::Name(v) => acc
-                .name()
+            Query::Name(v) => dbus(acc.name())
                 .await
                 .map(|n| contains_ci(&n, v))
                 .unwrap_or(false),
-            Query::Description(v) => acc
-                .description()
+            Query::Description(v) => dbus(acc.description())
                 .await
                 .map(|d| contains_ci(&d, v))
                 .unwrap_or(false),
             Query::ObjectPath(v) => object_path_matches(acc.inner().path().as_str(), v),
             Query::IndexPath(_) => false,
             Query::Any(v) => {
-                let name = acc.name().await.unwrap_or_default();
+                let name = dbus(acc.name()).await.unwrap_or_default();
                 if contains_ci(&name, v) {
                     return true;
                 }
-                let desc = acc.description().await.unwrap_or_default();
+                let desc = dbus(acc.description()).await.unwrap_or_default();
                 if contains_ci(&desc, v) {
                     return true;
                 }
-                acc.get_role()
+                dbus(acc.get_role())
                     .await
                     .map(|r| norm(&role_kebab(r)).contains(&norm(v)))
                     .unwrap_or(false)
@@ -605,14 +628,11 @@ impl AtspiUi {
     /// Navigate a `path:/i/j/…` index path from the desktop root.
     /// Out-of-range or dead references resolve to `None` (not found).
     async fn navigate_index_path(&self, indices: &[i32]) -> Result<Option<ObjectRefOwned>> {
-        let mut cur = self
-            .conn()
-            .await?
-            .root_accessible_on_registry()
+        let mut cur = dbus(self.conn().await?.root_accessible_on_registry())
             .await
             .context("atspi registry root unreachable")?;
         for &i in indices {
-            let Ok(r) = cur.get_child_at_index(i).await else {
+            let Ok(r) = dbus(cur.get_child_at_index(i)).await else {
                 return Ok(None);
             };
             if r.is_null() {
@@ -658,8 +678,7 @@ impl AtspiUi {
             if !budget.take() {
                 return None;
             }
-            if acc
-                .get_state()
+            if dbus(acc.get_state())
                 .await
                 .map(|s| s.contains(state))
                 .unwrap_or(false)
@@ -701,10 +720,7 @@ impl UIAutomationProvider for AtspiUi {
     /// children deep. Node cap per TOOLS.md; sets `"truncated": true`
     /// when the cap is hit.
     async fn get_root_json(&self, depth: u32) -> Result<Value> {
-        let root = self
-            .conn()
-            .await?
-            .root_accessible_on_registry()
+        let root = dbus(self.conn().await?.root_accessible_on_registry())
             .await
             .context("atspi registry root unreachable")?;
         let mut budget = Budget::new(MAX_TREE_NODES);
@@ -741,15 +757,15 @@ impl UIAutomationProvider for AtspiUi {
 
         // Owning application: name + pid (Application::Id, best-effort —
         // toolkits may leave it unset).
-        if let Ok(app_ref) = acc.get_application().await
+        if let Ok(app_ref) = dbus(acc.get_application()).await
             && !app_ref.is_null()
             && let Some(app) = self.accessible_at(&app_ref).await
         {
-            if let Ok(n) = app.name().await {
+            if let Ok(n) = dbus(app.name()).await {
                 m.insert("application".into(), json!(n));
             }
             if let Some(ap) = self.application_at(&app_ref).await
-                && let Ok(id) = ap.id().await
+                && let Ok(id) = dbus(ap.id()).await
             {
                 m.insert("pid".into(), json!(id));
             }
@@ -772,17 +788,49 @@ impl UIAutomationProvider for AtspiUi {
     /// `Ok(false)` when nothing matched or the element exposes no
     /// actions; D-Bus failures surface as errors.
     async fn invoke_element(&self, query: &str) -> Result<bool> {
+        self.invoke_element_action(query, "press").await
+    }
+
+    /// Named-action invoke: enumerate `GetActions`, match `action`
+    /// against action names (case-insensitive, with a small alias set
+    /// for activation verbs), and `DoAction` the resolved index.
+    /// `Ok(false)` when nothing matched or no action by that name.
+    async fn invoke_element_action(&self, query: &str, action: &str) -> Result<bool> {
         let query = parse_query(query)?;
         let Some(obj) = self.find_match(&query).await? else {
             return Ok(false);
         };
-        let Some(action) = self.action_at(&obj).await else {
+        let Some(proxy) = self.action_at(&obj).await else {
             return Ok(false);
         };
-        if action.n_actions().await.unwrap_or(0) <= 0 {
+        let actions = dbus(proxy.get_actions()).await.unwrap_or_default();
+        if actions.is_empty() {
             return Ok(false);
         }
-        action.do_action(0).await.context("atspi do_action failed")
+        let wanted = action.trim().to_ascii_lowercase();
+        // Activation verbs resolve against common AT-SPI action names,
+        // falling back to the conventional default action (index 0).
+        let aliases: &[&str] = match wanted.as_str() {
+            "press" | "activate" | "click" | "default" | "" => {
+                &["press", "activate", "click", "select"]
+            }
+            _ => &[],
+        };
+        let idx = actions
+            .iter()
+            .position(|a| a.name.eq_ignore_ascii_case(&wanted))
+            .or_else(|| {
+                actions
+                    .iter()
+                    .position(|a| aliases.iter().any(|al| a.name.eq_ignore_ascii_case(al)))
+            })
+            .or_else(|| (wanted.is_empty() || aliases.contains(&wanted.as_str())).then_some(0));
+        let Some(i) = idx else {
+            return Ok(false);
+        };
+        dbus(proxy.do_action(i as i32))
+            .await
+            .context("atspi do_action failed")
     }
 }
 

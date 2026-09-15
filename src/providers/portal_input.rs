@@ -16,9 +16,9 @@
 //!
 //! ```text
 //! CreateSession ──► Response{session_handle}
-//! SelectDevices(types = pointer|keyboard [, persist_mode, restore_token])
+//! SelectDevices(types = pointer|keyboard)
 //! SelectSources(types = monitor)              — v2+ only, best-effort
-//! Start("", {}) ──► Response{devices, streams?, restore_token?}
+//! Start("", {}) ──► Response{devices, streams?}
 //! ```
 //!
 //! Every method answers via a `Response` signal on a per-call request
@@ -30,15 +30,19 @@
 //!
 //! ## Consent behavior per backend
 //!
+//! - `persist_mode`/`restore_token` are **deliberately never sent and
+//!   never stored**: a persisted restore credential would let a later
+//!   process re-establish a RemoteDesktop session with no fresh consent
+//!   prompt (THREAT_MODEL.md §4.2). Every session — including the
+//!   one-shot re-establishment after a `Notify*` failure — consents
+//!   afresh through `Start`.
 //! - `xdg-desktop-portal-gnome` / `-kde`: `Start` shows a dialog asking
-//!   which screen to share *and* grants the device set; with
-//!   `persist_mode = 2` (backend version ≥ 2) the returned
-//!   `restore_token` is stored at `<state>/portal-restore-token` (mode
-//!   0600, parent dir 0700) so subsequent runs skip the dialog entirely.
+//!   which screen to share *and* grants the device set.
 //! - `xdg-desktop-portal-hyprland` / `-wlr`: consent is typically a
-//!   one-shot prompt; some builds ignore `persist_mode`.
-//! - Backends that predate `persist_mode` (version 1) get plain
-//!   non-persisted sessions — the dialog then appears once per process.
+//!   one-shot prompt.
+//! - Version-1 backends get the same plain non-persisted sessions — the
+//!   dialog appears once per process (and again if the session must be
+//!   rebuilt).
 //!
 //! ## Absolute pointer motion and streams
 //!
@@ -81,7 +85,7 @@ use crate::traits::InputProvider;
 
 use super::portal_capture::{
     Options, PORTAL_BUS_NAME, PORTAL_DESKTOP_PATH, await_response, get_string, get_u32,
-    new_handle_token, portal_name_owned, response_stream,
+    new_handle_token, portal_call, portal_name_owned, response_stream,
 };
 
 /// `org.freedesktop.portal.RemoteDesktop` interface on the portal object.
@@ -98,10 +102,6 @@ const SOURCE_MONITOR: u32 = 1;
 /// (the stream itself is never consumed).
 const CURSOR_HIDDEN: u32 = 1;
 
-/// `persist_mode` = 2: persist the session until the user revokes it, and
-/// hand back a `restore_token` that survives process restarts.
-const PERSIST_UNTIL_REVOKED: u32 = 2;
-
 /// `stream` argument for `NotifyPointerMotionAbsolute` when the session
 /// granted no sources: `u32::MAX`, the whole-session convention used by
 /// the wlr/hyprland portal family.
@@ -111,9 +111,6 @@ const NO_STREAM: u32 = u32::MAX;
 /// 1 = horizontal.
 const AXIS_VERTICAL: u32 = 0;
 const AXIS_HORIZONTAL: u32 = 1;
-
-/// Restore-token filename inside the state dir.
-const RESTORE_TOKEN_FILE: &str = "portal-restore-token";
 
 /// Borrowed-session future used by [`PortalInput::with_session`].
 type BoxFut<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
@@ -129,6 +126,9 @@ pub struct PortalInput {
     /// absolute position (cursor fallback) and sub-detent wheel
     /// remainders.
     pointer: Mutex<PointerState>,
+    /// Pinned `hyprctl` absolute path, when it was on `PATH` at
+    /// construction — the `cursor_position` fallback (S-1).
+    hyprctl: Option<PathBuf>,
 }
 
 /// Compile-time contract: `InputProvider` requires `Send + Sync`.
@@ -182,29 +182,20 @@ fn create_session_options(handle_token: String, session_token: String) -> Option
     o
 }
 
-fn select_devices_options(handle_token: String, persist: bool, restore: Option<&str>) -> Options {
+/// `SelectDevices` options — never carries `persist_mode` or
+/// `restore_token`: restore credentials are not requested, stored, or
+/// replayed, so every `Start` re-consents (module docs).
+fn select_devices_options(handle_token: String) -> Options {
     let mut o = base_options(handle_token);
     o.insert("types", Value::new(DEVICE_TYPES));
-    if persist {
-        o.insert("persist_mode", Value::new(PERSIST_UNTIL_REVOKED));
-        if let Some(t) = restore {
-            o.insert("restore_token", Value::new(t.to_string()));
-        }
-    }
     o
 }
 
-fn select_sources_options(handle_token: String, persist: bool, restore: Option<&str>) -> Options {
+fn select_sources_options(handle_token: String) -> Options {
     let mut o = base_options(handle_token);
     o.insert("types", Value::new(SOURCE_MONITOR));
     o.insert("multiple", Value::new(false));
     o.insert("cursor_mode", Value::new(CURSOR_HIDDEN));
-    if persist {
-        o.insert("persist_mode", Value::new(PERSIST_UNTIL_REVOKED));
-        if let Some(t) = restore {
-            o.insert("restore_token", Value::new(t.to_string()));
-        }
-    }
     o
 }
 
@@ -288,36 +279,6 @@ fn absolute_target(streams: &[Stream], x: i32, y: i32) -> (u32, f64, f64) {
         f64::from((x - s.x).clamp(0, s.w - 1)),
         f64::from((y - s.y).clamp(0, s.h - 1)),
     )
-}
-
-// ---------------------------------------------------------------------------
-// Restore token persistence (<state>/portal-restore-token, 0600)
-// ---------------------------------------------------------------------------
-
-/// `<state root>/portal-restore-token`, honouring
-/// `ULTRANIX_MCP_STATE_DIR` / `HOME` per [`crate::state::StateDir`].
-fn restore_token_path() -> Option<PathBuf> {
-    let root = crate::state::StateDir::resolve_root(|k| std::env::var_os(k));
-    Some(root.join(RESTORE_TOKEN_FILE))
-}
-
-fn load_restore_token(path: &Path) -> Option<String> {
-    let t = std::fs::read_to_string(path).ok()?.trim().to_string();
-    (!t.is_empty()).then_some(t)
-}
-
-/// Write the token with `0600` inside its (already `0700`) parent.
-fn store_restore_token(path: &Path, token: &str) -> Result<()> {
-    let dir = crate::state::StateDir::at(path.parent().unwrap_or_else(|| Path::new(".")));
-    dir.ensure_parent(path)?;
-    std::fs::write(path, token).context("write portal restore token")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .context("chmod 0600 portal restore token")?;
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -570,12 +531,13 @@ fn parse_cursorpos(s: &str) -> Option<(i32, i32)> {
     Some((xs.trim().parse().ok()?, ys.trim().parse().ok()?))
 }
 
-async fn hyprctl_cursorpos() -> Result<(i32, i32)> {
-    let out = tokio::process::Command::new("hyprctl")
-        .args(["-j", "cursorpos"])
-        .output()
-        .await
-        .context("run hyprctl cursorpos")?;
+/// Pinned `hyprctl -j cursorpos`, scrubbed env, bounded wait.
+async fn hyprctl_cursorpos(bin: &Path) -> Result<(i32, i32)> {
+    let mut cmd = crate::security::spawn::command(bin, &["-j", "cursorpos"]);
+    let out =
+        crate::security::spawn::output_within(&mut cmd, crate::security::spawn::SUBPROCESS_TIMEOUT)
+            .await
+            .context("run hyprctl cursorpos")?;
     if !out.status.success() {
         bail!("hyprctl cursorpos exited {}", out.status);
     }
@@ -601,13 +563,16 @@ impl PortalInput {
             conn: tokio::sync::OnceCell::new(),
             session: tokio::sync::Mutex::new(None),
             pointer: Mutex::new(PointerState::default()),
+            hyprctl: crate::security::whitelist::resolve_binaries()
+                .get("hyprctl")
+                .map(Path::to_path_buf),
         })
     }
 
     async fn conn(&self) -> Result<&zbus::Connection> {
         self.conn
             .get_or_try_init(|| async {
-                zbus::Connection::session()
+                portal_call(zbus::Connection::session())
                     .await
                     .context("session bus connect failed")
             })
@@ -644,73 +609,70 @@ impl PortalInput {
         }
     }
 
-    /// Interface `version` property (v2 adds `SelectSources` and
-    /// `persist_mode`). Tries the modern `version` name then the legacy
-    /// `AvailableVersion`; unreadable → `1` (conservative).
+    /// Interface `version` property (v2 adds `SelectSources`). Tries the
+    /// modern `version` name then the legacy `AvailableVersion`;
+    /// unreadable/timed-out → `1` (conservative).
     async fn interface_version(proxy: &zbus::Proxy<'_>) -> u32 {
-        if let Ok(v) = proxy.get_property::<u32>("version").await {
+        if let Ok(v) = portal_call(proxy.get_property::<u32>("version")).await {
             return v;
         }
-        proxy
-            .get_property::<u32>("AvailableVersion")
+        portal_call(proxy.get_property::<u32>("AvailableVersion"))
             .await
             .unwrap_or(1)
     }
 
     /// `CreateSession → SelectDevices → SelectSources? → Start` — see
-    /// module docs for the consent story.
+    /// module docs for the consent story. `Start` is where the consent
+    /// dialog lives; it is re-run on every establishment — no
+    /// `persist_mode`/`restore_token` is ever sent or stored.
     async fn start_session(&self, conn: &zbus::Connection) -> Result<Session> {
-        let proxy = Builder::<zbus::Proxy>::new(conn)
-            .destination(PORTAL_BUS_NAME)
-            .map_err(|e| anyhow!("portal proxy destination: {e}"))?
-            .path(PORTAL_DESKTOP_PATH)
-            .map_err(|e| anyhow!("portal proxy path: {e}"))?
-            .interface(REMOTE_DESKTOP_IFACE)
-            .map_err(|e| anyhow!("portal proxy interface: {e}"))?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await
-            .context("build RemoteDesktop proxy")?;
+        let proxy = portal_call(
+            Builder::<zbus::Proxy>::new(conn)
+                .destination(PORTAL_BUS_NAME)
+                .map_err(|e| anyhow!("portal proxy destination: {e}"))?
+                .path(PORTAL_DESKTOP_PATH)
+                .map_err(|e| anyhow!("portal proxy path: {e}"))?
+                .interface(REMOTE_DESKTOP_IFACE)
+                .map_err(|e| anyhow!("portal proxy interface: {e}"))?
+                .cache_properties(CacheProperties::No)
+                .build(),
+        )
+        .await
+        .context("build RemoteDesktop proxy")?;
 
         // One signal subscription covers every request in the handshake
         // (each is matched on its returned request path).
         let mut responses = response_stream(conn).await?;
 
-        let version = Self::interface_version(&proxy).await;
-        let persist = version >= 2;
-        let token_path = restore_token_path();
-        let restore = if persist {
-            token_path.as_deref().and_then(load_restore_token)
-        } else {
-            None
-        };
+        // SelectSources exists at interface version ≥ 2.
+        let has_sources = Self::interface_version(&proxy).await >= 2;
 
         // CreateSession(a{sv}) → request → Response{session_handle}
         let opts = create_session_options(new_handle_token(), new_handle_token());
-        let req: OwnedObjectPath = proxy
-            .call("CreateSession", &(&opts,))
+        let req: OwnedObjectPath = portal_call(proxy.call("CreateSession", &(&opts,)))
             .await
             .context("portal CreateSession call")?;
         let results = await_response(&mut responses, &req).await?;
         let session_path = session_path_from(&results)?;
 
-        // SelectDevices(o, a{sv}) — pointer + keyboard, persist if v2+.
-        let opts = select_devices_options(new_handle_token(), persist, restore.as_deref());
-        let req: OwnedObjectPath = proxy
-            .call("SelectDevices", &(&session_path, &opts))
-            .await
-            .context("portal SelectDevices call")?;
+        // SelectDevices(o, a{sv}) — pointer + keyboard.
+        let opts = select_devices_options(new_handle_token());
+        let req: OwnedObjectPath =
+            portal_call(proxy.call("SelectDevices", &(&session_path, &opts)))
+                .await
+                .context("portal SelectDevices call")?;
         await_response(&mut responses, &req).await?;
 
         // SelectSources(o, a{sv}) — v2+, best-effort. One monitor source
         // gives `Start` a stream whose geometry anchors absolute pointer
         // motion (GNOME/KDE require it). Backends without source support
         // keep running streamless.
-        if persist {
-            let opts = select_sources_options(new_handle_token(), true, restore.as_deref());
-            match proxy
-                .call::<_, _, OwnedObjectPath>("SelectSources", &(&session_path, &opts))
-                .await
+        if has_sources {
+            let opts = select_sources_options(new_handle_token());
+            match portal_call(
+                proxy.call::<_, _, OwnedObjectPath>("SelectSources", &(&session_path, &opts)),
+            )
+            .await
             {
                 Ok(req) => {
                     if let Err(e) = await_response(&mut responses, &req).await {
@@ -728,32 +690,21 @@ impl PortalInput {
         }
 
         // Start(o, s parent_window, a{sv}) — this is where the consent
-        // dialog lives; may block until the user answers.
+        // dialog lives; may block until the user answers. A
+        // `restore_token` in the response is deliberately ignored —
+        // persistence is off by policy (module docs).
         let opts = base_options(new_handle_token());
-        let req: OwnedObjectPath = proxy
-            .call("Start", &(&session_path, "", &opts))
+        let req: OwnedObjectPath = portal_call(proxy.call("Start", &(&session_path, "", &opts)))
             .await
             .context("portal Start call")?;
         let results = await_response(&mut responses, &req).await?;
-
-        // Persist the restore token the backend offered, so the next
-        // process skips the dialog (persist_mode = 2 only).
-        if persist {
-            if let Ok(token) = get_string(&results, "restore_token") {
-                if let Some(path) = &token_path {
-                    if let Err(e) = store_restore_token(path, &token) {
-                        tracing::warn!("could not persist portal restore token: {e:#}");
-                    }
-                }
-            }
-        }
 
         let granted = get_u32(&results, "devices").unwrap_or(0);
         let streams = parse_streams(&results);
         tracing::info!(
             devices = granted,
             streams = streams.len(),
-            persist,
+            has_sources,
             "portal remote-desktop session started"
         );
         Ok(Session {
@@ -769,13 +720,12 @@ impl PortalInput {
         self.with_session(|s| {
             let (node, lx, ly) = absolute_target(&s.streams, px, py);
             Box::pin(async move {
-                s.proxy
-                    .call::<_, _, ()>(
-                        "NotifyPointerMotionAbsolute",
-                        &(&s.path, &empty_options(), node, lx, ly),
-                    )
-                    .await
-                    .context("portal NotifyPointerMotionAbsolute")
+                portal_call(s.proxy.call::<_, _, ()>(
+                    "NotifyPointerMotionAbsolute",
+                    &(&s.path, &empty_options(), node, lx, ly),
+                ))
+                .await
+                .context("portal NotifyPointerMotionAbsolute")
             })
         })
         .await?;
@@ -787,13 +737,12 @@ impl PortalInput {
     async fn emit_button(&self, code: i32, down: bool) -> Result<()> {
         self.with_session(|s| {
             Box::pin(async move {
-                s.proxy
-                    .call::<_, _, ()>(
-                        "NotifyPointerButton",
-                        &(&s.path, &empty_options(), code, u32::from(down)),
-                    )
-                    .await
-                    .context("portal NotifyPointerButton")
+                portal_call(s.proxy.call::<_, _, ()>(
+                    "NotifyPointerButton",
+                    &(&s.path, &empty_options(), code, u32::from(down)),
+                ))
+                .await
+                .context("portal NotifyPointerButton")
             })
         })
         .await
@@ -826,13 +775,12 @@ impl PortalInput {
 /// `NotifyKeyboardKeycode(o, a{sv}, i keycode, u state)` — one press or
 /// release of `code` on `s`.
 async fn notify_keycode(s: &Session, code: i32, down: bool) -> Result<()> {
-    s.proxy
-        .call::<_, _, ()>(
-            "NotifyKeyboardKeycode",
-            &(&s.path, &empty_options(), code, u32::from(down)),
-        )
-        .await
-        .context("portal NotifyKeyboardKeycode")
+    portal_call(s.proxy.call::<_, _, ()>(
+        "NotifyKeyboardKeycode",
+        &(&s.path, &empty_options(), code, u32::from(down)),
+    ))
+    .await
+    .context("portal NotifyKeyboardKeycode")
 }
 
 // ---------------------------------------------------------------------------
@@ -877,13 +825,12 @@ impl InputProvider for PortalInput {
         if v != 0 {
             self.with_session(|s| {
                 Box::pin(async move {
-                    s.proxy
-                        .call::<_, _, ()>(
-                            "NotifyPointerAxisDiscrete",
-                            &(&s.path, &empty_options(), AXIS_VERTICAL, v),
-                        )
-                        .await
-                        .context("portal NotifyPointerAxisDiscrete")
+                    portal_call(s.proxy.call::<_, _, ()>(
+                        "NotifyPointerAxisDiscrete",
+                        &(&s.path, &empty_options(), AXIS_VERTICAL, v),
+                    ))
+                    .await
+                    .context("portal NotifyPointerAxisDiscrete")
                 })
             })
             .await?;
@@ -891,13 +838,12 @@ impl InputProvider for PortalInput {
         if h != 0 {
             self.with_session(|s| {
                 Box::pin(async move {
-                    s.proxy
-                        .call::<_, _, ()>(
-                            "NotifyPointerAxisDiscrete",
-                            &(&s.path, &empty_options(), AXIS_HORIZONTAL, h),
-                        )
-                        .await
-                        .context("portal NotifyPointerAxisDiscrete")
+                    portal_call(s.proxy.call::<_, _, ()>(
+                        "NotifyPointerAxisDiscrete",
+                        &(&s.path, &empty_options(), AXIS_HORIZONTAL, h),
+                    ))
+                    .await
+                    .context("portal NotifyPointerAxisDiscrete")
                 })
             })
             .await?;
@@ -928,7 +874,9 @@ impl InputProvider for PortalInput {
     /// No portal read channel: live `hyprctl cursorpos` first, then the
     /// last absolute position this provider emitted.
     async fn cursor_position(&self) -> Result<(i32, i32)> {
-        if let Ok(pos) = hyprctl_cursorpos().await {
+        if let Some(bin) = &self.hyprctl
+            && let Ok(pos) = hyprctl_cursorpos(bin).await
+        {
             return Ok(pos);
         }
         self.pointer
@@ -946,8 +894,8 @@ impl InputProvider for PortalInput {
 // SAFETY: no test in this module opens a portal session or calls a
 // portal method — `CreateSession`/`Start` raise GUI consent dialogs on a
 // live desktop. Covered: key/button tables, option builders, response
-// parsing, stream mapping, wheel detents, restore-token IO (tempdir),
-// and the read-only name-ownership probe.
+// parsing, stream mapping, wheel detents, and the read-only
+// name-ownership probe.
 
 #[cfg(test)]
 mod tests {
@@ -1043,25 +991,20 @@ mod tests {
 
     #[test]
     fn select_devices_options_pointer_keyboard() {
-        let o = select_devices_options("h".into(), false, None);
+        let o = select_devices_options("h".into());
         assert!(matches!(o["types"], Value::U32(3)));
+        // Restore credentials are never requested: every `Start`
+        // re-consents (module docs — no persist_mode, no restore_token).
         assert!(!o.contains_key("persist_mode"));
         assert!(!o.contains_key("restore_token"));
-
-        let o = select_devices_options("h".into(), true, Some("tok123"));
-        assert!(matches!(o["persist_mode"], Value::U32(2)));
-        assert!(matches!(o["restore_token"], Value::Str(_)));
     }
 
     #[test]
     fn select_sources_options_monitor_only() {
-        let o = select_sources_options("h".into(), true, None);
+        let o = select_sources_options("h".into());
         assert!(matches!(o["types"], Value::U32(1)));
         assert!(matches!(o["multiple"], Value::Bool(false)));
         assert!(matches!(o["cursor_mode"], Value::U32(1)));
-        assert!(matches!(o["persist_mode"], Value::U32(2)));
-
-        let o = select_sources_options("h".into(), false, Some("t"));
         assert!(!o.contains_key("persist_mode"));
         assert!(!o.contains_key("restore_token"));
     }
@@ -1185,30 +1128,6 @@ mod tests {
         let (node, x, y) = absolute_target(&streams, 123, 456);
         assert_eq!(node, 7);
         assert_eq!((x, y), (123.0, 456.0));
-    }
-
-    // ---- restore token ---------------------------------------------------
-
-    #[test]
-    fn restore_token_roundtrip_in_tempdir() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(RESTORE_TOKEN_FILE);
-        assert!(load_restore_token(&path).is_none());
-        store_restore_token(&path, "tok-abc").unwrap();
-        assert_eq!(load_restore_token(&path).as_deref(), Some("tok-abc"));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
-        }
-    }
-
-    #[test]
-    fn restore_token_empty_file_is_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(RESTORE_TOKEN_FILE);
-        std::fs::write(&path, "  \n").unwrap();
-        assert!(load_restore_token(&path).is_none());
     }
 
     // ---- cursor / probe ---------------------------------------------------

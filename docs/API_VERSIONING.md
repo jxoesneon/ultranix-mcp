@@ -21,7 +21,7 @@ frozen per server release); the protocol version moves independently and is
 always the *highest mutually supported* version from the `initialize`
 handshake.
 
-**Current versions (Phase 0 target):** server `0.1.0` · tool surface `0.1`
+**Current versions:** server `1.0.0` · tool surface `1.0`
 (32 tools) · protocol negotiated per MCP spec.
 
 ## Versioning Scheme
@@ -144,11 +144,11 @@ publishes an extension block:
   "id": 0,
   "result": {
     "protocolVersion": "2025-06-18",
-    "serverInfo": { "name": "ultranix-mcp", "version": "0.1.0" },
+    "serverInfo": { "name": "ultranix-mcp", "version": "1.0.0" },
     "capabilities": {
       "tools": { "listChanged": true },
       "ultranix": {
-        "toolSurfaceVersion": "0.1",
+        "toolSurfaceVersion": "1.0",
         "categories": ["mouse", "keyboard", "vision", "automation", "admin"],
         "providers": ["wlr-screencopy", "wlr-virtual-input", "atspi2", "hyprctl", "ort", "cdp"],
         "features": {
@@ -172,6 +172,9 @@ Rules:
 - `providers` reports which backends actually initialised — clients can
   pre-flight `find_element` by checking for `atspi2` rather than catching
   `ProviderUnavailable`.
+- `features.spatialFocus` is `true` at v1.0.0 — `set_spatial_focus` installs a
+  process-global rect that scopes `screenshot`/`find_text_on_screen`/
+  `find_icon` (never persisted; see docs/TOOLS.md §Spatial Focus).
 - When the enabled tool set changes at runtime (future dynamic loading), the
   server emits `notifications/tools/list_changed` (`listChanged: true`
   advertises support).
@@ -186,10 +189,10 @@ assert_eq!(info.server_info.name, "ultranix-mcp");
 
 ```bash
 # Binary
-ultranix-mcp --version        # ultranix-mcp 0.1.0
+ultranix-mcp --version        # ultranix-mcp 1.0.0
 
 # HTTP transport
-curl -s http://127.0.0.1:3010/health | jq .version   # "0.1.0"
+curl -s http://127.0.0.1:3010/health | jq .version   # "1.0.0"
 
 # Package metadata
 cargo info ultranix-mcp | head -1
@@ -230,9 +233,9 @@ they require `--category +experimental` or per-tool opt-in.
 
 | Version | Support status | Notes |
 | --- | --- | --- |
-| `main` | Development | no guarantees; phases 0–5 land here |
-| `0.x` | Pre-stable | surface may change per phase plan; deprecations still announced in changelog |
-| `1.x` (planned at Phase 4 completion) | Active | full guarantees above; security + critical fixes backported |
+| `main` | Development | no guarantees; post-v1 work lands here |
+| `0.x` | EOL (pre-stable) | superseded by 1.x — upgrade; no further 0.x releases |
+| `1.x` | Active | full guarantees above; security + critical fixes ship as patch releases |
 
 ## Version Metadata
 
@@ -242,8 +245,8 @@ All `tools/call` results carry server identity in `result._meta`:
 {
   "_meta": {
     "server": "ultranix-mcp",
-    "serverVersion": "0.1.0",
-    "toolSurfaceVersion": "0.1",
+    "serverVersion": "1.0.0",
+    "toolSurfaceVersion": "1.0",
     "protocolVersion": "2025-06-18"
   }
 }

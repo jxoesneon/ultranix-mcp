@@ -2,10 +2,16 @@
 //! interactive region selection). Works on any wlroots compositor that
 //! exposes wlr-screencopy, at the cost of a process spawn per frame.
 //!
-//! `grim` writes the PNG to a server-created temp file which is read back
-//! and deleted on drop. Binary paths are resolved to absolute paths once at
-//! construction (`PATH` lookup) so the running provider never depends on
-//! `PATH` mutations.
+//! `grim` writes the PNG into a fresh private capture dir
+//! ([`crate::security::captures`]: `0700`, `O_NOFOLLOW` on create+read,
+//! leaf `0600`) which is deleted after the read — on error paths too —
+//! so a capture can never be redirected through a planted symlink.
+//!
+//! Binary paths are the canonicalized absolute paths pinned by
+//! [`crate::security::whitelist`] at construction, spawned under the
+//! scrubbed environment and per-spawn timeouts of
+//! [`crate::security::spawn`] — a `PATH` hijack after construction
+//! cannot substitute a trojan, and a wedged child cannot hang a call.
 
 use std::path::{Path, PathBuf};
 
@@ -13,6 +19,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::security::{captures, spawn, whitelist};
 use crate::traits::{CaptureProvider, Frame, Rect};
 
 /// Capture via the `grim` CLI (`grim [-g "x,y wxh"] <file>`).
@@ -23,31 +30,22 @@ pub struct GrimCapture {
 }
 
 impl GrimCapture {
-    /// Available iff `grim` resolves on `PATH`. `slurp`/`hyprctl` are
-    /// optional extras probed the same way.
+    /// Available iff `grim` was pinned on `PATH` at construction.
+    /// `slurp`/`hyprctl` are optional extras pinned the same way.
     pub fn new() -> Option<Self> {
+        Self::with_pins(&whitelist::resolve_binaries())
+    }
+
+    /// [`Self::new`] against a caller-supplied pin set — the testable
+    /// seam: hermetic tests resolve a fresh `PinnedBins` over a tempdir
+    /// `PATH` instead of the process-wide snapshot.
+    pub fn with_pins(pins: &whitelist::PinnedBins) -> Option<Self> {
         Some(Self {
-            grim: which("grim")?,
-            slurp: which("slurp"),
-            hyprctl: which("hyprctl"),
+            grim: pins.get("grim")?.to_path_buf(),
+            slurp: pins.get("slurp").map(Path::to_path_buf),
+            hyprctl: pins.get("hyprctl").map(Path::to_path_buf),
         })
     }
-}
-
-/// `PATH` lookup for an executable regular file.
-fn which(name: &str) -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|dir| dir.join(name))
-        .find(|p| is_executable(p))
-}
-
-fn is_executable(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    p.is_file()
-        && p.metadata()
-            .map(|m| m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
 }
 
 /// `grim -g` geometry for a Rect (output-local `x,y wxh`).
@@ -70,12 +68,13 @@ fn parse_cursorpos(s: &str) -> Option<(i32, i32)> {
 
 impl GrimCapture {
     /// Geometry for a region capture: interactive `slurp` when installed
-    /// (blocks for a user drag — intended UX for a region request), else the
-    /// requested rect verbatim.
+    /// (blocks for a user drag — intended UX for a region request; bounded
+    /// by [`spawn::INTERACTIVE_TIMEOUT`]), else the requested rect
+    /// verbatim.
     async fn region_geometry(&self, r: Rect) -> Result<String> {
         if let Some(slurp) = &self.slurp {
-            let out = tokio::process::Command::new(slurp)
-                .output()
+            let mut cmd = spawn::command(slurp, &[]);
+            let out = spawn::output_within(&mut cmd, spawn::INTERACTIVE_TIMEOUT)
                 .await
                 .context("spawn slurp")?;
             if !out.status.success() {
@@ -90,32 +89,35 @@ impl GrimCapture {
             Ok(rect_geometry(r))
         }
     }
-}
 
-#[async_trait]
-impl CaptureProvider for GrimCapture {
-    async fn capture_frame(&self, region: Option<Rect>) -> Result<Frame> {
-        // NamedTempFile auto-deletes on drop, error paths included.
-        let tmp = tempfile::Builder::new()
-            .prefix("ultranix-grim-")
-            .suffix(".png")
-            .tempfile()
-            .context("create capture tempfile")?;
-        let path = tmp.path().to_path_buf();
+    /// `grim [-g geom] <dir>/capture.png` + no-follow read-back. The dir
+    /// is removed by the caller on every path.
+    async fn capture_into(&self, dir: &Path, region: Option<Rect>) -> Result<Frame> {
+        let path = dir.join("capture.png");
+        // Pre-create the leaf with O_NOFOLLOW at 0600 so `grim` can only
+        // write into a regular file we own — never a planted symlink.
+        drop(captures::open_nofollow(&path).context("create capture output")?);
 
-        let mut cmd = tokio::process::Command::new(&self.grim);
+        let mut cmd = spawn::command(&self.grim, &[]);
         if let Some(r) = region {
             let geom = self.region_geometry(r).await?;
             cmd.arg("-g").arg(geom);
         }
         cmd.arg(&path);
 
-        let status = cmd.status().await.context("spawn grim")?;
-        if !status.success() {
-            bail!("grim exited {status}");
+        let out = spawn::output_within(&mut cmd, spawn::SUBPROCESS_TIMEOUT)
+            .await
+            .context("spawn grim")?;
+        if !out.status.success() {
+            bail!("grim exited {}", out.status);
         }
 
-        let png = std::fs::read(&path).context("read grim output")?;
+        let mut png = Vec::new();
+        std::io::Read::read_to_end(
+            &mut captures::open_nofollow(&path).context("read grim output")?,
+            &mut png,
+        )
+        .context("read grim output")?;
         let img = image::load_from_memory(&png).context("grim output is not a PNG")?;
         Ok(Frame {
             png,
@@ -124,37 +126,44 @@ impl CaptureProvider for GrimCapture {
         })
     }
 
-    async fn cursor_position(&self) -> Result<(i32, i32)> {
+    /// `hyprctl -j <sub>` → stdout bytes, non-zero exit is an error.
+    async fn hyprctl(&self, sub: &str) -> Result<Vec<u8>> {
         let hyprctl = self
             .hyprctl
             .as_ref()
-            .ok_or_else(|| anyhow!("hyprctl not on PATH"))?;
-        let out = tokio::process::Command::new(hyprctl)
-            .args(["-j", "cursorpos"])
-            .output()
+            .ok_or_else(|| anyhow!("hyprctl not on PATH at pin time"))?;
+        let mut cmd = spawn::command(hyprctl, &["-j", sub]);
+        let out = spawn::output_within(&mut cmd, spawn::SUBPROCESS_TIMEOUT)
             .await
-            .context("run hyprctl cursorpos")?;
+            .with_context(|| format!("run hyprctl {sub}"))?;
         if !out.status.success() {
-            bail!("hyprctl cursorpos exited {}", out.status);
+            bail!("hyprctl {sub} exited {}", out.status);
         }
-        parse_cursorpos(&String::from_utf8_lossy(&out.stdout))
+        Ok(out.stdout)
+    }
+}
+
+#[async_trait]
+impl CaptureProvider for GrimCapture {
+    async fn capture_frame(&self, region: Option<Rect>) -> Result<Frame> {
+        // A fresh unpredictable 0700 dir per capture — the file inside
+        // it cannot be preplanted, and the dir is removed no matter how
+        // the capture resolves (success, grim failure, decode failure).
+        let dir = captures::fresh_capture_dir().context("create capture dir")?;
+        let result = self.capture_into(&dir, region).await;
+        let _ = std::fs::remove_dir_all(&dir);
+        result
+    }
+
+    async fn cursor_position(&self) -> Result<(i32, i32)> {
+        let stdout = self.hyprctl("cursorpos").await?;
+        parse_cursorpos(&String::from_utf8_lossy(&stdout))
             .ok_or_else(|| anyhow!("unparseable hyprctl cursorpos output"))
     }
 
     async fn screen_info(&self) -> Result<Value> {
-        let hyprctl = self
-            .hyprctl
-            .as_ref()
-            .ok_or_else(|| anyhow!("hyprctl not on PATH"))?;
-        let out = tokio::process::Command::new(hyprctl)
-            .args(["-j", "monitors"])
-            .output()
-            .await
-            .context("run hyprctl monitors")?;
-        if !out.status.success() {
-            bail!("hyprctl monitors exited {}", out.status);
-        }
-        serde_json::from_slice(&out.stdout).context("parse hyprctl monitors JSON")
+        let stdout = self.hyprctl("monitors").await?;
+        serde_json::from_slice(&stdout).context("parse hyprctl monitors JSON")
     }
 }
 
@@ -165,20 +174,6 @@ impl CaptureProvider for GrimCapture {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn which_finds_real_binary_and_misses_fake() {
-        // `sh` exists on any unix; this name must never resolve.
-        assert!(which("sh").is_some());
-        assert!(which("ultranix-definitely-missing-binary").is_none());
-    }
-
-    #[test]
-    fn which_returns_absolute_path() {
-        let sh = which("sh").unwrap();
-        assert!(sh.is_absolute());
-        assert!(is_executable(&sh));
-    }
 
     #[test]
     fn rect_geometry_formats_grim_style() {
@@ -203,8 +198,42 @@ mod tests {
     #[test]
     fn new_probes_grim_presence() {
         // On hosts with grim installed this is Some; without, None.
-        // Either way it must agree with `which`.
-        assert_eq!(GrimCapture::new().is_some(), which("grim").is_some());
+        // Either way it must agree with the shared pin resolver.
+        assert_eq!(
+            GrimCapture::new().is_some(),
+            whitelist::resolve_binaries().is_available("grim")
+        );
+    }
+
+    #[test]
+    fn pinned_paths_are_absolute() {
+        // Whatever pins resolve, they are canonicalized absolute paths —
+        // a later `PATH` edit cannot redirect a spawn.
+        if let Some(cap) = GrimCapture::new() {
+            assert!(cap.grim.is_absolute());
+            if let Some(s) = &cap.slurp {
+                assert!(s.is_absolute());
+            }
+            if let Some(h) = &cap.hyprctl {
+                assert!(h.is_absolute());
+            }
+        }
+    }
+
+    #[test]
+    fn capture_dir_lifecycle_and_nofollow_leaf() {
+        // The dir `capture_frame` writes into is a fresh private 0700
+        // dir; the leaf is only ever touched through O_NOFOLLOW opens.
+        let dir = captures::fresh_capture_dir().unwrap();
+        let leaf = dir.join("capture.png");
+        drop(captures::open_nofollow(&leaf).unwrap());
+        std::fs::write(&leaf, b"png-bytes").unwrap();
+        let mut back = Vec::new();
+        std::io::Read::read_to_end(&mut captures::open_nofollow(&leaf).unwrap(), &mut back)
+            .unwrap();
+        assert_eq!(back, b"png-bytes");
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!dir.exists());
     }
 
     #[tokio::test]
@@ -221,21 +250,5 @@ mod tests {
         let frame = cap.capture_frame(None).await.unwrap();
         assert_eq!(&frame.png[..4], b"\x89PNG");
         assert!(frame.width > 0 && frame.height > 0);
-    }
-
-    #[test]
-    fn tempfile_lifecycle_for_grim_output() {
-        // grim truncates/writes a path we hand it; emulate with bytes and
-        // confirm the path is readable and the file is deleted on drop.
-        let tmp = tempfile::Builder::new()
-            .prefix("ultranix-grim-")
-            .suffix(".png")
-            .tempfile()
-            .unwrap();
-        let path = tmp.path().to_path_buf();
-        std::fs::write(&path, b"png-bytes").unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"png-bytes");
-        drop(tmp);
-        assert!(!path.exists());
     }
 }

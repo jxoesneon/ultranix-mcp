@@ -715,8 +715,10 @@ fn hex_lower(bytes: &[u8]) -> String {
     s
 }
 
+/// Refuse to read a credential file whose mode grants group/other any
+/// bits — the shared `0600` rule reused by `history.key` (S-8).
 #[cfg(unix)]
-fn enforce_private_file(path: &Path) -> anyhow::Result<()> {
+pub(crate) fn enforce_private_file(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mode = fs::metadata(path)
         .with_context(|| format!("stat key file {}", path.display()))?
@@ -734,7 +736,7 @@ fn enforce_private_file(path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn enforce_private_file(_path: &Path) -> anyhow::Result<()> {
+pub(crate) fn enforce_private_file(_path: &Path) -> anyhow::Result<()> {
     // No portable mode bits — Linux-only crate, kept for check builds.
     Ok(())
 }

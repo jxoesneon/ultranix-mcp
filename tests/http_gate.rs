@@ -456,7 +456,8 @@ fn health_returns_ok() {
         .send()
         .expect("GET /health");
     assert_eq!(resp.status().as_u16(), 200);
-    assert_eq!(resp.text().unwrap(), "ok");
+    let body: Value = serde_json::from_str(&resp.text().unwrap()).expect("health JSON");
+    assert_eq!(body["status"], "ok");
 }
 
 #[test]
@@ -560,7 +561,13 @@ fn rate_limit_burst_returns_429() {
         .send()
         .expect("burst POST");
         match resp.status().as_u16() {
-            429 => rejected += 1,
+            429 => {
+                assert!(
+                    resp.headers().get("retry-after").is_some(),
+                    "429 must carry a Retry-After header"
+                );
+                rejected += 1;
+            }
             _ => allowed += 1,
         }
     }

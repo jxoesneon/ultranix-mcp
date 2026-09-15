@@ -1,8 +1,10 @@
 # Roadmap
 
-ultranix-mcp's delivery plan for **v0.1.0** and beyond. Work proceeds in six
+ultranix-mcp's delivery plan for **v1.0.0** and beyond. Work proceeded in six
 phases, each with concrete deliverables, exit criteria, dependencies, and
-risk callouts. This is a living document — update it as direction shifts.
+risk callouts — **Phases 0–5 are delivered as of v1.0.0** (see
+[CHANGELOG.md](CHANGELOG.md)). This is a living document — update it as
+direction shifts.
 
 Legend: `[x]` done · `[ ]` planned · phases are strictly ordered; a phase's
 exit criteria gate the next.
@@ -23,24 +25,24 @@ surface and zero real backends.
 
 ### Deliverables
 
-- [ ] Cargo project: `ultranix-mcp` binary, Rust 2024 edition, `tokio`
+- [x] Cargo project: `ultranix-mcp` binary, Rust 2024 edition, `tokio`
       runtime
-- [ ] `rmcp` (official `modelcontextprotocol/rust-sdk`) server core with
+- [x] `rmcp` (official `modelcontextprotocol/rust-sdk`) server core with
       stdio and streamable-HTTP (`:3010`) transports
-- [ ] `src/traits.rs`: `CaptureProvider`, `InputProvider`,
+- [x] `src/traits.rs`: `CaptureProvider`, `InputProvider`,
       `UIAutomationProvider`, `WindowProvider`, `VisionProvider`,
       `BrowserProvider` — all held as `Option<Arc<dyn Trait>>` in a provider
       registry
-- [ ] Mock implementations of all six traits; tool dispatch returns typed
+- [x] Mock implementations of all six traits; tool dispatch returns typed
       "provider unavailable" errors when a backend is `None`
-- [ ] Tool schema registration for the complete 32-tool surface and
+- [x] Tool schema registration for the complete 32-tool surface and
       `--category=` filtering (`mouse`, `keyboard`, `vision`, `automation`,
       `admin`)
-- [ ] Session detection: `XDG_CURRENT_DESKTOP` +
+- [x] Session detection: `XDG_CURRENT_DESKTOP` +
       `HYPRLAND_INSTANCE_SIGNATURE`
-- [ ] `tracing`/`tracing-subscriber` logging; `~/.ultranix-mcp/` data-dir
+- [x] `tracing`/`tracing-subscriber` logging; `~/.ultranix-mcp/` data-dir
       bootstrap
-- [ ] CI: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`
+- [x] CI: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`
 - [x] Specification documentation set (README, LICENSE, CHANGELOG, ROADMAP,
       CONTRIBUTING, CODE_OF_CONDUCT)
 
@@ -72,20 +74,20 @@ root, no portals.
 
 ### Deliverables
 
-- [ ] `wayland-client` integration with `wlr-screencopy-unstable-v1` for
+- [x] `wayland-client` integration with `wlr-screencopy-unstable-v1` for
       in-process frame capture (`screenshot`, `screen_info`, `color_at`)
-- [ ] `grim`/`slurp` fallback capture path for region selection and compositor
+- [x] `grim`/`slurp` fallback capture path for region selection and compositor
       edge cases
-- [ ] `InputProvider` on `zwlr_virtual_pointer_v1` (pointer motion, buttons,
+- [x] `InputProvider` on `zwlr_virtual_pointer_v1` (pointer motion, buttons,
       scroll) and `virtual-keyboard-unstable-v1` (text, key states,
       modifiers, keymap upload) — powers all `mouse_*`, `type_text`,
       `key_control`, `mouse_move_path`, `sleep`
-- [ ] `WindowProvider` on the `hyprctl` IPC socket, parsing `hyprctl -j`
+- [x] `WindowProvider` on the `hyprctl` IPC socket, parsing `hyprctl -j`
       JSON (`clients`, `activewindow`, `dispatch`, `workspaces`) for
       `get_windows`, `get_active_window`, `window_control`
-- [ ] Backend-selection logic implementing the wlroots-native →
+- [x] Backend-selection logic implementing the wlroots-native →
       uinput/evdev → portal priority ladder
-- [ ] Security scaffolding — the server ships protected from day one:
+- [x] Security scaffolding — the server ships protected from day one:
       input sanitization (shell-metacharacter stripping, identifier
       length/charset validation); arg-constrained, absolute-path-pinned
       command whitelist for `system_command` (`grim`, `slurp`, `scrot`,
@@ -131,13 +133,17 @@ Semantic access to application UI through the accessibility bus.
 
 ### Deliverables
 
-- [ ] `UIAutomationProvider` on AT-SPI2 via the `atspi` crate: tree
+- [x] `UIAutomationProvider` on AT-SPI2 via the `atspi` crate: tree
       traversal, role/state/name extraction, bounding boxes
-- [ ] `get_ui_tree`, `get_focused_element`, `find_element`,
-      `wait_for_ui_element`, `set_spatial_focus`, `screen_highlight`,
-      `invoke_element`
-- [ ] Focus tracking across window/app switches
-- [ ] Documented element-query semantics (role, name, path) shared with
+- [x] `get_ui_tree`, `get_focused_element`, `find_element`,
+      `wait_for_ui_element`, `invoke_element`, `set_spatial_focus`
+      (process-global rect scoping `screenshot`/`find_text_on_screen`/
+      `find_icon`) — `screen_highlight` validates args then returns
+      `-32010 ProviderUnavailable` (no overlay backend yet; post-v1)
+- [x] Focus tracking across window/app switches (`get_focused_element`
+      re-scans the live tree for `State::Focused`, so focus resolution
+      follows window/app switches)
+- [x] Documented element-query semantics (role, name, path) shared with
       `find_element` and `wait_for_ui_element`
 
 ### Exit criteria
@@ -168,15 +174,15 @@ Local inference for OCR and icon finding, plus browser automation over CDP.
 
 ### Deliverables
 
-- [ ] `VisionProvider` on the `ort` crate (ONNX Runtime): OCR model for
+- [x] `VisionProvider` on the `ort` crate (ONNX Runtime): OCR model for
       `find_text_on_screen`; OWL-ViT zero-shot detection for `find_icon`
-- [ ] Execution providers: CPU default; OpenVINO and CUDA behind cargo
-      features
-- [ ] `BrowserProvider`: CDP bridge on `127.0.0.1:9222` driving `web_query`
+- [x] Execution providers: CPU default; OpenVINO and CUDA behind cargo
+      features (`vision-openvino`, `vision-cuda`)
+- [x] `BrowserProvider`: CDP bridge on `127.0.0.1:9222` driving `web_query`
       (attach to an existing browser or launch with
       `--remote-debugging-port=9222`)
-- [ ] Model-artifact management: versioned download-on-first-use with
-      checksum verification into `~/.ultranix-mcp/`
+- [x] Model-artifact management: versioned download-on-first-use with
+      checksum verification into `~/.ultranix-mcp/models/`
 
 ### Exit criteria
 
@@ -211,22 +217,25 @@ them.)
 
 ### Deliverables
 
-- [ ] `uxcp_*` API-key auth middleware on HTTP (`ULTRANIX_MCP_API_KEY` or
+- [x] `uxcp_*` API-key auth middleware on HTTP (`ULTRANIX_MCP_API_KEY` or
       `ULTRANIX_MCP_API_KEY_FILE`; fail-closed — `X-API-Key` header
       canonical, `Authorization: Bearer` accepted);
       `ULTRANIX_MCP_DISABLE_AUTH=true` escape hatch for dev; stdio never
       requires auth
-- [ ] Token-bucket rate limiter: 10 req/s per client
-- [ ] AES-256-GCM-encrypted action history at
+- [x] Token-bucket rate limiter: 10 req/s per client
+- [x] AES-256-GCM-encrypted action history at
       `~/.ultranix-mcp/history.json` (`ULTRANIX_MCP_HISTORY_SECRET` or a
       per-install generated secret under `~/.ultranix-mcp/`, mode `0700`)
-- [ ] Full JSONL audit log at `~/.ultranix-mcp/logs/` — extends the Phase-1
+- [x] Full JSONL audit log at `~/.ultranix-mcp/logs/` — extends the Phase-1
       skeleton to every tool invocation: `key_id`, `args_hash` (never raw
       args), duration, outcome, `prev_hash` chaining; 30-day rotation
-      (configurable)
-- [ ] Prometheus `/metrics`; `/health` and `/readyz` endpoints;
-      optional Sentry via `ULTRANIX_MCP_SENTRY_DSN`
-- [ ] Admin tools: `metrics`, `get_action_history`, `replay_action`,
+      (configurable via `ULTRANIX_MCP_AUDIT_RETENTION_DAYS`)
+- [x] Prometheus `/metrics` (4 shipped series — see ARCHITECTURE.md §7);
+      `/health` and `/readyz` endpoints; `ultranix-mcp keygen` CLI
+- [ ] Optional Sentry error reporting via `ULTRANIX_MCP_SENTRY_DSN` —
+      **planned, post-v1** (the variable is documented but no exporter is
+      wired)
+- [x] Admin tools: `metrics`, `get_action_history`, `replay_action`,
       `clear_action_history`
 
 ### Exit criteria
@@ -241,8 +250,9 @@ them.)
 
 ### Dependencies
 
-`aes-gcm` (or `ring`), `metrics`/`prometheus` exporter crates, HTTP
-middleware on the rmcp streamable-HTTP transport
+`aes-gcm` (or `ring`), the dependency-free Prometheus text exporter in
+`src/metrics.rs` (no `prometheus` crate), HTTP middleware on the rmcp
+streamable-HTTP transport
 
 ### Risks
 
@@ -261,16 +271,28 @@ Off-Hyprland fallback paths and real distribution.
 
 ### Deliverables
 
-- [ ] `uinput`/`evdev` `InputProvider` fallback for non-wlroots compositors,
+- [x] `uinput`/`evdev` `InputProvider` fallback for non-wlroots compositors,
       with a packaged, opt-in udev rule for `/dev/uinput`
       (`SUBSYSTEM=="uinput", MODE="0660", GROUP="ultranix-input"` — a
       dedicated group holding only the service user, never `input`)
-- [ ] XDG Desktop Portal backend over `zbus`: `Screenshot` and
-      `RemoteDesktop` portals (universal last resort)
-- [ ] Nested-Hyprland integration test rig for real-Wayland CI
-- [ ] AUR packages (`ultranix-mcp`, `ultranix-mcp-git`), `cargo install`
-      support, systemd user unit, GitHub release binaries
-- [ ] Distro notes covering non-Arch packaging requirements
+- [x] XDG Desktop Portal backend over `zbus`: `Screenshot` and
+      `RemoteDesktop` portals (universal last resort). RemoteDesktop is
+      input-only: `SelectSources` is used solely to obtain output geometry
+      for absolute positioning — the granted PipeWire video fd is dropped
+      unopened
+- [ ] PipeWire stream consumption for portal `RemoteDesktop` sessions —
+      deliberately out of scope for v1 (no pixel consumer on the portal
+      path)
+- [x] Nested-Hyprland integration test rig for real-Wayland CI
+      (`tests/nested.rs` + `scripts/nested-test.sh`, gated behind
+      `ULTRANIX_MCP_LIVE_TESTS=1`)
+- [x] Packaging artifacts: AUR PKGBUILDs (`ultranix-mcp`,
+      `ultranix-mcp-git`) under `packaging/`, `cargo install` support,
+      systemd user unit, GitHub release binaries via `release.yml` —
+      AUR/crates.io submission itself is tracked in
+      [docs/REGISTRY_SUBMISSION.md](docs/REGISTRY_SUBMISSION.md)
+- [x] Distro notes covering non-Arch packaging requirements
+      ([docs/PACKAGING.md](docs/PACKAGING.md) §9)
 
 ### Exit criteria
 

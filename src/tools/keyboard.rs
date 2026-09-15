@@ -224,10 +224,26 @@ async fn type_text(
     if p.delay_ms == 0 {
         backend!(input.type_text(&p.text).await);
     } else {
+        // Delayed path types char-by-char: re-check the active window
+        // between key events and abort the remaining sequence on a focus
+        // change (docs/TOOLS.md §Focus Safety) instead of typing the tail
+        // into the wrong window.
         let mut chars = p.text.chars().peekable();
+        let mut typed = 0usize;
         while let Some(ch) = chars.next() {
             backend!(input.type_text(&ch.to_string()).await);
+            typed += 1;
             if chars.peek().is_some() {
+                if let (Some(before), Some(now)) =
+                    (focus_before.as_ref(), focused_window_id(providers).await)
+                    && &now != before
+                {
+                    return Ok(tool_error(format!(
+                        "FocusChanged: active window changed mid-action \
+                         (was {before}, now {now}); typed {typed} of \
+                         {n_chars} characters, aborted the rest"
+                    )));
+                }
                 tokio::time::sleep(Duration::from_millis(p.delay_ms)).await;
             }
         }

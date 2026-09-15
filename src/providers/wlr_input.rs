@@ -52,6 +52,10 @@ const AXIS_VALUE_PER_STEP: f64 = 15.0;
 /// `Send + Sync` and safe to share behind `Arc<dyn InputProvider>`.
 pub struct WlrInput {
     inner: Arc<Mutex<Inner>>,
+    /// Pinned `hyprctl` absolute path, when it was on `PATH` at
+    /// construction — the `cursor_position` helper (S-1). Spawned under
+    /// the scrubbed environment + timeout of [`crate::security::spawn`].
+    hyprctl: Option<std::path::PathBuf>,
 }
 
 /// Compile-time contract: `InputProvider` requires `Send + Sync`.
@@ -637,6 +641,9 @@ impl WlrInput {
                 keys,
                 shift_evdev,
             })),
+            hyprctl: crate::security::whitelist::resolve_binaries()
+                .get("hyprctl")
+                .map(std::path::Path::to_path_buf),
         })
     }
 }
@@ -658,12 +665,13 @@ fn parse_cursorpos(s: &str) -> Option<(i32, i32)> {
     Some((xs.trim().parse().ok()?, ys.trim().parse().ok()?))
 }
 
-async fn hyprctl_cursorpos() -> Result<(i32, i32)> {
-    let out = tokio::process::Command::new("hyprctl")
-        .args(["-j", "cursorpos"])
-        .output()
-        .await
-        .context("run hyprctl cursorpos")?;
+/// Pinned `hyprctl -j cursorpos`, scrubbed env, bounded wait.
+async fn hyprctl_cursorpos(bin: &std::path::Path) -> Result<(i32, i32)> {
+    let mut cmd = crate::security::spawn::command(bin, &["-j", "cursorpos"]);
+    let out =
+        crate::security::spawn::output_within(&mut cmd, crate::security::spawn::SUBPROCESS_TIMEOUT)
+            .await
+            .context("run hyprctl cursorpos")?;
     if !out.status.success() {
         bail!("hyprctl cursorpos exited {}", out.status);
     }
@@ -743,7 +751,10 @@ impl InputProvider for WlrInput {
     }
 
     async fn cursor_position(&self) -> Result<(i32, i32)> {
-        hyprctl_cursorpos().await
+        match &self.hyprctl {
+            Some(bin) => hyprctl_cursorpos(bin).await,
+            None => Err(anyhow!("hyprctl unavailable (not pinned at startup)")),
+        }
     }
 }
 

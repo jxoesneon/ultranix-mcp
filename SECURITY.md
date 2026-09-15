@@ -1,7 +1,7 @@
 # Security Policy
 
 **Project**: ultranix-mcp — Rust MCP server for Linux desktop automation (Wayland/Hyprland, CachyOS)
-**Status**: Specification phase — this document describes the approved security design. Implementation may lag this document; where it does, the document is authoritative for intent and the gap is tracked as a defect.
+**Status**: Implemented (v1.0.0) — this document describes the shipped security design. Where the implementation still lags this document (called out inline — e.g. optional Sentry reporting, planned post-v1), the gap is tracked as a defect or roadmap item.
 
 ultranix-mcp grants AI agents the ability to see the screen and inject input on a
 live desktop session. That is an inherently high-privilege capability. This
@@ -15,10 +15,11 @@ surface analysis lives in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 | Version | Supported |
 | ------- | --------- |
-| 0.1.x (pre-release) | ✅ — security fixes on `main` only |
-| < 0.1 / forks | ❌ |
+| 1.x | ✅ — security fixes ship as patch releases on `main` |
+| 0.1.x–0.5.x (pre-stable) | ❌ — upgrade to 1.x |
+| forks | ❌ |
 
-Until 1.0, the project does not maintain backport branches. Security fixes are
+The project does not maintain backport branches. Security fixes are
 released as new patch versions; operators are expected to upgrade.
 
 ---
@@ -33,7 +34,7 @@ public Discord channels, or PR descriptions.**
 1. **GitHub Security Advisories** (preferred):
    `https://github.com/jxoesneon/ultranix-mcp/security/advisories/new`
 2. **Email fallback**: security contact listed in `Cargo.toml` `authors` field
-   (to be assigned before 0.1.0). If no contact is listed yet, use GitHub
+   (pending assignment). If no contact is listed yet, use GitHub
    Security Advisories only.
 
 ### What to include
@@ -269,4 +270,4 @@ through the **hyprctl IPC socket** and **AT-SPI2** for the accessibility tree.
 
 ---
 
-**Last updated**: 2025 — Policy version 0.1.0
+**Last updated**: 2026 — Policy version 1.0.0

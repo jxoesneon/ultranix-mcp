@@ -7,9 +7,12 @@ use ultranix_mcp::error::{UltraNixError, codes};
 
 #[test]
 fn codes_module_constants_match_spec() {
+    assert_eq!(codes::COMMAND_NOT_WHITELISTED, -32003);
+    assert_eq!(codes::ARG_CONSTRAINT_VIOLATION, -32003);
+    assert_eq!(codes::PATH_NOT_WHITELISTED, -32004);
+    assert_eq!(codes::SANITIZATION_REJECTED, -32006);
     assert_eq!(codes::PROVIDER_UNAVAILABLE, -32010);
     assert_eq!(codes::CONSENT_REQUIRED, -32015);
-    assert_eq!(codes::ARG_CONSTRAINT_VIOLATION, -32020);
 }
 
 #[test]
@@ -34,9 +37,9 @@ fn consent_required_maps_to_32015() {
 }
 
 #[test]
-fn arg_constraint_violation_maps_to_32020() {
+fn arg_constraint_violation_maps_to_32003() {
     let err = UltraNixError::ArgConstraintViolation("hyprctl dispatch exec".into());
-    assert_eq!(err.code(), -32020);
+    assert_eq!(err.code(), -32003);
     assert_eq!(err.code(), codes::ARG_CONSTRAINT_VIOLATION);
 }
 

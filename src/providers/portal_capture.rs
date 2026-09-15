@@ -91,6 +91,28 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// the response may sit behind a consent dialog waiting for a human.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Per-call D-Bus budget for portal plumbing (proxy build, method call,
+/// signal subscription, `Get` property) — distinct from
+/// [`RESPONSE_TIMEOUT`], which waits on a human at a consent dialog. A
+/// wedged portal must not hang a tool call.
+pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Run a D-Bus future under [`CALL_TIMEOUT`]; elapsed surfaces as an
+/// error, keeping every portal interaction bounded.
+pub(crate) async fn portal_call<F, T, E>(fut: F) -> Result<T>
+where
+    F: std::future::Future<Output = std::result::Result<T, E>>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    match tokio::time::timeout(CALL_TIMEOUT, fut).await {
+        Err(_) => Err(anyhow!(
+            "portal D-Bus call timed out after {CALL_TIMEOUT:?}"
+        )),
+        Ok(Err(e)) => Err(anyhow::Error::new(e)),
+        Ok(Ok(v)) => Ok(v),
+    }
+}
+
 /// `a{sv}` option dicts used throughout the portal API.
 pub(crate) type Options = HashMap<&'static str, Value<'static>>;
 
@@ -158,9 +180,14 @@ pub(crate) async fn portal_proxy(
     conn: &zbus::Connection,
     iface: &'static str,
 ) -> Result<zbus::Proxy<'static>> {
-    zbus::Proxy::new(conn, PORTAL_BUS_NAME, PORTAL_DESKTOP_PATH, iface)
-        .await
-        .with_context(|| format!("build portal proxy for {iface}"))
+    portal_call(zbus::Proxy::new(
+        conn,
+        PORTAL_BUS_NAME,
+        PORTAL_DESKTOP_PATH,
+        iface,
+    ))
+    .await
+    .with_context(|| format!("build portal proxy for {iface}"))
 }
 
 /// Stream of `org.freedesktop.portal.Request::Response` signals from the
@@ -177,9 +204,13 @@ pub(crate) async fn response_stream(conn: &zbus::Connection) -> Result<zbus::Mes
         .member("Response")
         .map_err(|e| anyhow!("portal match rule member: {e}"))?
         .build();
-    zbus::MessageStream::for_match_rule(rule.to_owned(), conn, Some(4))
-        .await
-        .context("subscribe to portal Response signals")
+    portal_call(zbus::MessageStream::for_match_rule(
+        rule.to_owned(),
+        conn,
+        Some(4),
+    ))
+    .await
+    .context("subscribe to portal Response signals")
 }
 
 /// Wait for the `Response` signal belonging to `request` and return its
@@ -249,6 +280,9 @@ pub struct PortalCapture {
     conn: tokio::sync::OnceCell<zbus::Connection>,
     /// Geometry of the last captured frame; `screen_info` degrades to it.
     last_frame: Mutex<Option<(u32, u32)>>,
+    /// Pinned `hyprctl` absolute path, when it was on `PATH` at
+    /// construction — the `cursor_position`/`screen_info` helpers (S-1).
+    hyprctl: Option<PathBuf>,
 }
 
 /// Compile-time contract: `CaptureProvider` requires `Send + Sync`.
@@ -269,6 +303,9 @@ impl PortalCapture {
         Some(Self {
             conn: tokio::sync::OnceCell::new(),
             last_frame: Mutex::new(None),
+            hyprctl: crate::security::whitelist::resolve_binaries()
+                .get("hyprctl")
+                .map(std::path::Path::to_path_buf),
         })
     }
 
@@ -277,7 +314,7 @@ impl PortalCapture {
     async fn conn(&self) -> Result<&zbus::Connection> {
         self.conn
             .get_or_try_init(|| async {
-                zbus::Connection::session()
+                portal_call(zbus::Connection::session())
                     .await
                     .context("session bus connect failed")
             })
@@ -297,10 +334,10 @@ impl PortalCapture {
         // `Screenshot(IN s handle_token, IN a{sv} options, OUT o request)`
         // — the token is the leading `s` arg (kept in the options dict as
         // well for backends that still read it from there).
-        let request: OwnedObjectPath = proxy
-            .call("Screenshot", &(token.as_str(), &options))
-            .await
-            .context("portal Screenshot call")?;
+        let request: OwnedObjectPath =
+            portal_call(proxy.call("Screenshot", &(token.as_str(), &options)))
+                .await
+                .context("portal Screenshot call")?;
         let results = await_response(&mut responses, &request).await?;
 
         let uri = get_string(&results, "uri")?;
@@ -435,12 +472,13 @@ fn parse_cursorpos(s: &str) -> Option<(i32, i32)> {
     Some((xs.trim().parse().ok()?, ys.trim().parse().ok()?))
 }
 
-async fn hyprctl_cursorpos() -> Result<(i32, i32)> {
-    let out = tokio::process::Command::new("hyprctl")
-        .args(["-j", "cursorpos"])
-        .output()
-        .await
-        .context("run hyprctl cursorpos")?;
+/// Pinned `hyprctl -j cursorpos`, scrubbed env, bounded wait.
+async fn hyprctl_cursorpos(bin: &std::path::Path) -> Result<(i32, i32)> {
+    let mut cmd = crate::security::spawn::command(bin, &["-j", "cursorpos"]);
+    let out =
+        crate::security::spawn::output_within(&mut cmd, crate::security::spawn::SUBPROCESS_TIMEOUT)
+            .await
+            .context("run hyprctl cursorpos")?;
     if !out.status.success() {
         bail!("hyprctl cursorpos exited {}", out.status);
     }
@@ -448,12 +486,13 @@ async fn hyprctl_cursorpos() -> Result<(i32, i32)> {
         .ok_or_else(|| anyhow!("unparseable hyprctl cursorpos output"))
 }
 
-async fn hyprctl_monitors() -> Result<JsonValue> {
-    let out = tokio::process::Command::new("hyprctl")
-        .args(["-j", "monitors"])
-        .output()
-        .await
-        .context("run hyprctl monitors")?;
+/// Pinned `hyprctl -j monitors`, scrubbed env, bounded wait.
+async fn hyprctl_monitors(bin: &std::path::Path) -> Result<JsonValue> {
+    let mut cmd = crate::security::spawn::command(bin, &["-j", "monitors"]);
+    let out =
+        crate::security::spawn::output_within(&mut cmd, crate::security::spawn::SUBPROCESS_TIMEOUT)
+            .await
+            .context("run hyprctl monitors")?;
     if !out.status.success() {
         bail!("hyprctl monitors exited {}", out.status);
     }
@@ -519,16 +558,23 @@ impl CaptureProvider for PortalCapture {
     /// on other compositors `InputProvider::cursor_position` may still
     /// answer via its own tracking).
     async fn cursor_position(&self) -> Result<(i32, i32)> {
-        hyprctl_cursorpos()
-            .await
-            .context("portal capture backend cannot read the cursor (hyprctl unavailable)")
+        match &self.hyprctl {
+            Some(bin) => hyprctl_cursorpos(bin)
+                .await
+                .context("portal capture backend cannot read the cursor (hyprctl unavailable)"),
+            None => Err(anyhow!(
+                "portal capture backend cannot read the cursor (hyprctl unavailable)"
+            )),
+        }
     }
 
     /// `hyprctl monitors` verbatim on Hyprland; otherwise a synthesized
     /// single-monitor record from the last captured frame or
     /// `ULTRANIX_SCREEN_SIZE`, marked `"backend": "portal"`.
     async fn screen_info(&self) -> Result<JsonValue> {
-        if let Ok(v) = hyprctl_monitors().await {
+        if let Some(bin) = &self.hyprctl
+            && let Ok(v) = hyprctl_monitors(bin).await
+        {
             return Ok(v);
         }
         let dims = self

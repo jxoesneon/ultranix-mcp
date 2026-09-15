@@ -47,7 +47,7 @@ sudo udevadm trigger --name-match=uinput
 ls -l /dev/uinput        # crw-rw---- root ultranix-input
 groups | grep ultranix-input
 test -w /dev/uinput && echo "uinput writable"
-ultranix-mcp --transport stdio   # probe log: InputProvider=UInput
+ultranix-mcp --transport stdio   # probe log: InputProvider=UinputInput
 ```
 
 ## Seat-scoped alternative (single-seat workstations)
@@ -71,5 +71,5 @@ sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=uinput
 ```
 
 The server degrades gracefully — without `/dev/uinput` write access the
-uinput provider resolves to `None` and the remaining backends (portal,
-wlroots, hyprctl) keep working.
+uinput rung resolves to `None` and the remaining input backends (wlroots
+virtual input, portal RemoteDesktop) keep working.

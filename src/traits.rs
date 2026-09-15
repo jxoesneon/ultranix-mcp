@@ -82,6 +82,18 @@ pub trait UIAutomationProvider: Send + Sync {
     async fn find_element(&self, query: &str) -> Result<Option<Rect>>;
     /// Invoke the element's default action (AT-SPI `Action` interface).
     async fn invoke_element(&self, query: &str) -> Result<bool>;
+    /// Invoke a *named* action on the matched element — the
+    /// `invoke_element` `action` enum: `"press"`, `"focus"`, `"expand"`,
+    /// `"collapse"` (docs/TOOLS.md). Backends that can enumerate the AT-SPI
+    /// `Action` interface's action names should override; the default maps
+    /// `"press"`/`"activate"` onto the element's default action and reports
+    /// every other name as unsupported (`Ok(false)`).
+    async fn invoke_element_action(&self, query: &str, action: &str) -> Result<bool> {
+        match action {
+            "press" | "activate" => self.invoke_element(query).await,
+            _ => Ok(false),
+        }
+    }
 }
 
 /// Window management via compositor IPC (hyprctl first, then fallbacks).

@@ -144,6 +144,9 @@ impl PinnedBins {
         // Defense in depth: the pipeline sanitizes before this layer, but a
         // future callsite must not be able to skip it — e.g. `slurp -f`
         // legitimately takes a free-form format string that could carry `;`.
+        // The command name itself is user-supplied too, so it is resanitized
+        // alongside the args (metachars in `cmd` → `-32006`, not `-32003`).
+        sanitize_arg(cmd)?;
         for a in args {
             sanitize_arg(a)?;
         }
@@ -190,10 +193,13 @@ impl PinnedBins {
     }
 }
 
-/// Search `PATH` once and pin the whitelist set. Call at startup; the
-/// returned value belongs in `SecurityContext::pins`.
+/// Search `PATH` once and pin the whitelist set — process-wide. Every
+/// caller (`SecurityContext::pins`, each provider's pin field) shares
+/// the single snapshot taken on first use, so resolution can never
+/// observe a `PATH` mutated between two construction sites (S-1).
 pub fn resolve_binaries() -> PinnedBins {
-    PinnedBins::resolve()
+    static SHARED: std::sync::OnceLock<PinnedBins> = std::sync::OnceLock::new();
+    SHARED.get_or_init(PinnedBins::resolve).clone()
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -212,9 +218,10 @@ fn capture_arg(cmd: &str, capture_out: Option<&Path>) -> Result<String, Whitelis
     let out = capture_out
         .ok_or_else(|| arg_constraint(cmd, "requires a server-supplied capture path"))?;
     if !paths::parent_under_roots(out, &paths::roots()) {
-        return Err(arg_constraint(
-            cmd,
-            "capture path must resolve under the path whitelist roots",
+        // A path-whitelist failure maps to `-32004 PathNotWhitelisted`
+        // (docs/TOOLS.md error table), not the arg-constraint code.
+        return Err(WhitelistError::Path(
+            paths::PathWhitelistError::OutsideRoots(out.to_path_buf()),
         ));
     }
     Ok(out.to_string_lossy().into_owned())
@@ -693,11 +700,24 @@ mod tests {
     #[test]
     fn capture_out_must_be_under_allowed_roots() {
         let pins = pins_all(Path::new("/pinned"));
-        // /etc exists and canonicalizes, but is not an allowed root.
+        // /etc exists and canonicalizes, but is not an allowed root —
+        // a path-whitelist failure (-32004), not an arg constraint.
         let err = pins
             .validate_command("grim", &[], false, Some(Path::new("/etc/evil.png")))
             .unwrap_err();
-        assert!(matches!(err, WhitelistError::ArgConstraint { .. }));
+        assert!(matches!(err, WhitelistError::Path(_)));
+    }
+
+    #[test]
+    fn command_name_is_resanitized() {
+        let pins = pins_all(Path::new("/pinned"));
+        // A metachar in the command name is a sanitization failure
+        // (-32006), not merely "not whitelisted" (-32003) — callers map
+        // the variants to distinct error codes.
+        let err = pins
+            .validate_command("grim;rm", &[], false, None)
+            .unwrap_err();
+        assert!(matches!(err, WhitelistError::Sanitize(_)));
     }
 
     #[test]

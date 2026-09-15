@@ -26,14 +26,16 @@ async fn all_tools_valid_args_succeed_with_mocks() {
     let providers = Providers::all_mocks();
     // invoke_element (mock tree has no match → -32016 is legal),
     // system_command / replay_action / clear_action_history (consent gate),
-    // get_action_history (history store may not exist yet) are exercised by
-    // dedicated tests below.
+    // get_action_history (history store may not exist yet), and
+    // screen_highlight (honest -32010: no overlay backend exists) are
+    // exercised by dedicated tests below / in dispatch_coverage.
     let flexible = [
         "invoke_element",
         "system_command",
         "replay_action",
         "clear_action_history",
         "get_action_history",
+        "screen_highlight",
     ];
     for (name, _cat) in TOOLS {
         if flexible.contains(name) {
@@ -256,11 +258,16 @@ async fn unknown_tool_name_is_method_not_found() {
 }
 
 /// Valid calls must not produce provider errors under all_mocks — sanity
-/// that the fixtures above route to the right backend.
+/// that the fixtures above route to the right backend. (`screen_highlight`
+/// is exempt: no OverlayProvider exists at all, so -32010 is its honest
+/// answer everywhere.)
 #[tokio::test]
 async fn valid_calls_never_report_provider_unavailable() {
     let providers = Providers::all_mocks();
     for (name, _cat) in TOOLS {
+        if *name == "screen_highlight" {
+            continue;
+        }
         let res = call(name, valid_args(name), &providers).await;
         if let Err(e) = res {
             assert_ne!(

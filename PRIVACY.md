@@ -1,8 +1,8 @@
 # Privacy Policy
 
-**Last updated**: 2025 — **Policy version**: 0.1.0
-**Status**: Specification phase — describes the approved data-handling design
-for ultranix-mcp.
+**Last updated**: 2026 — **Policy version**: 1.0.0
+**Status**: Implemented — describes the data handling of shipped ultranix-mcp
+v1.0.0; features marked *post-v1* are not yet wired.
 
 ## Overview
 
@@ -21,8 +21,8 @@ third-party SDKs phoning home — unless you turn one on.
 
 1. **No default egress.** The server opens no outbound connections during
    normal operation. The only listening socket it creates is the HTTP
-   transport (`:3010`) and the Prometheus `/metrics` endpoint, both of which
-   you control.
+   transport (`127.0.0.1:3010`, only when `--transport http` is used), which
+   also serves the Prometheus `/metrics` endpoint — you control both.
 2. **No hidden persistence.** Every artifact the server writes lives under
    `~/.ultranix-mcp/`. There is no state anywhere else except temporary
    screenshot files under `/tmp` (created via `mktemp`, mode `0600`, deleted
@@ -84,9 +84,11 @@ third-party SDKs phoning home — unless you turn one on.
 
 ## Optional Telemetry — Strictly Opt-In
 
-### Sentry error reporting
+### Sentry error reporting — *planned, post-v1*
 
-Disabled unless `ULTRANIX_MCP_SENTRY_DSN` is set. If you enable it:
+`ULTRANIX_MCP_SENTRY_DSN` is documented but **not wired at v1.0.0** — setting
+it today has no effect and nothing is sent. When the integration ships it
+will remain strictly opt-in, with the following contract:
 
 - Only panic/error reports and stack frames are sent — never screenshots,
   tool arguments, history, or a11y-tree content.
@@ -98,10 +100,10 @@ Disabled unless `ULTRANIX_MCP_SENTRY_DSN` is set. If you enable it:
 
 ### Prometheus `/metrics`
 
-Exposes counters and histograms only (invocations per tool, latency, auth
-failures). It contains **no payload data**, but it does reveal *usage
-patterns* (when you automate, how often). Bind it to loopback or protect it
-like the HTTP port.
+Exposes counters and histograms only (invocations per tool, latency,
+rate-limit rejections). It contains **no payload data**, but it does reveal
+*usage patterns* (when you automate, how often). Bind it to loopback or
+protect it like the HTTP port.
 
 ---
 
@@ -111,7 +113,7 @@ like the HTTP port.
 | ----------- | ---- | ----------- | ------- |
 | ONNX model download | **Once**, on first use of a vision tool | Model host (checksum-pinned) | Place models manually in `~/.ultranix-mcp/models/` — no download occurs |
 | CDP (Chrome DevTools Protocol) | Browser automation tools | `127.0.0.1:9222` — **localhost only, never remote** | Don't launch a browser with `--remote-debugging-port` |
-| Sentry | Only if `ULTRANIX_MCP_SENTRY_DSN` set | Your configured DSN | Default off |
+| Sentry (post-v1, not yet wired) | Would only fire if `ULTRANIX_MCP_SENTRY_DSN` set | Your configured DSN | Off — unimplemented at v1.0.0 |
 | Everything else | — | **None** | — |
 
 There is no update checker, no license phone-home, no feature-flag service.

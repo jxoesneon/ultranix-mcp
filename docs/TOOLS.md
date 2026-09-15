@@ -2,8 +2,9 @@
 
 Complete API specification for every tool exposed by **ultranix-mcp**, the
 Rust MCP server for Linux desktop automation. This document describes the
-approved design (specification phase); it is the contract against which the
-implementation is built and against which clients should integrate.
+shipped v1.0.0 tool surface; the one tool that remains unimplemented at
+v1.0.0 (`screen_highlight` — it fails loudly with `-32010
+ProviderUnavailable`) is marked inline.
 
 - **Server**: `ultranix-mcp` (Rust 2024, tokio, `rmcp` SDK)
 - **Transports**: stdio and streamable HTTP on `:3010` (canonical JSON-RPC
@@ -61,10 +62,10 @@ canonical normative fallback-chain table lives in
 
 | Provider | Responsibility | Primary mechanism | Fallback chain |
 | --- | --- | --- | --- |
-| `CaptureProvider` | Screenshots, pixel reads, highlight overlays | `wlr-screencopy` + `wlr-layer-shell` overlay | XDG Desktop Portal `org.freedesktop.portal.Screenshot` → `scrot`/X11 |
-| `InputProvider` | Pointer and keyboard injection | `wlr-virtual-pointer` + `virtual-keyboard` (zwlr_virtual_pointer_manager_v1 / virtual-keyboard-unstable-v1) | `/dev/uinput` → XDG Portal `RemoteDesktop` → `xdotool` (X11/XWayland only) |
+| `CaptureProvider` | Screenshots, pixel reads, highlight overlays | `wlr-screencopy` (the `wlr-layer-shell` highlight overlay is post-v1) | `grim`/`slurp` → XDG Desktop Portal `org.freedesktop.portal.Screenshot` (`scrot`/X11 rung is post-v1) |
+| `InputProvider` | Pointer and keyboard injection | `wlr-virtual-pointer` + `virtual-keyboard` (zwlr_virtual_pointer_manager_v1 / virtual-keyboard-unstable-v1) | `/dev/uinput` → XDG Portal `RemoteDesktop` (`xdotool`/X11 rung is post-v1) |
 | `UIAutomationProvider` | Accessibility tree, element search, AT-SPI action invocation | AT-SPI2 via the `atspi` crate over D-Bus | — (returns `ProviderUnavailable` when the AT-SPI bus is absent) |
-| `WindowProvider` | Window enumeration and control | `hyprctl` IPC (`hyprctl -j`) over `$XDG_RUNTIME_DIR/hypr/` sockets | `wmctrl`/`xdotool` (XWayland sessions only) |
+| `WindowProvider` | Window enumeration and control | `hyprctl` IPC (`hyprctl -j`) over `$XDG_RUNTIME_DIR/hypr/` sockets | — (`wmctrl`/X11 rung is post-v1; provider resolves to `None` off-Hyprland) |
 | `VisionProvider` | OCR and open-vocabulary detection | ONNX Runtime (`ort`): text OCR model + OWL-ViT | — (tools fail closed with `ProviderUnavailable`) |
 | `BrowserProvider` | DOM queries | Chrome DevTools Protocol at `127.0.0.1:9222` | — (requires the browser launched with `--remote-debugging-port=9222`) |
 | Server core | Timing, session state, history, metrics | tokio timers, `~/.ultranix-mcp/` stores | — |
@@ -193,7 +194,8 @@ section specifies a JSON payload.
 
 ### Spatial Focus
 
-`set_spatial_focus` installs a per-session rectangular region of interest:
+`set_spatial_focus` installs a process-scoped rectangular region of
+interest:
 
 - `screenshot` with **no explicit `region`** captures the focus rect instead
   of the full layout (an explicit `region` argument always wins).
@@ -201,8 +203,10 @@ section specifies a JSON payload.
   focus rect (an explicit `region` argument on `find_text_on_screen` wins).
 - `find_element` / `wait_for_ui_element` / `get_ui_tree` are **not** affected —
   they operate on the AT-SPI2 tree, not pixels.
-- The focus rect is session-scoped, never persisted to `~/.ultranix-mcp/`,
-  and is cleared by `set_spatial_focus { "clear": true }` or session end.
+- The focus rect is process-scoped (the dispatch layer carries no session
+  handle yet, so it is shared by every caller), never persisted to
+  `~/.ultranix-mcp/`, and is cleared by `set_spatial_focus { "clear": true }`
+  or process end.
 
 ### Focus Safety
 
@@ -336,8 +340,7 @@ Standard JSON-RPC 2.0 codes plus server-defined codes in the
 | `-32603` | `InternalError` | Unclassified server fault | panic-free unexpected failure |
 | `-32001` | `Unauthorized` | Missing/invalid API key | no `X-API-Key`, bad `uxcp_*` key |
 | `-32002` | `Forbidden` | Authenticated but not permitted | tool's category disabled at launch |
-| `-32003` | `CommandNotWhitelisted` | Binary not in the allowed command set | `system_command` outside `{grim, slurp, hyprctl, scrot, xdotool, wmctrl}` |
-| `-32003` | `ArgConstraintViolation` | Allowed binary invoked with a denied subcommand/argument | `hyprctl dispatch exec …`, `hyprctl dispatch exec-once …`, `xdotool`/`wmctrl` on a Wayland session |
+| `-32003` | `CommandNotWhitelisted` **or** `ArgConstraintViolation` | Whitelist violation — `data.kind` discriminates: `CommandNotWhitelisted` = binary outside the allowed command set; `ArgConstraintViolation` = allowed binary invoked with a denied subcommand/argument | `system_command` outside `{grim, slurp, hyprctl, scrot, xdotool, wmctrl}`; `hyprctl dispatch exec …`/`exec-once …`; `xdotool`/`wmctrl` on a Wayland session |
 | `-32004` | `PathNotWhitelisted` | Path outside allowed roots | path arg resolving outside `$XDG_RUNTIME_DIR`, `/tmp`, `~/.ultranix-mcp/**` |
 | `-32005` | `RateLimitExceeded` | Token bucket empty | >10 req/s |
 | `-32006` | `SanitizationRejected` | Argument failed input sanitization | shell metacharacters, oversized strings (>64 KiB), control bytes |
@@ -793,6 +796,12 @@ manager responds.
 
 ### `screen_highlight`
 
+> **v1.0.0 status — not yet implemented.** The tool validates its arguments
+> then fails loudly with `-32010 ProviderUnavailable`
+> (`data.provider: "OverlayProvider"` — no layer-shell highlight backend
+> exists yet); **nothing is drawn**. The wlr-layer-shell overlay below is
+> the post-v1 target contract.
+
 Draw a translucent rectangle overlay at `(x, y, w, h)` for `duration_ms`
 (wlr-layer-shell surface), purely visual feedback — it does not affect
 capture or input.
@@ -824,7 +833,9 @@ layer-shell → no-op success is NOT returned; the call fails loudly).
 ### `color_at`
 
 Sample the colour of the logical-space pixel at `(x, y)` via a 1×1
-screencopy.
+screencopy. The captured frame is decoded and the pixel's real RGBA is
+returned (on HiDPI outputs the 1×1 logical region may capture larger — the
+centre pixel is sampled).
 
 **inputSchema**
 
@@ -847,7 +858,7 @@ screencopy.
 
 ### `set_spatial_focus`
 
-Set or clear the session region of interest (see
+Set or clear the process-scoped region of interest (see
 [Spatial Focus](#spatial-focus)). Two call shapes:
 
 **inputSchema**
@@ -1272,7 +1283,7 @@ Execution rules:
 | `slurp` | `slurp [-f <format>] [-d] [-b <color>] [-c <color>]` — fixed flag set, no path arguments | everything else |
 | `hyprctl` | `hyprctl [-j] clients`, `activewindow`, `monitors`, `workspaces`; `hyprctl [-j] dispatch focuswindow|movewindow|resizewindow|workspace|movetoworkspace <args>` — `-j` (JSON output) is a sanctioned global flag | `dispatch exec`, `dispatch exec-once`, `keyword`, `setprop`, `reload`, and every other flag, dispatcher, or subcommand |
 | `scrot` | `scrot [-s] [-d <sec>]` — no caller `[file]` argument; same server-supplied captures-dir path as `grim` | any caller-chosen path or other flag |
-| `xdotool` | X11/XWayland fallback sessions only — registered only when the `XdoToolInput`/`WmctrlWindow` fallback is active | rejected with `ArgConstraintViolation` on native Wayland sessions |
+| `xdotool` | X11/XWayland fallback sessions only — registered only when the X11 input/window rungs are active (post-v1; not shipped at v1.0.0) | rejected with `ArgConstraintViolation` on native Wayland sessions |
 | `wmctrl` | X11/XWayland fallback sessions only (same rule as `xdotool`) | rejected on native Wayland sessions |
 
 `busctl` and `gdbus` are **not** in the command set: D-Bus interactions
@@ -1509,10 +1520,10 @@ Return the same Prometheus text exposition served at `GET /metrics` on
 ```text
 # HELP ultranix_mcp_tool_calls_total Tool call count by outcome
 # TYPE ultranix_mcp_tool_calls_total counter
-ultranix_mcp_tool_calls_total{tool="mouse_click",category="mouse",result="ok"} 41
+ultranix_mcp_tool_calls_total{tool="mouse_click",outcome="ok"} 41
 # HELP ultranix_mcp_tool_duration_seconds Per-tool execution latency
 # TYPE ultranix_mcp_tool_duration_seconds histogram
-ultranix_mcp_tool_duration_seconds_bucket{tool="mouse_click",category="mouse",le="0.05"} 120
+ultranix_mcp_tool_duration_seconds_bucket{tool="mouse_click",le="0.05"} 120
 ultranix_mcp_rate_limit_rejections_total{category="mouse"} 3
 ultranix_mcp_active_sessions{transport="stdio"} 1
 ```
@@ -1649,8 +1660,8 @@ cleared by this tool. This is a destructive, consent-gated action (see
 | 1 — Hyprland I/O + security scaffolding | wlr capture+input, hyprctl windowing, arg-constrained exec; input sanitization, path whitelist, audit skeleton, consent gate | all mouse & keyboard tools; `screenshot`, `screen_info`, `color_at`; `sleep`, `mouse_move_path`, `system_command`; `window_control`, `get_windows`, `get_active_window` |
 | 2 — AT-SPI2 | Accessibility tree + action invocation | `set_spatial_focus`, `get_ui_tree`, `get_focused_element`, `find_element`, `invoke_element`, `wait_for_ui_element`, `screen_highlight` |
 | 3 — Vision + CDP | ONNX models, browser bridge | `find_text_on_screen`, `find_icon`, `web_query` |
-| 4 — Enterprise | HTTP auth surface (`uxcp_*` enforcement on `:3010`, fail-closed bind), rate limiting, AES-256-GCM history, replay, metrics, Sentry | `metrics`, `get_action_history`, `replay_action`, `clear_action_history` |
-| 5 — Portability | Non-Hyprland backends (KDE/GNOME portals, X11 via `scrot`/`xdotool`/`wmctrl`) | no new tools — widens where existing ones work |
+| 4 — Enterprise | HTTP auth surface (`uxcp_*` enforcement on `:3010`, fail-closed bind), rate limiting, AES-256-GCM history, replay, metrics (Sentry: planned post-v1) | `metrics`, `get_action_history`, `replay_action`, `clear_action_history` |
+| 5 — Portability | Non-Hyprland backends (KDE/GNOME via portal+uinput — shipped; X11 via `scrot`/`xdotool`/`wmctrl` — **post-v1**) | no new tools — widens where existing ones work |
 
 Tools advertised in `tools/list` always reflect the *currently available*
 providers: a Phase-2 tool on a system without an AT-SPI bus is still listed

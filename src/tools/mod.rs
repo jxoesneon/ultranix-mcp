@@ -22,8 +22,7 @@ use crate::traits::{
 };
 
 /// Server-defined codes not yet surfaced in `crate::error::codes`
-/// (sanitization lands with Phase 1; element lookup with Phase 2).
-const SANITIZATION_REJECTED: i32 = -32006;
+/// (element lookup lands with Phase 2).
 const ELEMENT_NOT_FOUND: i32 = -32016;
 
 /// Frozen category → tool-name catalog (docs/TOOLS.md "Tool Summary").
@@ -93,10 +92,32 @@ fn all_tools() -> &'static [Tool] {
 }
 
 /// Category a tool name belongs to, or `None` for unknown names.
-fn category_of(name: &str) -> Option<&'static str> {
+pub(crate) fn category_of(name: &str) -> Option<&'static str> {
     CATALOG
         .iter()
         .find_map(|(cat, names)| names.contains(&name).then_some(*cat))
+}
+
+/// `-32601 MethodNotFound` for a tool outside the enabled category set —
+/// the wire shape docs/API_VERSIONING.md fixes for calls to filtered
+/// tools (`data.kind = "CategoryDisabled"`). `None` categories = all
+/// enabled; unknown names yield `None` here and fall through to
+/// [`unknown_tool`].
+pub fn category_gate(name: &str, categories: Option<&[String]>) -> Option<ErrorData> {
+    let cats = categories?;
+    let cat = category_of(name)?;
+    if cats.iter().any(|c| c == cat) {
+        return None;
+    }
+    Some(ErrorData::new(
+        ErrorCode::METHOD_NOT_FOUND,
+        format!("tool disabled by category filter: {name}"),
+        Some(json!({
+            "kind": "CategoryDisabled",
+            "category": cat,
+            "tool": name,
+        })),
+    ))
 }
 
 /// All advertised tools, filtered by enabled categories (`None` = all).
@@ -212,7 +233,7 @@ fn outcome_of(result: &Result<CallToolResult, ErrorData>) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// `-32015 ConsentRequired` — destructive call needs a challenge retry.
-fn consent_required(token: &str, expires_in_ms: u64) -> ErrorData {
+fn consent_required(token: &str, expires_in_ms: u64, tool: &str) -> ErrorData {
     ErrorData::new(
         ErrorCode(codes::CONSENT_REQUIRED),
         "consent required: destructive action; retry with consent_token",
@@ -220,6 +241,7 @@ fn consent_required(token: &str, expires_in_ms: u64) -> ErrorData {
             "kind": "ConsentRequired",
             "consent_token": token,
             "expires_in_ms": expires_in_ms,
+            "tool": tool,
         })),
     )
 }
@@ -248,20 +270,44 @@ pub async fn call_tool_secured(
     key_id: Option<&str>,
 ) -> Result<CallToolResult, ErrorData> {
     let t0 = std::time::Instant::now();
+    let mut args = args;
     let argsv = Value::Object(args.clone());
     let hash = crate::security::consent::args_hash(&argsv);
     let destructive = is_destructive(name, &args);
 
+    // Category gate (docs/API_VERSIONING.md "Category Filters"): a tool
+    // outside the enabled set is `MethodNotFound` — audited and metered
+    // like every other rejected call. Lives here (not in the server
+    // handler) so `replay_action`'s re-entry enforces it too.
+    if let Some(err) = category_gate(name, security.categories.as_deref()) {
+        let elapsed = t0.elapsed();
+        crate::metrics::record_call(name, elapsed, "error");
+        let _ = security.audit.record(
+            name,
+            &hash,
+            "error",
+            elapsed.as_millis() as u64,
+            crate::security::audit::CallContext {
+                key_id,
+                caller: Some(key_id.unwrap_or(session_id)),
+                consent: None,
+            },
+        );
+        return Err(err);
+    }
+
     // Resolve the execution-time target for target-scoped consent:
-    // window_control{close} without `window` binds the *current* active
-    // window at challenge time (docs/TOOLS.md — a target change between
-    // challenge and retry invalidates the token).
+    // window_control{close} binds the concrete window id at challenge
+    // time — the active window when `window` is absent, the unique
+    // selector match when present (docs/TOOLS.md — a target change
+    // between challenge and retry invalidates the token).
     let resolved_target = if name == "window_control"
         && args.get("action").and_then(Value::as_str) == Some("close")
-        && args.get("window").is_none()
     {
         match &providers.window {
-            Some(w) => w.active_window().await.ok().flatten().map(|w| w.id),
+            Some(w) => {
+                resolve_close_target(w.as_ref(), args.get("window").and_then(Value::as_str)).await
+            }
             None => None,
         }
     } else {
@@ -299,7 +345,7 @@ pub async fn call_tool_secured(
                     .challenge_for_target(key_id, session_id, name, &argsv, t),
                 None => security.consent.challenge(key_id, session_id, name, &argsv),
             };
-            return Err(consent_required(&ch.token, ch.expires_in_ms));
+            return Err(consent_required(&ch.token, ch.expires_in_ms, name));
         }
     }
 
@@ -312,6 +358,15 @@ pub async fn call_tool_secured(
     } else {
         None
     };
+
+    // Bind execution to the challenged identity (S-6): substituting the
+    // resolved window id for the (possibly absent) selector makes the
+    // admin leg take its exact-id path, so a selector that would now
+    // match a different window — or a focus change since the challenge —
+    // cannot redirect the close.
+    if let Some(id) = &resolved_target {
+        args.insert("window".into(), Value::String(id.clone()));
+    }
 
     let result = if name == "system_command" {
         exec_system_command(&args, security).await
@@ -344,20 +399,52 @@ pub async fn call_tool_secured(
 
     // Encrypted action history: every replayable invocation appends to
     // the context-scoped store (meta/history tools excluded — replaying
-    // them is meaningless and recording them is noise).
+    // them is meaningless and recording them is noise). The append does
+    // blocking file + crypto work, so it runs on `spawn_blocking`
+    // instead of a runtime worker (EFF-1).
     if !admin::NON_REPLAYABLE.contains(&name)
-        && let Ok(store) = security.history()
+        && let Ok(store) = security.history_arc()
     {
-        let _ = store.record(crate::security::history::NewActionRecord {
+        let rec = crate::security::history::NewActionRecord {
             tool: name.to_string(),
             args_json: argsv.clone(),
             result_summary: result_summary(&result),
             caller: key_id.unwrap_or(session_id).to_string(),
             duration_ms: elapsed.as_millis() as u64,
             outcome: outcome.to_string(),
-        });
+        };
+        let _ = tokio::task::spawn_blocking(move || store.record(rec)).await;
     }
     result
+}
+
+/// Concrete window id for a `window_control{close}` consent binding:
+/// `None` selector → active window; `Some(sel)` → exact id match, else
+/// unique case-insensitive title/class substring (mirrors the admin
+/// leg's selector rules). Unresolvable or ambiguous selectors yield
+/// `None` — dispatch then reports the real error unbound.
+async fn resolve_close_target(
+    window: &dyn WindowProvider,
+    selector: Option<&str>,
+) -> Option<String> {
+    match selector {
+        None => window.active_window().await.ok().flatten().map(|w| w.id),
+        Some(sel) => {
+            let windows = window.list_windows().await.ok()?;
+            if let Some(w) = windows.iter().find(|w| w.id == sel) {
+                return Some(w.id.clone());
+            }
+            let needle = sel.to_lowercase();
+            let matches: Vec<&WindowInfo> = windows
+                .iter()
+                .filter(|w| {
+                    w.title.to_lowercase().contains(&needle)
+                        || w.class.to_lowercase().contains(&needle)
+                })
+                .collect();
+            (matches.len() == 1).then(|| matches[0].id.clone())
+        }
+    }
 }
 
 /// First text block of a tool result (or the error line) — the summary
@@ -414,21 +501,14 @@ async fn exec_system_command(
             security.x11_active,
             capture_out.as_deref(),
         )
-        .map_err(|e| {
-            ErrorData::new(
-                ErrorCode(codes::ARG_CONSTRAINT_VIOLATION),
-                format!("{e}"),
-                Some(json!({"kind": "ArgConstraintViolation", "detail": e.to_string()})),
-            )
-        })?;
+        .map_err(|e| whitelist_error_data(&e))?;
 
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        tokio::process::Command::new(&inv.abs_path)
-            .args(&inv.argv[1..])
-            .output(),
-    )
-    .await;
+    // Pinned absolute path, scrubbed environment (S-10), kill-on-drop so
+    // a timed-out wait still reaps the child, 15 s budget, 64 KiB
+    // stdout/stderr truncation (docs/TOOLS.md contract).
+    let argv: Vec<&str> = inv.argv[1..].iter().map(String::as_str).collect();
+    let mut cmd = crate::security::spawn::command(&inv.abs_path, &argv);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(15), cmd.output()).await;
 
     // Unlink the server-supplied capture file after use (unlink-after-use).
     if let Some(d) = &capture_dir {
@@ -444,6 +524,26 @@ async fn exec_system_command(
             "stderr": truncate64k(&o.stderr),
         }))),
     }
+}
+
+/// `WhitelistError` → the documented JSON-RPC code + `data.kind`
+/// (docs/TOOLS.md error taxonomy): not-whitelisted and argument
+/// constraints → `-32003`, path whitelist → `-32004`, sanitization →
+/// `-32006`.
+fn whitelist_error_data(e: &crate::security::whitelist::WhitelistError) -> ErrorData {
+    use crate::security::whitelist::WhitelistError as W;
+    let (code, kind) = match e {
+        W::Sanitize(_) => (codes::SANITIZATION_REJECTED, "SanitizationRejected"),
+        W::Path(_) => (codes::PATH_NOT_WHITELISTED, "PathNotWhitelisted"),
+        W::NotWhitelisted(_) => (codes::COMMAND_NOT_WHITELISTED, "CommandNotWhitelisted"),
+        W::ArgConstraint { .. } => (codes::ARG_CONSTRAINT_VIOLATION, "ArgConstraintViolation"),
+    };
+    let detail = e.to_string();
+    ErrorData::new(
+        ErrorCode(code),
+        detail.clone(),
+        Some(json!({"kind": kind, "detail": detail})),
+    )
 }
 
 fn truncate64k(bytes: &[u8]) -> String {
@@ -523,7 +623,7 @@ pub(super) fn provider_unavailable(provider: &'static str) -> ErrorData {
 pub(super) fn sanitization_rejected(message: impl Into<String>) -> ErrorData {
     let message = message.into();
     ErrorData::new(
-        ErrorCode(SANITIZATION_REJECTED),
+        ErrorCode(codes::SANITIZATION_REJECTED),
         message.clone(),
         Some(json!({"kind": "SanitizationRejected", "detail": message})),
     )
