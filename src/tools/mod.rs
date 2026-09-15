@@ -91,6 +91,11 @@ fn all_tools() -> &'static [Tool] {
     &ALL
 }
 
+/// All category names in catalog order (`mouse`, `keyboard`, …).
+pub fn categories() -> impl Iterator<Item = &'static str> {
+    CATALOG.iter().map(|(c, _)| *c)
+}
+
 /// Category a tool name belongs to, or `None` for unknown names.
 pub(crate) fn category_of(name: &str) -> Option<&'static str> {
     CATALOG
@@ -405,9 +410,16 @@ pub async fn call_tool_secured(
     if !admin::NON_REPLAYABLE.contains(&name)
         && let Ok(store) = security.history_arc()
     {
+        // Strip the spent consent token — the store holds replayable
+        // args, and a recorded token is dead weight (replay re-challenges
+        // anyway).
+        let mut recorded = argsv.clone();
+        if let Some(obj) = recorded.as_object_mut() {
+            obj.remove("consent_token");
+        }
         let rec = crate::security::history::NewActionRecord {
             tool: name.to_string(),
-            args_json: argsv.clone(),
+            args_json: recorded,
             result_summary: result_summary(&result),
             caller: key_id.unwrap_or(session_id).to_string(),
             duration_ms: elapsed.as_millis() as u64,

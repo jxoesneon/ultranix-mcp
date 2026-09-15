@@ -566,6 +566,9 @@ fn fetch_to(url: &str, path: &Path) -> Result<()> {
     }
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
+        // Total request budget — a stalled download must not wedge the
+        // engine's OnceLock init forever.
+        .timeout(std::time::Duration::from_secs(300))
         .build()
         .context("build http client")?;
     let mut resp = client

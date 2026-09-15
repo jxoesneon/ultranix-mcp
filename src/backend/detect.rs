@@ -248,13 +248,40 @@ pub fn detect_providers(session: &SessionInfo) -> Providers {
 
     let plan = plan_backends(session);
 
+    let mut backend_names = Vec::new();
+    let capture = detect_capture(&plan.capture);
+    if let Some((_, name)) = &capture {
+        backend_names.push(*name);
+    }
+    let input = detect_input(&plan.input);
+    if let Some((_, name)) = &input {
+        backend_names.push(*name);
+    }
+    let window = detect_window(&plan.window);
+    if let Some((_, name)) = &window {
+        backend_names.push(*name);
+    }
+    let ui_automation = detect_ui_automation(&plan.ui_automation);
+    if let Some((_, name)) = &ui_automation {
+        backend_names.push(*name);
+    }
+    let vision = detect_vision(&plan.vision);
+    if let Some((_, name)) = &vision {
+        backend_names.push(*name);
+    }
+    let browser = detect_browser(&plan.browser);
+    if let Some((_, name)) = &browser {
+        backend_names.push(*name);
+    }
+
     let providers = Providers {
-        capture: detect_capture(&plan.capture),
-        input: detect_input(&plan.input),
-        window: detect_window(&plan.window),
-        ui_automation: detect_ui_automation(&plan.ui_automation),
-        vision: detect_vision(&plan.vision),
-        browser: detect_browser(&plan.browser),
+        capture: capture.map(|(p, _)| p),
+        input: input.map(|(p, _)| p),
+        window: window.map(|(p, _)| p),
+        ui_automation: ui_automation.map(|(p, _)| p),
+        vision: vision.map(|(p, _)| p),
+        browser: browser.map(|(p, _)| p),
+        backend_names,
     };
 
     tracing::info!(
@@ -271,25 +298,27 @@ pub fn detect_providers(session: &SessionInfo) -> Providers {
 }
 
 /// Walk the capture ladder: `Wlr → Grim → None`.
-fn detect_capture(candidates: &[CaptureBackend]) -> Option<Arc<dyn CaptureProvider>> {
+fn detect_capture(
+    candidates: &[CaptureBackend],
+) -> Option<(Arc<dyn CaptureProvider>, &'static str)> {
     for &candidate in candidates {
         match candidate {
             CaptureBackend::Wlr => {
                 if let Some(p) = crate::providers::wlr_capture::WlrCapture::new() {
                     tracing::info!(backend = "wlr-screencopy", "capture provider registered");
-                    return Some(Arc::new(p));
+                    return Some((Arc::new(p), "wlr-screencopy"));
                 }
             }
             CaptureBackend::Grim => {
                 if let Some(p) = crate::providers::grim_capture::GrimCapture::new() {
                     tracing::info!(backend = "grim", "capture provider registered");
-                    return Some(Arc::new(p));
+                    return Some((Arc::new(p), "grim"));
                 }
             }
             CaptureBackend::Portal => {
                 if let Some(p) = crate::providers::portal_capture::PortalCapture::new() {
                     tracing::info!(backend = "portal-screenshot", "capture provider registered");
-                    return Some(Arc::new(p));
+                    return Some((Arc::new(p), "portal-screenshot"));
                 }
             }
         }
@@ -299,19 +328,19 @@ fn detect_capture(candidates: &[CaptureBackend]) -> Option<Arc<dyn CaptureProvid
 }
 
 /// Walk the input ladder: `Wlr → UInput → None`.
-fn detect_input(candidates: &[InputBackend]) -> Option<Arc<dyn InputProvider>> {
+fn detect_input(candidates: &[InputBackend]) -> Option<(Arc<dyn InputProvider>, &'static str)> {
     for &candidate in candidates {
         match candidate {
             InputBackend::Wlr => {
                 if let Some(p) = crate::providers::wlr_input::WlrInput::new() {
                     tracing::info!(backend = "wlr-virtual-input", "input provider registered");
-                    return Some(Arc::new(p));
+                    return Some((Arc::new(p), "wlr-virtual-input"));
                 }
             }
             InputBackend::UInput => {
                 if let Some(p) = crate::providers::uinput_input::UinputInput::new() {
                     tracing::info!(backend = "uinput", "input provider registered");
-                    return Some(Arc::new(p));
+                    return Some((Arc::new(p), "uinput"));
                 }
             }
             InputBackend::Portal => {
@@ -320,7 +349,7 @@ fn detect_input(candidates: &[InputBackend]) -> Option<Arc<dyn InputProvider>> {
                         backend = "portal-remote-desktop",
                         "input provider registered"
                     );
-                    return Some(Arc::new(p));
+                    return Some((Arc::new(p), "portal-remote-desktop"));
                 }
             }
         }
@@ -330,13 +359,13 @@ fn detect_input(candidates: &[InputBackend]) -> Option<Arc<dyn InputProvider>> {
 }
 
 /// Walk the window ladder: `Hyprctl → None`.
-fn detect_window(candidates: &[WindowBackend]) -> Option<Arc<dyn WindowProvider>> {
+fn detect_window(candidates: &[WindowBackend]) -> Option<(Arc<dyn WindowProvider>, &'static str)> {
     for &candidate in candidates {
         match candidate {
             WindowBackend::Hyprctl => {
                 if let Some(p) = crate::providers::hyprctl::HyprctlWindow::new() {
                     tracing::info!(backend = "hyprctl", "window provider registered");
-                    return Some(Arc::new(p));
+                    return Some((Arc::new(p), "hyprctl"));
                 }
             }
         }
@@ -347,13 +376,13 @@ fn detect_window(candidates: &[WindowBackend]) -> Option<Arc<dyn WindowProvider>
 
 fn detect_ui_automation(
     candidates: &[UiAutomationBackend],
-) -> Option<Arc<dyn UIAutomationProvider>> {
+) -> Option<(Arc<dyn UIAutomationProvider>, &'static str)> {
     for &candidate in candidates {
         match candidate {
             UiAutomationBackend::Atspi => {
                 if let Some(p) = crate::providers::atspi::AtspiUi::new() {
                     tracing::info!(backend = "atspi2", "ui-automation provider registered");
-                    return Some(Arc::new(p));
+                    return Some((Arc::new(p), "atspi2"));
                 }
             }
         }
@@ -362,13 +391,13 @@ fn detect_ui_automation(
     None
 }
 
-fn detect_vision(candidates: &[VisionBackend]) -> Option<Arc<dyn VisionProvider>> {
+fn detect_vision(candidates: &[VisionBackend]) -> Option<(Arc<dyn VisionProvider>, &'static str)> {
     for &candidate in candidates {
         match candidate {
             VisionBackend::Onnx => {
                 if let Some(p) = crate::providers::onnx_vision::OnnxVision::new() {
                     tracing::info!(backend = "onnx", "vision provider registered");
-                    return Some(Arc::new(p));
+                    return Some((Arc::new(p), "onnx"));
                 }
             }
         }
@@ -377,13 +406,15 @@ fn detect_vision(candidates: &[VisionBackend]) -> Option<Arc<dyn VisionProvider>
     None
 }
 
-fn detect_browser(candidates: &[BrowserBackend]) -> Option<Arc<dyn BrowserProvider>> {
+fn detect_browser(
+    candidates: &[BrowserBackend],
+) -> Option<(Arc<dyn BrowserProvider>, &'static str)> {
     for &candidate in candidates {
         match candidate {
             BrowserBackend::Cdp => {
                 if let Some(p) = crate::providers::cdp_browser::CdpBrowser::new() {
                     tracing::info!(backend = "cdp", "browser provider registered");
-                    return Some(Arc::new(p));
+                    return Some((Arc::new(p), "cdp"));
                 }
             }
         }

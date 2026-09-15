@@ -253,11 +253,23 @@ async fn mouse_get_position(
     } else {
         return Err(provider_unavailable("InputProvider"));
     };
-    // `display` (output under the pointer) is resolved by real backends in
-    // Phase 1; null is spec-valid ("between outputs").
-    Ok(json_result(
-        &json!({"x": x, "y": y, "display": Value::Null}),
-    ))
+    // `display` — output under the pointer, resolved by intersecting the
+    // cursor position with the capture backend's output rects; `null`
+    // when the pointer sits between outputs or no capture backend can
+    // report the layout (spec-sanctioned).
+    let display = if let Some(capture) = providers.capture.as_deref() {
+        match capture.screen_info().await {
+            Ok(info) => crate::tools::vision::output_rects(&info)
+                .into_iter()
+                .find(|(_, r)| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+                .map(|(name, _)| Value::String(name))
+                .unwrap_or(Value::Null),
+            Err(_) => Value::Null,
+        }
+    } else {
+        Value::Null
+    };
+    Ok(json_result(&json!({"x": x, "y": y, "display": display})))
 }
 
 async fn mouse_scroll(

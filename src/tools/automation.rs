@@ -227,8 +227,9 @@ async fn system_command(args: &Map<String, Value>) -> Result<CallToolResult, Err
             )));
         }
     }
-    // Phase 0: the arg-constrained exec and the consent challenge land in
-    // Phase 1 — validate the shape, then report a deterministic stub.
+    // Unsecured (Phase-0/test) path only — the secured production dispatch
+    // (`call_tool_secured`) intercepts `system_command` and performs the
+    // pinned-binary exec before reaching here.
     let _ = &p.consent_token;
     Ok(json_result(&json!({
         "phase0_stub": true,

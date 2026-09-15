@@ -5,21 +5,71 @@ All notable changes to ultranix-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] — TBD
+## [1.0.0] — 2026-09-15
 
-First stable release. Final release notes are being finalized; the shipped
-feature set is the union of [0.1.0]–[0.5.0] below (all six ROADMAP phases).
-Known scope notes for the release notes:
+First stable release — the union of [0.1.0]–[0.5.0] plus the Council-of-Five
+audit remediation pass that closed the remaining spec-vs-implementation
+drift before tagging.
 
-- `screen_highlight` is not yet implemented — it validates its arguments
-  then returns `-32010 ProviderUnavailable` (`OverlayProvider` absent); the
-  layer-shell overlay is post-v1.
+### Added
+
+- `capabilities.ultranix` extension block on `initialize`
+  (`toolSurfaceVersion`, enabled `categories`, live `providers`,
+  `features`) and `result._meta` server identity on every `tools/call`
+  (docs/API_VERSIONING.md contract is now emitted).
+- Authenticated HTTP `key_id` propagates to the tool layer via request
+  extensions — consent tokens bind `{key_id, tool, args_hash}` and audit
+  records carry per-key attribution on the HTTP transport.
+- `WindowInfo` carries `floating`/`fullscreen`/`pid`/`monitor` (hyprctl
+  supplies all four); `mouse_get_position` resolves the output under the
+  pointer; `invoke_element` honours named AT-SPI actions via
+  `GetActions`; `screenshot` resolves `display` to per-output bounds;
+  `color_at` decodes the real captured pixel; `set_spatial_focus` scopes
+  `screenshot`/`find_text_on_screen`/`find_icon`.
+- `--category` is enforced at dispatch (`-32601` +
+  `kind:"CategoryDisabled"`), not merely at `tools/list`.
+- `get_action_history` gains an `action` substring filter and returns
+  verbatim `args` (minus `consent_token`); `replay_action` validates
+  ULIDs and refuses redacted records.
+- `security::spawn` — every subprocess (whitelist exec + provider
+  helpers) runs env-scrubbed on a pinned, once-resolved absolute path
+  with a bounded wait; stdout drained concurrently to avoid pipe
+  deadlock.
+
+### Fixed
+
+- Error taxonomy aligned to the documented codes: `-32003`
+  (command/arg whitelist), `-32004` (path), `-32006` (sanitize),
+  `-32015` (consent), `-32016` (element not found) — `-32020` is gone.
+- Consent challenge `data` now carries the `tool` field and binds
+  `window_control{close}` to the resolved window id (TOCTOU-safe).
+- HTTP gate audits `auth_rejected`/`rate_limited` into the hash-chained
+  log; 429 carries `Retry-After`; `/health` returns `{status, version}`.
+- Portal `RemoteDesktop` no longer requests persisted tokens (per-session
+  re-consent, matching THREAT_MODEL §4.2).
+- History recording runs on `spawn_blocking` without the double clone;
+  all D-Bus calls are wrapped in 5s timeouts; ONNX model downloads are
+  bounded by a 300s total timeout.
+- `type_text` aborts mid-sequence on focus change; `mouse_button_control`
+  tracks held-button state; `web_query` returns the documented
+  `{found, element, bounds_space}` envelope.
+- Rate-limit rejection metric label renamed `category` → `reason`
+  (`auth`/`rate_limit` values).
+
+### Scope notes (honest limitations)
+
+- `screen_highlight` validates arguments then returns `-32010
+  ProviderUnavailable` (`OverlayProvider` absent); the layer-shell
+  overlay is post-v1.
 - `ULTRANIX_MCP_SENTRY_DSN` is documented but not wired (planned, post-v1).
 - Portal `RemoteDesktop` is input-only — the granted PipeWire stream is
   deliberately not consumed.
 - X11-native providers (`xdotool`/`wmctrl`/`scrot` backends) are post-v1;
-  the whitelist entries for them apply to `system_command` on X11 sessions
-  only.
+  the whitelist entries for them apply to `system_command` on X11
+  sessions only.
+- The unsecured `call_tool` path retains a labelled `phase0_stub`
+  `system_command` response — production always attaches a
+  `SecurityContext`, so real exec is the production path.
 
 ## [0.5.0] — 2026-09-15
 

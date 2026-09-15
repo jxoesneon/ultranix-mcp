@@ -256,6 +256,12 @@ fn client_to_info(v: &Value, focused_addr: Option<&str>) -> Option<WindowInfo> {
             h: size.get(1).and_then(Value::as_i64).unwrap_or(0) as i32,
         },
         focused,
+        floating: v.get("floating").and_then(Value::as_bool),
+        // `fullscreen` is an int enum (0 none / 1 real / 2 maximized) —
+        // expose it as "is fullscreen".
+        fullscreen: v.get("fullscreen").and_then(Value::as_i64).map(|f| f != 0),
+        pid: v.get("pid").and_then(Value::as_i64),
+        monitor: v.get("monitor").and_then(Value::as_i64),
     })
 }
 

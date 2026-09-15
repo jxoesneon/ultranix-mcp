@@ -103,7 +103,12 @@ impl UltraNixServer {
         let app = axum::Router::new()
             .route(
                 "/health",
-                axum::routing::get(|| async { axum::Json(serde_json::json!({"status": "ok"})) }),
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "status": "ok",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    }))
+                }),
             )
             .route(
                 "/readyz",
@@ -141,6 +146,14 @@ impl UltraNixServer {
     }
 }
 
+/// Authenticated key identity inserted into the request extensions by
+/// [`http_gate`]; rmcp propagates `http::request::Parts` (with its
+/// extensions) into the MCP `RequestContext`, letting `call_tool`
+/// recover the caller's `key_id` for consent binding and audit
+/// attribution. `None` inside means auth was explicitly disabled.
+#[derive(Clone)]
+pub struct McpKeyIdentity(pub Option<String>);
+
 /// Shared state for the `/mcp` gate: key store + token bucket + the
 /// security context for auditing rejections.
 #[derive(Clone)]
@@ -161,7 +174,7 @@ struct HttpGate {
 async fn http_gate(
     axum::extract::State(gate): axum::extract::State<HttpGate>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::http::StatusCode;
@@ -193,11 +206,15 @@ async fn http_gate(
         }
     };
 
+    let mut key_id: Option<String> = None;
     let identity = if gate.keys.is_disabled() {
         remote_id
     } else {
         match gate.keys.authenticate_verbose(header_key, bearer) {
-            Ok(id) => id.key_id.unwrap_or(remote_id),
+            Ok(id) => {
+                key_id = id.key_id.clone();
+                id.key_id.unwrap_or(remote_id)
+            }
             Err(f) => {
                 crate::metrics::record_rate_rejection("auth");
                 audit_rejection("auth_rejected", &remote_id);
@@ -224,12 +241,36 @@ async fn http_gate(
         )
             .into_response();
     }
+    // Propagate the authenticated key identity to the MCP layer — the
+    // request extensions ride `http::request::Parts` into the rmcp
+    // `RequestContext`.
+    req.extensions_mut().insert(McpKeyIdentity(key_id));
     next.run(req).await
 }
 
 impl ServerHandler for UltraNixServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_server_info({
+        // `capabilities.ultranix` extension block — API_VERSIONING.md.
+        let categories = self.categories.as_deref().map(|v| v.as_slice());
+        let cats: Vec<serde_json::Value> = tools::categories()
+            .filter(|c| categories.is_none_or(|enabled| enabled.contains(&c.to_string())))
+            .map(|c| serde_json::Value::String(c.into()))
+            .collect();
+        let ultranix = serde_json::json!({
+            "toolSurfaceVersion": "1.0",
+            "categories": cats,
+            "providers": self.providers.backend_names,
+            "features": {
+                "spatialFocus": true,
+                "actionHistory": true,
+                "imageContent": true,
+            }
+        });
+        let mut caps = ServerCapabilities::builder().enable_tools().build();
+        caps.extensions
+            .get_or_insert_with(Default::default)
+            .insert("ultranix".into(), ultranix.as_object().unwrap().clone());
+        ServerInfo::new(caps).with_server_info({
             let mut info = Implementation::from_build_env();
             info.name = "ultranix-mcp".into();
             info.version = env!("CARGO_PKG_VERSION").into();
@@ -251,9 +292,16 @@ impl ServerHandler for UltraNixServer {
     async fn call_tool(
         &self,
         params: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let args = params.arguments.unwrap_or_default();
+        // Authenticated key identity propagated from `http_gate` via the
+        // HTTP request extensions (absent on stdio / auth-disabled).
+        let key_id = context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<McpKeyIdentity>())
+            .and_then(|k| k.0.clone());
         let result = match &self.security {
             Some(sec) => {
                 tools::call_tool_secured(
@@ -262,7 +310,7 @@ impl ServerHandler for UltraNixServer {
                     &self.providers,
                     sec,
                     &self.session_id,
-                    None, // HTTP key_id arrives with Phase-4 auth
+                    key_id.as_deref(),
                 )
                 .await
             }
@@ -276,6 +324,24 @@ impl ServerHandler for UltraNixServer {
                 None => tools::call_tool(&params.name, args, &self.providers).await,
             },
         };
-        result.map(CallToolResponse::Complete)
+        // API_VERSIONING §Version Metadata — every tools/call result
+        // carries server identity in `_meta`.
+        result.map(|mut r| {
+            r.meta = Some(rmcp::model::MetaObject(
+                serde_json::json!({
+                    "server": "ultranix-mcp",
+                    "serverVersion": env!("CARGO_PKG_VERSION"),
+                    "toolSurfaceVersion": "1.0",
+                    "protocolVersion": context
+                        .peer
+                        .peer_info()
+                        .map(|i| i.protocol_version.to_string()),
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ));
+            CallToolResponse::Complete(r)
+        })
     }
 }

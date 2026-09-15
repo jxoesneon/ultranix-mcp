@@ -173,7 +173,7 @@ pub(super) async fn dispatch(
 
 /// Snapshot of the focused window id, when a `WindowProvider` is present.
 /// Focus-safety failures are non-fatal to the snapshot itself — a missing
-/// provider simply disables the check (Phase 0).
+/// provider simply disables the check.
 async fn focused_window_id(providers: &Providers) -> Option<String> {
     let window = providers.window.as_deref()?;
     window.active_window().await.ok().flatten().map(|w| w.id)

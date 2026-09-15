@@ -810,11 +810,14 @@ impl UIAutomationProvider for AtspiUi {
         let wanted = action.trim().to_ascii_lowercase();
         // Activation verbs resolve against common AT-SPI action names,
         // falling back to the conventional default action (index 0).
-        let aliases: &[&str] = match wanted.as_str() {
-            "press" | "activate" | "click" | "default" | "" => {
-                &["press", "activate", "click", "select"]
-            }
-            _ => &[],
+        let activation = matches!(
+            wanted.as_str(),
+            "press" | "activate" | "click" | "default" | ""
+        );
+        let aliases: &[&str] = if activation {
+            &["press", "activate", "click", "select"]
+        } else {
+            &[]
         };
         let idx = actions
             .iter()
@@ -824,7 +827,7 @@ impl UIAutomationProvider for AtspiUi {
                     .iter()
                     .position(|a| aliases.iter().any(|al| a.name.eq_ignore_ascii_case(al)))
             })
-            .or_else(|| (wanted.is_empty() || aliases.contains(&wanted.as_str())).then_some(0));
+            .or_else(|| activation.then_some(0));
         let Some(i) = idx else {
             return Ok(false);
         };

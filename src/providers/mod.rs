@@ -30,6 +30,9 @@ pub struct Providers {
     pub window: Option<Arc<dyn WindowProvider>>,
     pub vision: Option<Arc<dyn VisionProvider>>,
     pub browser: Option<Arc<dyn BrowserProvider>>,
+    /// Backend names that actually initialised (e.g. `"wlr-screencopy"`,
+    /// `"atspi2"`) — surfaced in `capabilities.ultranix.providers`.
+    pub backend_names: Vec<&'static str>,
 }
 
 impl Providers {
@@ -42,6 +45,14 @@ impl Providers {
             window: Some(Arc::new(mock::MockWindow)),
             vision: Some(Arc::new(mock::MockVision)),
             browser: Some(Arc::new(mock::MockBrowser)),
+            backend_names: vec![
+                "mock-capture",
+                "mock-input",
+                "mock-ui-automation",
+                "mock-window",
+                "mock-vision",
+                "mock-browser",
+            ],
         }
     }
 

@@ -339,15 +339,15 @@ Standard JSON-RPC 2.0 codes plus server-defined codes in the
 | `-32602` | `InvalidParams` | Schema validation failed | missing required param, wrong type, enum violation, out-of-range |
 | `-32603` | `InternalError` | Unclassified server fault | panic-free unexpected failure |
 | `-32001` | `Unauthorized` | Missing/invalid API key | no `X-API-Key`, bad `uxcp_*` key |
-| `-32002` | `Forbidden` | Authenticated but not permitted | tool's category disabled at launch |
+| `-32002` | `Forbidden` | Authenticated but not permitted | reserved — category filtering surfaces as `-32601` + `kind:"CategoryDisabled"` |
 | `-32003` | `CommandNotWhitelisted` **or** `ArgConstraintViolation` | Whitelist violation — `data.kind` discriminates: `CommandNotWhitelisted` = binary outside the allowed command set; `ArgConstraintViolation` = allowed binary invoked with a denied subcommand/argument | `system_command` outside `{grim, slurp, hyprctl, scrot, xdotool, wmctrl}`; `hyprctl dispatch exec …`/`exec-once …`; `xdotool`/`wmctrl` on a Wayland session |
 | `-32004` | `PathNotWhitelisted` | Path outside allowed roots | path arg resolving outside `$XDG_RUNTIME_DIR`, `/tmp`, `~/.ultranix-mcp/**` |
 | `-32005` | `RateLimitExceeded` | Token bucket empty | >10 req/s |
 | `-32006` | `SanitizationRejected` | Argument failed input sanitization | shell metacharacters, oversized strings (>64 KiB), control bytes |
 | `-32010` | `ProviderUnavailable` | Backend not reachable | AT-SPI bus absent, CDP not listening on `127.0.0.1:9222`, no screencopy support |
-| `-32011` | `CaptureFailed` | Frame capture/encode failed | wlr-screencopy denied, portal declined |
-| `-32012` | `InputInjectionFailed` | Virtual input device failed | uinput node missing, portal session revoked |
-| `-32013` | `FocusChanged` | Active window changed mid-action | safety abort in `type_text`/`key_control` |
+| `-32011` | `CaptureFailed` | Frame capture/encode failed | reserved — backend failures surface as `isError:true` results, not JSON-RPC codes |
+| `-32012` | `InputInjectionFailed` | Virtual input device failed | reserved — backend failures surface as `isError:true` results |
+| `-32013` | `FocusChanged` | Active window changed mid-action | delivered as `isError:true` result text (`FocusChanged: …`), not a JSON-RPC code |
 | `-32014` | `HistoryError` | Encrypted history store fault | corrupt `history.json`, bad `ULTRANIX_MCP_HISTORY_SECRET` |
 | `-32015` | `ConsentRequired` | Destructive call lacks a valid consent token | first `system_command`, `replay_action`, `clear_action_history`, or `window_control{action:"close"}` without `consent_token`; `data` carries the challenge token (see [Destructive-Action Consent](#destructive-action-consent)) |
 | `-32016` | `ElementNotFound` | Action-targeted element query matched nothing | `invoke_element` query with no AT-SPI match |
@@ -610,7 +610,8 @@ function keys `F1`–`F24`, and common symbols (`minus`, `equal`, `comma`, …).
 Type a literal UTF-8 string into the focused element, with optional
 inter-key delay. Newlines (`\n`) produce `Return` presses; characters with no
 direct keysym are injected via the virtual keyboard's Unicode code-point path
-(`Ctrl+Shift+U` fallback on the uinput backend).
+on the wlr backend; on the uinput backend non-ASCII input is rejected
+with `isError` (no Unicode fallback).
 
 **inputSchema**
 
@@ -889,7 +890,8 @@ given.
 
 ### `get_ui_tree`
 
-Return the AT-SPI2 accessibility tree of the focused application as nested
+Return the AT-SPI2 accessibility tree rooted at the desktop (the
+registry root whose children are the running applications) as nested
 JSON, pruned to `depth` levels.
 
 **inputSchema**
@@ -981,18 +983,17 @@ against `name`, `description`, and `role`.
 }
 ```
 
-**Returns**: `text` containing JSON — up to 10 matches, best-first:
+**Returns**: `text` containing JSON — the single best match (the
+first hit in tree order), with its bounds and centre point:
 
 ```json
 {
   "found": true,
-  "count": 2,
+  "count": 1,
   "matches": [
     {
-      "name": "Sign in", "role": "push-button",
       "bounds": { "x": 980, "y": 64, "w": 96, "h": 36 },
-      "center": { "x": 1028, "y": 82 },
-      "states": ["sensitive", "visible"]
+      "center": { "x": 1028, "y": 82 }
     }
   ]
 }
@@ -1050,7 +1051,6 @@ plus the action result:
   "action": "press",
   "action_result": "ok",
   "element": {
-    "name": "Sign in", "role": "push-button",
     "bounds": { "x": 980, "y": 64, "w": 96, "h": 36 },
     "center": { "x": 1028, "y": 82 }
   }
@@ -1141,7 +1141,7 @@ OWL-ViT open-vocabulary detection on the captured frame.
 }
 ```
 
-**Returns**: `text` containing JSON — up to 10 detections over the 0.30
+**Returns**: `text` containing JSON — up to 32 detections over the 0.10
 confidence floor, score-descending:
 
 ```json
@@ -1524,7 +1524,7 @@ ultranix_mcp_tool_calls_total{tool="mouse_click",outcome="ok"} 41
 # HELP ultranix_mcp_tool_duration_seconds Per-tool execution latency
 # TYPE ultranix_mcp_tool_duration_seconds histogram
 ultranix_mcp_tool_duration_seconds_bucket{tool="mouse_click",le="0.05"} 120
-ultranix_mcp_rate_limit_rejections_total{category="mouse"} 3
+ultranix_mcp_rate_limit_rejections_total{reason="rate_limit"} 3
 ultranix_mcp_active_sessions{transport="stdio"} 1
 ```
 
@@ -1543,6 +1543,10 @@ Read the AES-256-GCM-encrypted action history
   "properties": {
     "limit": {
       "type": "integer", "default": 50, "minimum": 1, "maximum": 1000
+    },
+    "action": {
+      "type": "string",
+      "description": "Case-insensitive substring filter over tool names (e.g. \"window\" matches window_control)"
     }
   },
   "additionalProperties": false

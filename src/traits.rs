@@ -43,6 +43,14 @@ pub struct WindowInfo {
     pub workspace: i32,
     pub rect: Rect,
     pub focused: bool,
+    /// Floating (vs tiled) state — `None` when the backend can't report it.
+    pub floating: Option<bool>,
+    /// Fullscreen state — `None` when the backend can't report it.
+    pub fullscreen: Option<bool>,
+    /// Owning process id — `None` when the backend can't report it.
+    pub pid: Option<i64>,
+    /// Monitor/output index or id — `None` when the backend can't report it.
+    pub monitor: Option<i64>,
 }
 
 /// Screen capture (wlr-screencopy / portal / X11).

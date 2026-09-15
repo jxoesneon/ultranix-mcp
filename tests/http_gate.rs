@@ -643,4 +643,32 @@ fn tools_call_over_http_returns_mock_json() {
         .unwrap_or_else(|| panic!("get_windows reply: {reply}"));
     let doc: Value = serde_json::from_str(text).expect("get_windows JSON payload");
     assert_eq!(doc[0]["title"], "mock-window");
+
+    // key_id propagation: the authenticated key's id (first 8 hex of
+    // SHA-256(key)) must land on the tool call's audit record, not null.
+    let expected = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(TEST_KEY.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()[..8]
+            .to_string()
+    };
+    let log = tmp.path().join("logs").join("audit.jsonl");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut found = false;
+    while Instant::now() < deadline {
+        if let Ok(contents) = std::fs::read_to_string(&log) {
+            found = contents.lines().any(|l| {
+                serde_json::from_str::<Value>(l)
+                    .map(|v| v["tool"] == "screen_info" && v["key_id"] == expected)
+                    .unwrap_or(false)
+            });
+            if found {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(found, "no audit record carried key_id={expected}");
 }

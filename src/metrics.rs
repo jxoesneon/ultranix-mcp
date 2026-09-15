@@ -12,7 +12,7 @@
 //! - `ultranix_mcp_tool_calls_total{tool,outcome}` — counter
 //! - `ultranix_mcp_tool_duration_seconds{tool}` — histogram
 //!   (`_bucket{le}` / `_sum` / `_count`)
-//! - `ultranix_mcp_rate_limit_rejections_total{category}` — counter
+//! - `ultranix_mcp_rate_limit_rejections_total{reason}` — counter
 //! - `ultranix_mcp_active_sessions{transport}` — gauge
 
 use std::collections::BTreeMap;
@@ -69,7 +69,7 @@ struct Registry {
     calls: BTreeMap<(String, String), u64>,
     /// `ultranix_mcp_tool_duration_seconds` keyed by `tool`.
     durations: BTreeMap<String, Histogram>,
-    /// `ultranix_mcp_rate_limit_rejections_total` keyed by `category`.
+    /// `ultranix_mcp_rate_limit_rejections_total` keyed by `reason`.
     rate_rejections: BTreeMap<String, u64>,
     /// `ultranix_mcp_active_sessions` keyed by `transport`.
     sessions: BTreeMap<String, i64>,
@@ -104,11 +104,11 @@ pub fn record_call(tool: &str, duration: Duration, outcome: &str) {
         .observe(duration.as_secs_f64());
 }
 
-/// Increment `ultranix_mcp_rate_limit_rejections_total{category}` —
+/// Increment `ultranix_mcp_rate_limit_rejections_total{reason}` —
 /// emitted by the HTTP token bucket on a 429 (Phase 4 wiring).
-pub fn record_rate_rejection(cat: &str) {
+pub fn record_rate_rejection(reason: &str) {
     let mut reg = registry();
-    *reg.rate_rejections.entry(cat.to_string()).or_insert(0) += 1;
+    *reg.rate_rejections.entry(reason.to_string()).or_insert(0) += 1;
 }
 
 /// Set `ultranix_mcp_active_sessions{transport}` — the absolute count of
@@ -171,14 +171,14 @@ pub fn exposition() -> String {
     }
 
     out.push_str(
-        "# HELP ultranix_mcp_rate_limit_rejections_total Rate-limit (429) rejections by category.\n",
+        "# HELP ultranix_mcp_rate_limit_rejections_total Rate-limit (429) rejections by rejection reason.\n",
     );
     out.push_str("# TYPE ultranix_mcp_rate_limit_rejections_total counter\n");
-    for (cat, n) in &reg.rate_rejections {
+    for (reason, n) in &reg.rate_rejections {
         let _ = writeln!(
             out,
-            "ultranix_mcp_rate_limit_rejections_total{{category=\"{}\"}} {n}",
-            esc(cat)
+            "ultranix_mcp_rate_limit_rejections_total{{reason=\"{}\"}} {n}",
+            esc(reason)
         );
     }
 
@@ -274,9 +274,7 @@ mod tests {
         record_rate_rejection("test_cat");
         record_rate_rejection("test_cat");
         let exp = exposition();
-        assert!(
-            exp.contains("ultranix_mcp_rate_limit_rejections_total{category=\"test_cat\"} 2\n")
-        );
+        assert!(exp.contains("ultranix_mcp_rate_limit_rejections_total{reason=\"test_cat\"} 2\n"));
         assert!(exp.contains("# TYPE ultranix_mcp_rate_limit_rejections_total counter\n"));
     }
 

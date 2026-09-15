@@ -90,6 +90,10 @@ impl WindowProvider for MockWindow {
                 h: 600,
             },
             focused: true,
+            floating: Some(false),
+            fullscreen: Some(false),
+            pid: Some(1),
+            monitor: Some(0),
         }])
     }
     async fn active_window(&self) -> Result<Option<WindowInfo>> {

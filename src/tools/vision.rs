@@ -62,7 +62,7 @@ fn offset_into_scope(r: &Rect, scope: &Rect) -> Rect {
 /// fallback). Missing `x`/`y` default to `0`; `width`/`height` (hyprctl
 /// spelling) or `w`/`h` are accepted. Entries without a name or a
 /// positive size are skipped.
-fn output_rects(info: &Value) -> Vec<(String, Rect)> {
+pub(crate) fn output_rects(info: &Value) -> Vec<(String, Rect)> {
     let empty: &[Value] = &[];
     let items: &[Value] = if let Some(arr) = info.as_array() {
         arr

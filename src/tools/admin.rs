@@ -1,6 +1,6 @@
 //! Admin & observability tools (7) — `WindowProvider` for windowing;
-//! history tools run on the AES-256-GCM [`HistoryStore`]; `metrics` stays a
-//! server-core stub until the Phase-4 exporter lands.
+//! history tools run on the AES-256-GCM [`HistoryStore`]; `metrics`
+//! serves the live Prometheus exposition.
 
 use rmcp::model::{CallToolResult, ErrorCode, ErrorData, Tool};
 use schemars::JsonSchema;
@@ -350,8 +350,9 @@ async fn window_control(
         WindowAction::Resize => json!({"w": p.w, "h": p.h}),
         _ => json!({}),
     };
-    // `close` is consent-gated in the spec; the consent challenge is Phase 1,
-    // so consent_token is accepted but not yet verified.
+    // `close` consent is enforced upstream by `call_tool_secured`
+    // (challenge + resolved-target binding); the token is already spent
+    // by the time dispatch reaches this leg.
     let _ = &p.consent_token;
     backend!(
         window
@@ -378,16 +379,25 @@ fn args_contain_redacted(v: &Value) -> bool {
     }
 }
 
-/// `get_windows` wire shape: `window_json` plus the spec fields the
-/// `WindowInfo` trait does not carry yet (`floating`, `fullscreen`, `pid`,
-/// `monitor` — docs/TOOLS.md `get_windows`). Emitted as `null` — reported
-/// but unknown — until the trait grows them.
+/// `get_windows` wire shape: `window_json` plus `floating`,
+/// `fullscreen`, `pid`, `monitor` (docs/TOOLS.md `get_windows`).
+/// `null` when the backend can't report the field.
 fn window_json_full(w: &WindowInfo) -> Value {
     let mut v = window_json(w);
     if let Some(o) = v.as_object_mut() {
-        for key in ["floating", "fullscreen", "pid", "monitor"] {
-            o.entry(key).or_insert(Value::Null);
-        }
+        o.insert(
+            "floating".into(),
+            w.floating.map(Value::from).unwrap_or(Value::Null),
+        );
+        o.insert(
+            "fullscreen".into(),
+            w.fullscreen.map(Value::from).unwrap_or(Value::Null),
+        );
+        o.insert("pid".into(), w.pid.map(Value::from).unwrap_or(Value::Null));
+        o.insert(
+            "monitor".into(),
+            w.monitor.map(Value::from).unwrap_or(Value::Null),
+        );
     }
     v
 }

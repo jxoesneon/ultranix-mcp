@@ -83,8 +83,15 @@ pub fn std_command(bin: &Path, args: &[&str]) -> std::process::Command {
     cmd
 }
 
+/// Cap on captured stdout — bounds memory when a whitelisted helper
+/// misbehaves.
+const MAX_STDOUT: usize = 4 * 1024 * 1024;
+
 /// Blocking `output()` with a deadline — `std::process` has no timeout
 /// primitive, so this polls `try_wait` and kills the child on expiry.
+/// Stdout is drained *during* the wait: a child that emits more than a
+/// pipe buffer's worth would otherwise block on write and deadlock
+/// until the deadline. Output beyond [`MAX_STDOUT`] is discarded.
 /// Returns `None` on spawn failure or timeout (callers treat both as
 /// "helper unavailable").
 pub fn std_output_within(cmd: &mut std::process::Command, dur: Duration) -> Option<Output> {
@@ -95,14 +102,32 @@ pub fn std_output_within(cmd: &mut std::process::Command, dur: Duration) -> Opti
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
+    // Drain stdout on a dedicated thread: a child emitting more than a
+    // pipe buffer would otherwise block on write and never exit — and a
+    // blocking read in this loop would wedge on a silent-but-alive
+    // child. The drainer unblocks when the child exits or is killed.
+    let mut out = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            match out.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) if buf.len() < MAX_STDOUT => {
+                    let keep = (MAX_STDOUT - buf.len()).min(n);
+                    buf.extend_from_slice(&chunk[..keep]);
+                }
+                Ok(_) => {} // discard beyond the cap, keep draining
+            }
+        }
+        let _ = tx.send(buf);
+    });
     let deadline = std::time::Instant::now() + dur;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let mut stdout = Vec::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_end(&mut stdout);
-                }
+                let stdout = rx.recv().unwrap_or_default();
                 return Some(Output {
                     status,
                     stdout,

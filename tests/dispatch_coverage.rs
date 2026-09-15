@@ -327,6 +327,10 @@ fn window(id: &str, title: &str, focused: bool) -> WindowInfo {
             h: 600,
         },
         focused,
+        floating: None,
+        fullscreen: None,
+        pid: None,
+        monitor: None,
     }
 }
 
@@ -654,7 +658,9 @@ async fn mouse_get_position_prefers_input_then_capture() {
     let v = json_of(&res);
     assert_eq!(v["x"], 0);
     assert_eq!(v["y"], 0);
-    assert!(v["display"].is_null());
+    // (0,0) sits inside the mock 1920×1080 output at origin — the
+    // output-under-pointer resolves to the mock monitor's name.
+    assert_eq!(v["display"], "mock");
 
     // Capture-only fallback arm.
     let c = ctx(providers_with(|p| p.capture = Some(Arc::new(MockCapture))));
@@ -1721,11 +1727,12 @@ async fn get_windows_and_active_window() {
     let v = json_of(&res);
     assert_eq!(v[0]["address"], "0x0");
     assert_eq!(v[0]["workspace"]["id"], 1);
-    // Spec fields the WindowInfo trait does not carry yet are reported as
-    // null — present, honestly unknown (docs/TOOLS.md get_windows).
-    for key in ["floating", "fullscreen", "pid", "monitor"] {
-        assert!(v[0].get(key).is_some_and(Value::is_null), "{key} missing");
-    }
+    // Mock window reports concrete values; a backend that cannot report
+    // a field emits `null` (docs/TOOLS.md get_windows).
+    assert_eq!(v[0]["floating"], false);
+    assert_eq!(v[0]["fullscreen"], false);
+    assert_eq!(v[0]["pid"], 1);
+    assert_eq!(v[0]["monitor"], 0);
 
     let res = secured(&c, "get_active_window", args(json!({})))
         .await
