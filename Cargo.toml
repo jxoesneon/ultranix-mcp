@@ -32,6 +32,10 @@ wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 xkbcommon = "0.9"
 image = { version = "0.25.9", default-features = false, features = ["png"] }
 tempfile = "3.27.0"
+atspi = { version = "0.30", default-features = false, features = ["connection", "proxies", "tokio", "zbus"] }
+# default-features=false drops the `udev` feature (libudev): Builder::default()
+# then opens /dev/uinput directly, matching the provider's probe semantics.
+uinput = { version = "0.1.3", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

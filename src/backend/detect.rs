@@ -12,17 +12,17 @@
 //!    `pub fn new() -> Option<Self>` runtime availability check, and
 //!    registers (with `tracing::info!`) the first one that says yes.
 //!
-//! Phase-1 note: `providers::wlr_capture`, `providers::grim_capture` and
-//! `providers::hyprctl` are wired live below. `providers::wlr_input` is
-//! still in flight and the `/dev/uinput` backend is a Phase-2 stub — both
-//! rungs are gated behind `TODO(orchestrator)` comments written against
-//! the `pub fn new() -> Option<Self>` contract; un-gating is a pure
-//! uncomment operation, and the rung order is final.
+//! Live rungs: `providers::wlr_capture`, `providers::grim_capture`,
+//! `providers::hyprctl`, `providers::wlr_input` and
+//! `providers::uinput_input` are all wired below. Each backend's
+//! `pub fn new() -> Option<Self>` performs its own runtime availability
+//! probe (protocol advertisement, `/dev/uinput` writability, IPC socket),
+//! so a missing backend simply falls through to the next rung.
 
 use std::sync::Arc;
 
 use crate::providers::Providers;
-use crate::traits::{CaptureProvider, InputProvider, WindowProvider};
+use crate::traits::{CaptureProvider, InputProvider, UIAutomationProvider, WindowProvider};
 
 /// Session class derived from `XDG_SESSION_TYPE`, with display-variable
 /// inference when that variable is unset or non-committal.
@@ -122,6 +122,13 @@ pub enum WindowBackend {
     Hyprctl,
 }
 
+/// Ordered candidates for the UI-automation slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiAutomationBackend {
+    /// AT-SPI2 accessibility bus (`org.a11y.Bus` on the session bus).
+    Atspi,
+}
+
 /// The ordered ladders [`detect_providers`] walks, resolved from session
 /// info alone. Pure and unit-testable — no syscalls, no constructors.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,8 +136,9 @@ pub struct DetectionPlan {
     pub capture: Vec<CaptureBackend>,
     pub input: Vec<InputBackend>,
     pub window: Vec<WindowBackend>,
-    // ui_automation / vision / browser have no candidates yet: the AT-SPI2,
-    // ONNX and CDP backends land in Phases 2–3.
+    pub ui_automation: Vec<UiAutomationBackend>,
+    // vision / browser have no candidates yet: the ONNX and CDP backends
+    // land in Phase 3.
 }
 
 /// Map a session snapshot onto the per-slot fallback ladders.
@@ -141,7 +149,9 @@ pub struct DetectionPlan {
 /// - input: `Wlr → UInput-stub → None` (Wayland prefers compositor-native
 ///   injection; uinput is display-agnostic so it also candidated on X11)
 /// - window: `Hyprctl → None` (Hyprland sessions only)
-/// - ui_automation / vision / browser: `None` (Phases 2–3)
+/// - ui_automation: `Atspi → None` on any non-headless session — the
+///   accessibility bus is compositor-agnostic (Wayland and X11 alike)
+/// - vision / browser: `None` (Phase 3)
 /// - headless: every ladder is empty — there is no display to automate.
 pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
     let capture = match session.session_type {
@@ -164,10 +174,16 @@ pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
         vec![]
     };
 
+    let ui_automation = match session.session_type {
+        SessionType::Wayland | SessionType::X11 => vec![UiAutomationBackend::Atspi],
+        SessionType::Headless => vec![],
+    };
+
     DetectionPlan {
         capture,
         input,
         window,
+        ui_automation,
     }
 }
 
@@ -192,7 +208,8 @@ pub fn detect_providers(session: &SessionInfo) -> Providers {
         capture: detect_capture(&plan.capture),
         input: detect_input(&plan.input),
         window: detect_window(&plan.window),
-        // ui_automation / vision / browser: Phase 2–3, no rungs yet.
+        ui_automation: detect_ui_automation(&plan.ui_automation),
+        // vision / browser: Phase 3, no rungs yet.
         ..Providers::empty()
     };
 
@@ -242,11 +259,10 @@ fn detect_input(candidates: &[InputBackend]) -> Option<Arc<dyn InputProvider>> {
                 }
             }
             InputBackend::UInput => {
-                // Phase-1 stub per spec: the /dev/uinput backend lands in
-                // Phase 2. When it does, its `new()` will probe
-                // /dev/uinput writability + `input` group membership and
-                // this rung registers it with:
-                //     tracing::info!(backend = "uinput", "input provider registered");
+                if let Some(p) = crate::providers::uinput_input::UinputInput::new() {
+                    tracing::info!(backend = "uinput", "input provider registered");
+                    return Some(Arc::new(p));
+                }
             }
         }
     }
@@ -267,6 +283,23 @@ fn detect_window(candidates: &[WindowBackend]) -> Option<Arc<dyn WindowProvider>
         }
     }
     tracing::debug!("window: no backend registered");
+    None
+}
+
+fn detect_ui_automation(
+    candidates: &[UiAutomationBackend],
+) -> Option<Arc<dyn UIAutomationProvider>> {
+    for &candidate in candidates {
+        match candidate {
+            UiAutomationBackend::Atspi => {
+                if let Some(p) = crate::providers::atspi::AtspiUi::new() {
+                    tracing::info!(backend = "atspi2", "ui-automation provider registered");
+                    return Some(Arc::new(p));
+                }
+            }
+        }
+    }
+    tracing::debug!("ui_automation: no backend registered");
     None
 }
 

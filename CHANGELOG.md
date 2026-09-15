@@ -5,6 +5,26 @@ All notable changes to ultranix-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-09-15
+
+### Added
+
+- `AtspiUi` — `UIAutomationProvider` on AT-SPI2 (`atspi` 0.30 / zbus 5):
+  `get_ui_tree` (5000-node-capped serialized tree: role/name/states/
+  bounds/children), `get_focused_element`, `find_element`
+  (`role:`/`name:`/`desc:`/`path:` query prefixes → screen bounding
+  rect), `wait_for_ui_element`, `invoke_element` (Action do_action(0)).
+  Lazy zbus connection bound to the server runtime; session-agnostic
+  rung applied on Wayland and X11. Live-verified against the real
+  a11y bus; `invoke_element` never exercised live.
+- `UinputInput` — `/dev/uinput` evdev `InputProvider` fallback
+  (display-agnostic): EV_ABS absolute pointer moves, REL wheel scroll
+  with sub-detent accumulator, full `key_binding` table (chars, mods,
+  nav, keypad, F1–F24, media), probe-only `new()`; udev rule expects
+  dedicated `ultranix-input` group.
+- `UiAutomationBackend::Atspi` rung in `backend::detect`
+  (`Wlr → Grim`, `Wlr → UInput`, `Hyprctl`, `Atspi` ladders).
+
 ## [0.2.0] — 2026-09-15
 
 ### Added
