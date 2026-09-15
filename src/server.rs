@@ -20,6 +20,11 @@ pub struct UltraNixServer {
     providers: Arc<Providers>,
     /// Enabled categories (`None` = all).
     categories: Option<Arc<Vec<String>>>,
+    /// Security pipeline (consent gate, audit, pinned binaries).
+    /// `None` = Phase-0 unsecured mode (tests).
+    security: Option<Arc<crate::security::SecurityContext>>,
+    /// CSPRNG session id binding consent tokens on stdio.
+    session_id: Arc<str>,
 }
 
 impl UltraNixServer {
@@ -31,7 +36,20 @@ impl UltraNixServer {
             } else {
                 Some(Arc::new(categories))
             },
+            security: None,
+            session_id: Arc::from("stdio-unbound"),
         }
+    }
+
+    /// Attach the security context and caller-identity session id.
+    pub fn with_security(
+        mut self,
+        security: crate::security::SecurityContext,
+        session_id: String,
+    ) -> Self {
+        self.security = Some(Arc::new(security));
+        self.session_id = Arc::from(session_id.as_str());
+        self
     }
 
     /// Serve MCP over stdio (JSON-RPC on stdout, logs on stderr).
@@ -89,12 +107,21 @@ impl ServerHandler for UltraNixServer {
         params: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        tools::call_tool(
-            &params.name,
-            params.arguments.unwrap_or_default(),
-            &self.providers,
-        )
-        .await
-        .map(CallToolResponse::Complete)
+        let args = params.arguments.unwrap_or_default();
+        let result = match &self.security {
+            Some(sec) => {
+                tools::call_tool_secured(
+                    &params.name,
+                    args,
+                    &self.providers,
+                    sec,
+                    &self.session_id,
+                    None, // HTTP key_id arrives with Phase-4 auth
+                )
+                .await
+            }
+            None => tools::call_tool(&params.name, args, &self.providers).await,
+        };
+        result.map(CallToolResponse::Complete)
     }
 }

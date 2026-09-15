@@ -1,13 +1,14 @@
 //! ultranix-mcp entrypoint — transport selection, provider bootstrap,
 //! stderr tracing (stdout is reserved for MCP JSON-RPC).
 
-use std::path::PathBuf;
-
 use clap::{Parser, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
+use ultranix_mcp::backend::detect::{SessionInfo, detect_providers};
 use ultranix_mcp::providers::Providers;
+use ultranix_mcp::security::SecurityContext;
 use ultranix_mcp::server::UltraNixServer;
+use ultranix_mcp::state::StateDir;
 
 #[derive(Debug, Clone, ValueEnum)]
 enum Transport {
@@ -38,13 +39,15 @@ struct Cli {
     /// HTTP bind address (only with --transport http).
     #[arg(long, default_value = "127.0.0.1:3010")]
     bind: String,
-}
 
-fn data_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".ultranix-mcp")
+    /// Bypass the destructive-tool consent gate (operator opt-out;
+    /// every gated call is still audited, stamped "consent: bypassed").
+    #[arg(long)]
+    allow_destructive: bool,
+
+    /// Force mock providers regardless of detected backends (testing).
+    #[arg(long)]
+    mock: bool,
 }
 
 #[tokio::main]
@@ -60,14 +63,31 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let dir = data_dir();
-    std::fs::create_dir_all(dir.join("logs"))?;
-    tracing::info!(data_dir = %dir.display(), "ultranix-mcp starting");
+    let state = StateDir::bootstrap()?;
+    tracing::info!(data_dir = %state.root().display(), "ultranix-mcp starting");
 
-    // Phase 0: mock providers only. Real backends register in detect.rs
-    // from Phase 1 onward.
-    let providers = Providers::all_mocks();
-    let server = UltraNixServer::new(providers, cli.category);
+    if cli.allow_destructive {
+        tracing::warn!("--allow-destructive: consent gate bypassed (audited)");
+    }
+
+    let session = SessionInfo::detect();
+    let providers = if cli.mock {
+        Providers::all_mocks()
+    } else {
+        detect_providers(&session)
+    };
+
+    let security = SecurityContext::new(
+        state.root(),
+        cli.allow_destructive,
+        matches!(
+            session.session_type,
+            ultranix_mcp::backend::detect::SessionType::X11
+        ),
+    )?;
+    let session_id = ultranix_mcp::security::consent::new_session_id();
+
+    let server = UltraNixServer::new(providers, cli.category).with_security(security, session_id);
 
     let use_stdio = cli.stdio || matches!(cli.transport, Transport::Stdio);
     if use_stdio {

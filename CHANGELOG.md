@@ -5,6 +5,36 @@ All notable changes to ultranix-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-09-15
+
+### Added
+
+- Hyprland I/O backends (live-verified on CachyOS/Hyprland):
+  `WlrCapture` (in-process wlr-screencopy → PNG), `GrimCapture`
+  fallback, `WlrInput` (zwlr_virtual_pointer_v1 +
+  zwp_virtual_keyboard_v1 with uploaded XKB keymap), and
+  `HyprctlWindow` (IPC socket / `hyprctl -j` window control)
+- `backend::detect` — session probing (`XDG_SESSION_TYPE`,
+  `XDG_CURRENT_DESKTOP`, `HYPRLAND_INSTANCE_SIGNATURE`) with the
+  wlroots-native → uinput → portal fallback ladder
+- `security/` scaffolding: input sanitization, arg-constrained +
+  startup-pinned command whitelist (`grim`/`slurp`/`hyprctl`/`scrot`/
+  `xdotool`/`wmctrl`), canonicalized path whitelist, CSPRNG consent gate
+  (`-32015 ConsentRequired`, 60 s single-use tokens bound to
+  caller+tool+args_hash+resolved target), hash-chained JSONL audit log,
+  `0700` capture dirs with `O_NOFOLLOW` server opens
+- `state.rs` — `~/.ultranix-mcp/` bootstrap (canonical root, `0700`)
+- `system_command` real exec: pinned binaries, no shell, 15 s timeout,
+  64 KiB output truncation
+- `--allow-destructive` and `--mock` CLI flags
+
+### Fixed
+
+- `delegate_noop!` panics on event-emitting Wayland objects (`wl_seat`,
+  `zwp_virtual_keyboard_v1`, `wl_shm`) — replaced with swallowing
+  `Dispatch` impls
+- wlr-screencopy `ready` race: fixed-count roundtrips → 5 s deadline loop
+
 ## [0.1.0] — 2026-09-15
 
 ### Added

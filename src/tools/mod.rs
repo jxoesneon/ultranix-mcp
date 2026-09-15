@@ -141,6 +141,213 @@ pub async fn call_tool(
 }
 
 // ---------------------------------------------------------------------------
+// Secured dispatch — consent gate + audit + whitelist-constrained exec.
+// ---------------------------------------------------------------------------
+
+/// `-32015 ConsentRequired` — destructive call needs a challenge retry.
+fn consent_required(token: &str, expires_in_ms: u64) -> ErrorData {
+    ErrorData::new(
+        ErrorCode(codes::CONSENT_REQUIRED),
+        "consent required: destructive action; retry with consent_token",
+        Some(json!({
+            "kind": "ConsentRequired",
+            "consent_token": token,
+            "expires_in_ms": expires_in_ms,
+        })),
+    )
+}
+
+/// Whether `name`+`args` lands in the destructive consent class
+/// (docs/TOOLS.md §Destructive-Action Consent).
+fn is_destructive(name: &str, args: &Map<String, Value>) -> bool {
+    match name {
+        "system_command" | "clear_action_history" | "replay_action" => true,
+        "window_control" => args.get("action").and_then(Value::as_str) == Some("close"),
+        _ => false,
+    }
+}
+
+/// `tools/call` with the security pipeline applied: consent gate for the
+/// destructive class, real whitelist-constrained `system_command` exec, and
+/// a hash-chained audit record for every gated call.
+pub async fn call_tool_secured(
+    name: &str,
+    args: Map<String, Value>,
+    providers: &Providers,
+    security: &crate::security::SecurityContext,
+    session_id: &str,
+    key_id: Option<&str>,
+) -> Result<CallToolResult, ErrorData> {
+    let t0 = std::time::Instant::now();
+    let argsv = Value::Object(args.clone());
+    let hash = crate::security::consent::args_hash(&argsv);
+    let destructive = is_destructive(name, &args);
+
+    // Resolve the execution-time target for target-scoped consent:
+    // window_control{close} without `window` binds the *current* active
+    // window at challenge time (docs/TOOLS.md — a target change between
+    // challenge and retry invalidates the token).
+    let resolved_target = if name == "window_control"
+        && args.get("action").and_then(Value::as_str) == Some("close")
+        && args.get("window").is_none()
+    {
+        match &providers.window {
+            Some(w) => w.active_window().await.ok().flatten().map(|w| w.id),
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    if destructive && !security.allow_destructive {
+        let supplied = args.get("consent_token").and_then(Value::as_str);
+        let ok = supplied.is_some_and(|t| {
+            security.consent.verify(
+                t,
+                key_id,
+                session_id,
+                name,
+                &argsv,
+                resolved_target.as_deref(),
+            )
+        });
+        if !ok {
+            let _ = security.audit.record(
+                name,
+                &hash,
+                "consent_required",
+                t0.elapsed().as_millis() as u64,
+                key_id,
+                None,
+            );
+            let ch = match resolved_target.as_deref() {
+                Some(t) => security
+                    .consent
+                    .challenge_for_target(key_id, session_id, name, &argsv, t),
+                None => security.consent.challenge(key_id, session_id, name, &argsv),
+            };
+            return Err(consent_required(&ch.token, ch.expires_in_ms));
+        }
+    }
+
+    let consent_stamp = if destructive {
+        Some(if security.allow_destructive {
+            "bypassed"
+        } else {
+            "verified"
+        })
+    } else {
+        None
+    };
+
+    let result = if name == "system_command" {
+        exec_system_command(&args, security).await
+    } else {
+        call_tool(name, args, providers).await
+    };
+
+    if destructive {
+        let outcome = match &result {
+            Ok(r) if r.is_error == Some(true) => "tool_error",
+            Ok(_) => "ok",
+            Err(e) if e.code == ErrorCode(codes::CONSENT_REQUIRED) => "consent_required",
+            Err(_) => "error",
+        };
+        let _ = security.audit.record(
+            name,
+            &hash,
+            outcome,
+            t0.elapsed().as_millis() as u64,
+            key_id,
+            consent_stamp,
+        );
+    }
+    result
+}
+
+/// Real `system_command` exec: whitelist validation → pinned absolute
+/// binary → spawn, 15 s timeout, 64 KiB stdout/stderr truncation
+/// (docs/TOOLS.md contract). Never reaches a shell.
+async fn exec_system_command(
+    args: &Map<String, Value>,
+    security: &crate::security::SecurityContext,
+) -> Result<CallToolResult, ErrorData> {
+    let command = args
+        .get("command")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_params("system_command: missing `command`"))?;
+    let cmd_args: Vec<String> = args
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // grim/scrot need a server-supplied output path inside a fresh 0700 dir.
+    let capture_dir = if matches!(command, "grim" | "scrot") {
+        Some(crate::security::captures::fresh_capture_dir().map_err(|e| {
+            ErrorData::new(ErrorCode::INTERNAL_ERROR, format!("capture dir: {e}"), None)
+        })?)
+    } else {
+        None
+    };
+    let capture_out = capture_dir.as_ref().map(|d| d.join("capture.png"));
+
+    let inv = security
+        .pins
+        .validate_command(
+            command,
+            &cmd_args,
+            security.x11_active,
+            capture_out.as_deref(),
+        )
+        .map_err(|e| {
+            ErrorData::new(
+                ErrorCode(codes::ARG_CONSTRAINT_VIOLATION),
+                format!("{e}"),
+                Some(json!({"kind": "ArgConstraintViolation", "detail": e.to_string()})),
+            )
+        })?;
+
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio::process::Command::new(&inv.abs_path)
+            .args(&inv.argv[1..])
+            .output(),
+    )
+    .await;
+
+    // Unlink the server-supplied capture file after use (unlink-after-use).
+    if let Some(d) = &capture_dir {
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    match out {
+        Err(_) => Ok(json_result(&json!({"timed_out": true}))),
+        Ok(Err(e)) => Ok(tool_error(format!("spawn failed: {e}"))),
+        Ok(Ok(o)) => Ok(json_result(&json!({
+            "exit_code": o.status.code().unwrap_or(-1),
+            "stdout": truncate64k(&o.stdout),
+            "stderr": truncate64k(&o.stderr),
+        }))),
+    }
+}
+
+fn truncate64k(bytes: &[u8]) -> String {
+    const MAX: usize = 64 * 1024;
+    let s = String::from_utf8_lossy(bytes);
+    if s.len() > MAX {
+        s[..MAX].to_string()
+    } else {
+        s.into_owned()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared helpers used by the category submodules.
 // ---------------------------------------------------------------------------
 
