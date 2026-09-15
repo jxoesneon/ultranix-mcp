@@ -23,10 +23,9 @@
 //!   the same way. Both enrichment passes are best-effort: a failed
 //!   helper degrades the field, never the listing.
 //! - `fullscreen` comes from `xprop -id <id> _NET_WM_STATE` per window
-//!   when `xprop` is pinned. `xprop` is not (yet) in
-//!   [`whitelist::WHITELIST`], so the pin is always `None` today and the
-//!   field reports `None`; the path is written and unit-tested so it
-//!   lights up the moment the whitelist grows the entry.
+//!   when `xprop` is pinned (it is in [`whitelist::WHITELIST`] for
+//!   provider use but has no `validate_command` arm — never invocable
+//!   through `system_command`). When absent the field reports `None`.
 //! - `floating`/`monitor` have no portable EWMH readout → always `None`.
 
 use std::collections::HashMap;

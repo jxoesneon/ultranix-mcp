@@ -50,6 +50,13 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
+      # pipewire-sys/libspa-sys resolve libpipewire-0.3 via pkg-config at
+      # build time (unconditional `pipewire` dep since v1.1.0).
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libpipewire-0.3-dev
+
       - name: Lint
         run: cargo clippy --all-targets -- -D warnings
 
@@ -65,6 +72,11 @@ jobs:
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libpipewire-0.3-dev
 
       # The suite must run headless: mock providers cover the full tool
       # surface, so no Wayland session or display server is required.
@@ -88,6 +100,11 @@ jobs:
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libpipewire-0.3-dev
 
       - name: Generate coverage report
         run: cargo llvm-cov --all-targets --lcov --output-path lcov.info
@@ -127,11 +144,13 @@ jobs:
 
       # sway is in Ubuntu universe; it needs no seat/GPU under
       # WLR_BACKENDS=headless. python3 (JSON-RPC driver) is preinstalled
-      # on GH-hosted images.
-      - name: Install headless compositor
+      # on GH-hosted images. libpipewire-0.3-dev is the pkg-config input
+      # for pipewire-sys (unconditional `pipewire` dep since v1.1.0).
+      - name: Install headless compositor and native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway
+          sudo apt-get install -y --no-install-recommends sway \
+            pkg-config libpipewire-0.3-dev
 
       - name: Build server
         run: cargo build --bin ultranix-mcp

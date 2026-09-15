@@ -463,10 +463,10 @@ sequenceDiagram
     T->>RM: CallToolRequest
     RM->>P: UIAutomationProvider::find_element("Save")
     P->>OS: AT-SPI2 tree query (D-Bus)
-    OS-->>P: bounds {x, y, w, h}
-    P-->>RM: rect
+    OS-->>P: matches {name, role, states, bounds}
+    P-->>RM: Vec<ElementMatch>
     RM->>SEC: audit + AES-256-GCM history + metrics
-    RM-->>T: CallToolResult {bounds}
+    RM-->>T: CallToolResult {found, count, matches[]}
     T-->>MCP: MCP response
     MCP-->>AI: coordinates
     AI->>MCP: tools/call mouse_click {x, y, button: "left"}

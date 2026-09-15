@@ -180,7 +180,7 @@ impl PinnedBins {
                 reject_capture_out(cmd, capture_out)?;
                 validate_hyprctl(cmd, args, &mut argv)?;
             }
-            "xdotool" | "wmctrl" => {
+            "xdotool" => {
                 reject_capture_out(cmd, capture_out)?;
                 if !x11_active {
                     return Err(arg_constraint(
@@ -188,8 +188,18 @@ impl PinnedBins {
                         "permitted only under the X11/XWayland fallback backend",
                     ));
                 }
-                // Constraint is the X11 gate + sanitization (spec table:
-                // "X11/XWayland fallback sessions only").
+                validate_xdotool(cmd, args, &mut argv)?;
+            }
+            "wmctrl" => {
+                reject_capture_out(cmd, capture_out)?;
+                if !x11_active {
+                    return Err(arg_constraint(
+                        cmd,
+                        "permitted only under the X11/XWayland fallback backend",
+                    ));
+                }
+                // wmctrl exposes no exec-capable subcommand — the X11
+                // gate + sanitization are the constraint.
                 argv.extend(args.iter().cloned());
             }
             _ => return Err(WhitelistError::NotWhitelisted(cmd.to_string())),
@@ -315,6 +325,82 @@ fn validate_scrot(
             }
         }
     }
+    Ok(())
+}
+
+/// `xdotool` subcommands that `system_command` may invoke. Pointing,
+/// typing, and window queries only — the exec-capable primitives
+/// (`exec`, `execsync`, `behave`, `behave_screen_edge`) are denied the
+/// same way `hyprctl dispatch exec` is (THREAT_MODEL §7).
+const XDOTOOL_SUBCOMMANDS: &[&str] = &[
+    // pointer
+    "mousemove",
+    "mousemove_relative",
+    "click",
+    "mousedown",
+    "mouseup",
+    "getmouselocation",
+    // keyboard
+    "type",
+    "key",
+    "keydown",
+    "keyup",
+    // window ops / queries (no exec primitives)
+    "windowactivate",
+    "windowfocus",
+    "windowraise",
+    "windowminimize",
+    "windowmap",
+    "windowunmap",
+    "windowsize",
+    "windowmove",
+    "windowclose",
+    "getactivewindow",
+    "getwindowname",
+    "getwindowpid",
+    "getwindowgeometry",
+    "getwindowfocus",
+    "getdisplaygeometry",
+    "get_desktop",
+    "get_num_desktops",
+    "search",
+];
+
+fn validate_xdotool(
+    cmd: &str,
+    args: &[String],
+    argv: &mut Vec<String>,
+) -> Result<(), WhitelistError> {
+    // The first non-flag argument is the subcommand. xdotool takes
+    // global flags before it; the value-taking ones must be skipped so
+    // their operand isn't mistaken for the subcommand.
+    const VALUE_FLAGS: &[&str] = &[
+        "--delay",
+        "--repeat-delay",
+        "--repeat",
+        "--window",
+        "--screen",
+    ];
+    let mut it = args.iter();
+    let mut sub = None;
+    while let Some(a) = it.next() {
+        if a.starts_with('-') {
+            if VALUE_FLAGS.contains(&a.as_str()) {
+                it.next(); // consume the flag's operand
+            }
+            continue;
+        }
+        sub = Some(a.as_str());
+        break;
+    }
+    let sub = sub.ok_or_else(|| arg_constraint(cmd, "missing subcommand"))?;
+    if !XDOTOOL_SUBCOMMANDS.contains(&sub) {
+        return Err(arg_constraint(
+            cmd,
+            format!("unsupported subcommand {sub:?} — exec-capable and unlisted verbs are denied"),
+        ));
+    }
+    argv.extend(args.iter().cloned());
     Ok(())
 }
 
@@ -661,6 +747,44 @@ mod tests {
             assert!(
                 matches!(err, WhitelistError::ArgConstraint { .. }),
                 "{cmd} on Wayland must be ArgConstraint, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdotool_exec_primitives_denied() {
+        let pins = pins_all(Path::new("/pinned"));
+        for bad in [
+            s(&["exec", "firefox"]),
+            s(&["execsync", "sh"]),
+            s(&["behave", "1", "exec", "xterm"]),
+            s(&["behave_screen_edge", "top-left", "exec", "xterm"]),
+            s(&["desktops_follow_windows"]), // unknown verb
+            s(&[]),                          // missing subcommand
+        ] {
+            let err = pins
+                .validate_command("xdotool", &bad, true, None)
+                .unwrap_err();
+            assert!(
+                matches!(err, WhitelistError::ArgConstraint { .. }),
+                "xdotool {bad:?} must be ArgConstraint, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdotool_allowed_subcommands_pass() {
+        let pins = pins_all(Path::new("/pinned"));
+        for ok in [
+            s(&["key", "Return"]),
+            s(&["mousemove", "100", "200"]),
+            s(&["type", "--delay", "0", "--", "hello"]),
+            s(&["getmouselocation", "--shell"]),
+            s(&["--delay", "10", "click", "1"]), // global flag before verb
+        ] {
+            assert!(
+                pins.validate_command("xdotool", &ok, true, None).is_ok(),
+                "xdotool {ok:?} must be permitted"
             );
         }
     }

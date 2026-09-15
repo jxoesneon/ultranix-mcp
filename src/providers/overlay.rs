@@ -394,8 +394,11 @@ fn highlight_blocking(rect: Rect, duration_ms: u64) -> Result<()> {
     layer_surface
         .set_anchor(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left);
     layer_surface.set_margin(my, 0, 0, mx);
-    let w = rect.w.max(1) as u32;
-    let h = rect.h.max(1) as u32;
+    // Defense in depth: the tool layer caps w/h at 16384; without it a
+    // caller could force a w*h*4-byte SHM allocation (stride also
+    // overflows u32 above w > 2³⁰).
+    let w = rect.w.clamp(1, 16_384) as u32;
+    let h = rect.h.clamp(1, 16_384) as u32;
     layer_surface.set_size(w, h);
     layer_surface.set_exclusive_zone(-1);
     layer_surface.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);

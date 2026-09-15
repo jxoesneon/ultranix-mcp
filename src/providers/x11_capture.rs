@@ -24,11 +24,12 @@
 //! [`crate::security::spawn`] — a `PATH` hijack after construction
 //! cannot substitute a trojan, and a wedged child cannot hang a call.
 //!
-//! NOTE: `xrandr` is not (yet) a member of [`whitelist::WHITELIST`], so
-//! `pins.get("xrandr")` always resolves to `None` and `screen_info`
+//! NOTE: `xrandr` is pinned for provider use (in
+//! [`whitelist::WHITELIST`]) but has no `validate_command` arm — it is
+//! never invocable through `system_command`. When pinned, `screen_info`
+//! uses `xrandr --query` for real per-monitor geometry; otherwise it
 //! falls back to `xdotool getdisplaygeometry` (single virtual-screen
-//! rect). The `xrandr` path is written and tested so it lights up the
-//! moment the whitelist grows the entry.
+//! rect).
 
 use std::path::{Path, PathBuf};
 

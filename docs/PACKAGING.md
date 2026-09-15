@@ -68,7 +68,10 @@ Publish requirements (enforced in `Cargo.toml` before `cargo publish`):
   reproducibility is part of the security story.
 - Native dependencies must remain pure-Rust or `pkg-config`-detectable at
   install time: `wayland-client`/`wayland-protocols` (system `libwayland`),
-  `zbus` (pure Rust D-Bus), `ort` (downloads the ONNX Runtime prebuilt shared
+  `zbus` (pure Rust D-Bus), `pipewire` (`pipewire-sys`/`libspa-sys` resolve
+  `libpipewire-0.3` via pkg-config at build time — unconditional since
+  v1.1.0; Debian/Ubuntu `libpipewire-0.3-dev`, Fedora `pipewire-devel`,
+  Arch `libpipewire`), `ort` (downloads the ONNX Runtime prebuilt shared
   library at build time — document that `cargo install` performs a network
   fetch of `libonnxruntime`; packagers may set
   `ORT_STRATEGY=system` to link a distro `onnxruntime` package instead).
@@ -101,7 +104,7 @@ The shipped file lives at `packaging/ultranix-mcp/PKGBUILD` (with
 ```bash
 # Maintainer: <name> <email>
 pkgname=ultranix-mcp
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Wayland-native, security-first MCP server for Linux desktop automation (Hyprland-first)"
 arch=('x86_64' 'aarch64')
@@ -110,23 +113,24 @@ license=('ISC')
 depends=(
   'libxkbcommon'      # virtual-keyboard keymap handling
   'dbus'              # zbus / portals / AT-SPI2 session bus
+  'libpipewire'       # pipewire-sys links libpipewire-0.3 (portal RemoteDesktop stream consumer)
 )
 makedepends=('cargo' 'pkgconf' 'wayland' 'wayland-protocols')
 optdepends=(
   'xdg-desktop-portal-hyprland: screen-capture consent path on Hyprland'
   'xdg-desktop-portal-wlr: portal backend for other wlroots compositors'
   'xdg-desktop-portal-gnome: portal backend under GNOME'
-  'pipewire: portal RemoteDesktop capture stream (v1.1.0+ consumes the video fd when Screenshot is not advertised)'
+  'pipewire: PipeWire daemon for the portal RemoteDesktop capture stream (v1.1.0+ consumes the video fd when Screenshot is not advertised)'
   'wl-clipboard: post-v1 clipboard tools (wl-copy/wl-paste) — NOT a v1 runtime dep'
   'at-spi2-core: semantic UI tree (a11y backend)'
   'onnxruntime: system ONNX Runtime for ORT_STRATEGY=system builds'
   'grim: whitelisted system_command capture helper (wlroots)'
   'slurp: whitelisted system_command region-picker (wlroots)'
-  'xdotool: X11 input fallback + pointer position (v1.1.0+)'
-  'scrot: X11 capture fallback (v1.1.0+)'
-  'wmctrl: X11 window management fallback (v1.1.0+)'
-  'xrandr: X11 output geometry for the capture backend (v1.1.0+)'
-  'xprop: X11 _NET_WM_STATE reads for the window backend (v1.1.0+)'
+  'xdotool: X11 input fallback + pointer position (X11 sessions only)'
+  'scrot: X11 capture fallback (X11 sessions only)'
+  'wmctrl: X11 window-management fallback (X11 sessions only)'
+  'xorg-xrandr: X11 output-geometry enrichment for the capture backend (X11 sessions only)'
+  'xorg-xprop: X11 _NET_WM_STATE enrichment for the window backend (X11 sessions only)'
 )
 install=ultranix-mcp.install
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
@@ -178,7 +182,7 @@ must not silently `udevadm trigger` inside `.install`; prompt the user.
 
 - `pkgname=ultranix-mcp-git`, `source=('git+https://github.com/jxoesneon/ultranix-mcp.git')`.
 - `pkgver()` derives from `git describe --tags --long` →
-  `1.0.0.rNN.g<sha>`; `provides=('ultranix-mcp')`,
+  `1.1.0.rNN.g<sha>`; `provides=('ultranix-mcp')`,
   `conflicts=('ultranix-mcp' 'ultranix-mcp-bin')`.
 - Builds with `cargo build --release` (no `--frozen`; lockfile still honored).
 - Standard `-git` disclaimer applies: for testers; `main` may be between
@@ -206,17 +210,18 @@ deps, and a `nixosModules.default` user-service module.
       let pkgs = nixpkgs.legacyPackages.${system}; in {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "ultranix-mcp";
-          version = "1.0.0";
+          version = "1.1.0";
           src = self;
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.wayland pkgs.libxkbcommon ];
+          buildInputs = [ pkgs.wayland pkgs.libxkbcommon pkgs.pipewire ];
           meta.mainProgram = "ultranix-mcp";
         };
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             cargo rustc pkg-config wayland wayland-protocols
-            libxkbcommon wl-clipboard # wl-clipboard: post-v1 clipboard category only, not a v1 dep
+            libxkbcommon pipewire # pipewire: headers/pkg-config for pipewire-sys (unconditional since v1.1.0)
+            wl-clipboard # wl-clipboard: post-v1 clipboard category only, not a v1 dep
           ];
         };
       });
@@ -277,11 +282,11 @@ Also ensure the `uinput` module loads: `echo uinput > /etc/modules-load.d/uinput
 | Package | Needed for | Required? |
 | --- | --- | --- |
 | `wl-clipboard` (`wl-copy`/`wl-paste`) | clipboard get/set tools — a **post-v1** category, not in the v1 tool catalog | No — post-v1 optional only; not a current runtime dependency |
-| `xdg-desktop-portal-*` + `pipewire` | portal `Screenshot`/`RemoteDesktop` fallback + consent UX | Recommended |
+| `xdg-desktop-portal-*` + `pipewire` (daemon; the `libpipewire` client lib is a hard `depends`, not optional) | portal `Screenshot`/`RemoteDesktop` fallback + consent UX | Recommended |
 | `grim` / `slurp` | whitelisted `system_command` helpers on wlroots | Recommended |
 | `at-spi2-core` | AT-SPI2 backend | Recommended |
 | `onnxruntime` | system ONNX lib instead of bundled download | No |
-| `xdotool` / `scrot` / `wmctrl` (+ `xrandr`/`xprop`) | X11 fallback rungs (shipped at v1.1.0) | No — X11 sessions only |
+| `xdotool` / `scrot` / `wmctrl` (+ `xorg-xrandr`/`xorg-xprop`) | X11 fallback rungs (shipped at v1.1.0) | No — X11 sessions only |
 
 ### 5.3 Environment & data directory
 
@@ -534,8 +539,9 @@ No `.rpm`/`.deb` artifacts ship yet — use `cargo install` or the GitHub
 release tarball, then:
 
 - **Build deps** (needed by `cargo install` too — crates.io builds from
-  source): Debian/Ubuntu `pkg-config libwayland-dev libxkbcommon-dev`;
-  Fedora `pkgconf-pkg-config wayland-devel libxkbcommon-devel`.
+  source): Debian/Ubuntu `pkg-config libwayland-dev libxkbcommon-dev
+  libpipewire-0.3-dev`; Fedora `pkgconf-pkg-config wayland-devel
+  libxkbcommon-devel pipewire-devel`.
 - **udev**: copy `packaging/99-ultranix-mcp-uinput.rules` to
   `/etc/udev/rules.d/`, then follow the groupadd/usermod/udevadm steps in
   `packaging/README-uinput.md`. Dedicated `ultranix-input` group — never

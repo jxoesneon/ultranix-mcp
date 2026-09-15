@@ -33,7 +33,7 @@ AES-256-GCM-encrypted action history.
 | crates.io | `ultranix-mcp` | publish pending (`cargo install ultranix-mcp`) |
 | AUR | `ultranix-mcp` (source build), `ultranix-mcp-bin` (prebuilt binary), `ultranix-mcp-git` (`main` HEAD) | PKGBUILDs shipped under `packaging/`; submission pending — see [PACKAGING.md](PACKAGING.md) |
 | GitHub Releases | `ultranix-mcp` (per-arch tarballs) | every tag (`release.yml`) |
-| OCI image | `ghcr.io/jxoesneon/ultranix-mcp` | planned — **documented degraded mode** (headless/CI use only; the native install is primary — see [PACKAGING.md](PACKAGING.md) §1) |
+| OCI image | `ghcr.io/jxoesneon/ultranix-mcp` | planned — the committed `server.json` already points its single `packages[]` entry at `ghcr.io/jxoesneon/ultranix-mcp:1.1.0`; the image itself is a planned artifact for the **documented degraded mode** (headless/CI use only; the native install is primary — see [PACKAGING.md](PACKAGING.md) §1) |
 
 ## Install commands (documented in README)
 
@@ -92,36 +92,36 @@ key-record files, JSON or line format, mode `0600` enforced per file).
 - `packages[]`: at least one installable package reference
 
 **`server.json`** (committed at `server.json` in repo root — schema
-2025-09-29, camelCase fields — passes `mcp-publisher validate`; published
+2025-09-29, camelCase fields — passes `mcp-publisher validate`; the
+validator warns the schema is deprecated in favour of 2025-12-11, which
+we can migrate to when the registry requires it; published
 via `mcp-publisher` on each tag):
 
 ```json
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.jxoesneon/ultranix-mcp",
-  "description": "Secure Linux desktop automation for AI agents — mouse, keyboard, screen/OCR/vision, AT-SPI2 UI tree, Hyprland windows, browser DOM via MCP.",
+  "description": "Secure Linux desktop automation via MCP — input, screen/OCR/vision, AT-SPI2 UI tree, window control",
   "version": "1.1.0",
   "title": "ultranix-mcp",
   "repository": {
     "url": "https://github.com/jxoesneon/ultranix-mcp",
     "source": "github"
   },
-  "website_url": "https://github.com/jxoesneon/ultranix-mcp",
-  "icons": [
-    { "src": "https://raw.githubusercontent.com/jxoesneon/ultranix-mcp/main/assets/icon.png", "mimeType": "image/png", "sizes": ["512x512"] }
-  ],
+  "websiteUrl": "https://github.com/jxoesneon/ultranix-mcp",
   "packages": [
     {
-      "registry_type": "oci",
+      "registryType": "oci",
       "identifier": "ghcr.io/jxoesneon/ultranix-mcp:1.1.0",
+      "version": "1.1.0",
       "transport": { "type": "stdio" },
-      "runtime_hint": "docker",
-      "environment_variables": [
-        { "name": "ULTRANIX_MCP_API_KEY", "description": "API key(s) (uxcp_*) for HTTP transport auth — required for --transport http (fail-closed), unused on stdio", "is_required": false, "is_secret": true },
-        { "name": "ULTRANIX_MCP_API_KEY_FILE", "description": "Path to a 0600 file holding uxcp_* keys, one per line", "is_required": false, "is_secret": false },
-        { "name": "ULTRANIX_MCP_API_KEY_EXPIRES", "description": "Optional RFC 3339 expiry for the env-sourced key (self-revoking)", "is_required": false, "is_secret": false },
-        { "name": "ULTRANIX_MCP_HISTORY_SECRET", "description": "AES-256-GCM secret for encrypted action history (per-install generated if unset)", "is_required": false, "is_secret": true },
-        { "name": "ULTRANIX_MCP_SENTRY_DSN", "description": "Optional Sentry DSN for error reporting (unset/malformed = disabled)", "is_required": false, "is_secret": true }
+      "runtimeHint": "docker",
+      "environmentVariables": [
+        { "name": "ULTRANIX_MCP_API_KEY", "description": "API key(s) (uxcp_*) for HTTP transport auth — required for --transport http (fail-closed), unused on stdio", "isRequired": false, "isSecret": true },
+        { "name": "ULTRANIX_MCP_API_KEY_FILE", "description": "Path to a 0600 file holding uxcp_* keys, one per line", "isRequired": false, "isSecret": false },
+        { "name": "ULTRANIX_MCP_API_KEY_EXPIRES", "description": "Optional RFC 3339 expiry for the env-sourced key (self-revoking)", "isRequired": false, "isSecret": false },
+        { "name": "ULTRANIX_MCP_HISTORY_SECRET", "description": "AES-256-GCM secret for encrypted action history (per-install generated if unset)", "isRequired": false, "isSecret": true },
+        { "name": "ULTRANIX_MCP_SENTRY_DSN", "description": "Optional Sentry DSN for error reporting (unset = disabled)", "isRequired": false, "isSecret": true }
       ]
     }
   ],
@@ -132,10 +132,10 @@ via `mcp-publisher` on each tag):
 
 Notes for the submission PR:
 
-- crates.io is not a `registry_type` the official registry accepts today; the
+- crates.io is not a `registryType` the official registry accepts today; the
   OCI package is the canonical installable, with `cargo install` documented
   in the README and description.
-- The OCI/`docker` `runtime_hint` is the **documented degraded container
+- The OCI/`docker` `runtimeHint` is the **documented degraded container
   mode** (`docs/ARCHITECTURE.md` Deployment Architecture, PACKAGING.md §1):
   it requires bind-mounting `$XDG_RUNTIME_DIR`, the session bus, and
   `/dev/uinput`, and yields portal/`None` providers. The **native install is
@@ -145,8 +145,10 @@ Notes for the submission PR:
 - `transport.type` is `stdio`; the streamable-HTTP listener on `:3010` is
   operator-invoked (`--transport http`) and documented, not advertised as a
   remote.
-- Version in `server.json` MUST equal the git tag; CI
-  (`cargo xtask verify-server-json`) fails the release on mismatch.
+- Version in `server.json` MUST equal the git tag. `server.json` is
+  validated with `mcp-publisher validate` before registry submission (there
+  is no automated CI gate — re-check `version`, `identifier`, and
+  `packages[].version` against the tag by hand).
 
 ---
 

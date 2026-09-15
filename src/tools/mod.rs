@@ -103,6 +103,18 @@ pub(crate) fn category_of(name: &str) -> Option<&'static str> {
         .find_map(|(cat, names)| names.contains(&name).then_some(*cat))
 }
 
+/// Metric-safe tool label: client-supplied names that aren't in the
+/// catalog collapse to `"__unknown__"` — otherwise every arbitrary name
+/// would mint a new `tool_calls_total`/`tool_duration_seconds` series
+/// (unbounded label cardinality).
+fn metric_label(name: &str) -> &str {
+    if category_of(name).is_some() {
+        name
+    } else {
+        "__unknown__"
+    }
+}
+
 /// `-32601 MethodNotFound` for a tool outside the enabled category set —
 /// the wire shape docs/API_VERSIONING.md fixes for calls to filtered
 /// tools (`data.kind = "CategoryDisabled"`). `None` categories = all
@@ -150,7 +162,7 @@ pub async fn call_tool(
 ) -> Result<CallToolResult, ErrorData> {
     let t0 = std::time::Instant::now();
     let result = dispatch(name, &args, providers).await;
-    crate::metrics::record_call(name, t0.elapsed(), outcome_of(&result));
+    crate::metrics::record_call(metric_label(name), t0.elapsed(), outcome_of(&result));
     result
 }
 
@@ -324,7 +336,7 @@ async fn audit_record(
             let key_id = ctx.key_id.map(str::to_string);
             let caller = ctx.caller.map(str::to_string);
             let consent = ctx.consent.map(str::to_string);
-            let _ = tokio::task::spawn_blocking(move || {
+            let res = tokio::task::spawn_blocking(move || {
                 sec.audit.record(
                     &tool,
                     &args_hash,
@@ -338,9 +350,18 @@ async fn audit_record(
                 )
             })
             .await;
+            // Audit faults must not fail the tool call — but a dropped
+            // record must not be silent either.
+            match res {
+                Ok(Err(e)) => tracing::warn!(%e, "audit record failed"),
+                Err(e) => tracing::warn!(%e, "audit record task panicked"),
+                Ok(Ok(())) => {}
+            }
         }
         SecRef::Borrowed(sec) => {
-            let _ = sec.audit.record(tool, args_hash, outcome, duration_ms, ctx);
+            if let Err(e) = sec.audit.record(tool, args_hash, outcome, duration_ms, ctx) {
+                tracing::warn!(%e, "audit record failed");
+            }
         }
     }
 }
@@ -374,7 +395,7 @@ pub async fn call_tool_secured<'a>(
     // handler) so `replay_action`'s re-entry enforces it too.
     if let Some(err) = category_gate(name, security.categories.as_deref()) {
         let elapsed = t0.elapsed();
-        crate::metrics::record_call(name, elapsed, "error");
+        crate::metrics::record_call(metric_label(name), elapsed, "error");
         audit_record(
             security,
             name,
@@ -422,7 +443,7 @@ pub async fn call_tool_secured<'a>(
             )
         });
         if !ok {
-            crate::metrics::record_call(name, t0.elapsed(), "consent_required");
+            crate::metrics::record_call(metric_label(name), t0.elapsed(), "consent_required");
             audit_record(
                 security,
                 name,
@@ -481,7 +502,7 @@ pub async fn call_tool_secured<'a>(
     // Every invocation — accepted or rejected").
     let elapsed = t0.elapsed();
     let outcome = outcome_of(&result);
-    crate::metrics::record_call(name, elapsed, outcome);
+    crate::metrics::record_call(metric_label(name), elapsed, outcome);
     audit_record(
         security,
         name,
@@ -519,7 +540,7 @@ pub async fn call_tool_secured<'a>(
             duration_ms: elapsed.as_millis() as u64,
             outcome: outcome.to_string(),
         };
-        let _ = tokio::task::spawn_blocking(move || {
+        let res = tokio::task::spawn_blocking(move || {
             let res = store.record(rec);
             if res.is_ok() {
                 crate::metrics::set_action_history_size(store.len());
@@ -527,6 +548,11 @@ pub async fn call_tool_secured<'a>(
             res
         })
         .await;
+        match res {
+            Ok(Err(e)) => tracing::warn!(%e, "history record failed"),
+            Err(e) => tracing::warn!(%e, "history record task panicked"),
+            Ok(Ok(_)) => {}
+        }
     }
     result
 }

@@ -169,7 +169,7 @@ match rather than reporting it, a query with no AT-SPI match is an error
 | Content type | Shape | Used by |
 | --- | --- | --- |
 | `text` | `{ "type": "text", "text": "<string>" }` — either a human-readable sentence or a JSON document (documented per tool; JSON payloads are always parseable with `JSON.parse`/`serde_json`) | all tools |
-| `image` | `{ "type": "image", "data": "<base64>", "mimeType": "image/png" }` | `screenshot`, `screen_highlight` (optional echo) |
+| `image` | `{ "type": "image", "data": "<base64>", "mimeType": "image/png" }` | `screenshot` |
 
 Tools that return JSON text content always place it in a **single** `text`
 item; clients should parse `content[0].text` as JSON when the tool's "Returns"
@@ -1000,7 +1000,7 @@ the backend reports:
   "matches": [
     {
       "name": "Reload",
-      "role": "push button",
+      "role": "push-button",
       "states": ["focusable", "sensitive"],
       "bounds": { "x": 980, "y": 64, "w": 96, "h": 36 },
       "center": { "x": 1028, "y": 82 }
@@ -1202,8 +1202,11 @@ elapses. Use after actions that trigger UI transitions.
 }
 ```
 
-**Returns**: `text` containing JSON — on success the first match in
-`find_element` shape plus `"elapsed_ms"`; on timeout
+**Returns**: `text` containing JSON — on success
+`{"found": true, "count": 1, "matches": [<match>], "elapsed_ms": <n>}` where
+the match entry carries **geometry only** (`{"bounds": {…}, "center": {…}}` —
+the single-hit lookup reports no `name`/`role`/`states`, unlike
+`find_element`); on timeout
 `{"found": false, "timed_out": true, "elapsed_ms": <n>}` (a success result,
 not an error).
 

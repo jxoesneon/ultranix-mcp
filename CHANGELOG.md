@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The post-v1 backlog wave: every item the v1.0.0 docs flagged as "planned /
 post-v1" that had a real implementation path has now landed.
 
+### Breaking (tool-surface `1.0` → `2.0`)
+
+- `find_element` and `wait_for_ui_element` changed response structure:
+  the single-match envelope is now `{found, count, matches[]}` where each
+  match carries `{name, role, states, bounds, center}`.
+  `capabilities.ultranix.toolSurfaceVersion` reports `"2.0"`.
+
 ### Added
 
 - `OverlayProvider` + real `screen_highlight` — `src/providers/overlay.rs`
@@ -20,7 +27,8 @@ post-v1" that had a real implementation path has now landed.
   ProviderUnavailable` with `data.provider = "OverlayProvider"`.
 - `find_element` is now multi-match: it returns up to 10 matches
   (`name`/`role`/`states`/`bounds`/`center` each) via
-  `UIAutomationProvider::find_elements`.
+  `UIAutomationProvider::find_elements`. `wait_for_ui_element` emits the
+  same match-entry shape.
 - X11-native providers: `x11_capture.rs` (`scrot` frames, `xdotool
   getmouselocation`, `xrandr`/`xdotool` geometry), `x11_input.rs`
   (`xdotool`), `x11_window.rs` (`wmctrl` + `xdotool` + `xprop`). Detect

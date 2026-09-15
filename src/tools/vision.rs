@@ -146,11 +146,11 @@ struct HighlightParams {
     x: i32,
     /// Vertical coordinate in logical layout space
     y: i32,
-    /// Rectangle width (>= 1)
-    #[schemars(range(min = 1))]
+    /// Rectangle width (1..=16384 — the overlay allocates w*h*4 bytes)
+    #[schemars(range(min = 1, max = 16384))]
     w: i32,
-    /// Rectangle height (>= 1)
-    #[schemars(range(min = 1))]
+    /// Rectangle height (1..=16384 — same SHM-allocation bound as w)
+    #[schemars(range(min = 1, max = 16384))]
     h: i32,
     /// Overlay lifetime in milliseconds
     #[serde(default = "default_highlight_ms")]
@@ -371,12 +371,6 @@ pub(super) async fn dispatch(
     })
 }
 
-/// `find_element`-shaped match entry for a rect-only hit
-/// (`wait_for_ui_element`, which polls the single-match lookup).
-fn rect_match_json(rect: &Rect) -> Value {
-    json!({"bounds": bounds_json(rect), "center": center_json(rect)})
-}
-
 /// `find_element` match entry — accessibility metadata plus geometry.
 /// Backends that expose only bounds report `""`/`[]` for the rest.
 fn element_match_json(m: &ElementMatch) -> Value {
@@ -488,8 +482,10 @@ async fn screen_highlight(
     providers: &Providers,
 ) -> Result<CallToolResult, ErrorData> {
     let p: HighlightParams = parse_args("screen_highlight", args)?;
-    if p.w < 1 || p.h < 1 {
-        return Err(invalid_params("screen_highlight: w and h must be >= 1"));
+    if !(1..=16_384).contains(&p.w) || !(1..=16_384).contains(&p.h) {
+        return Err(invalid_params(
+            "screen_highlight: w and h must be between 1 and 16384",
+        ));
     }
     if !(100..=30_000).contains(&p.duration_ms) {
         return Err(invalid_params(
@@ -768,16 +764,18 @@ async fn wait_for_ui_element(
     let start = Instant::now();
     let deadline = Duration::from_millis(p.timeout_ms);
     loop {
-        match ui.find_element(&p.query).await {
-            Ok(Some(rect)) => {
+        // `find_elements` keeps the match entry identical to
+        // `find_element`'s shape (metadata when the backend exposes it).
+        match ui.find_elements(&p.query, 1).await {
+            Ok(matches) if !matches.is_empty() => {
                 return Ok(json_result(&json!({
                     "found": true,
-                    "count": 1,
-                    "matches": [rect_match_json(&rect)],
+                    "count": matches.len(),
+                    "matches": matches.iter().map(element_match_json).collect::<Vec<_>>(),
                     "elapsed_ms": start.elapsed().as_millis() as u64,
                 })));
             }
-            Ok(None) => {}
+            Ok(_) => {}
             Err(e) => return Ok(backend_error(e)),
         }
         let elapsed = start.elapsed();

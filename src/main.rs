@@ -110,6 +110,10 @@ async fn main() -> anyhow::Result<()> {
         let mut opts = sentry::ClientOptions::new();
         opts.dsn = Some(dsn);
         opts.release = Some(env!("CARGO_PKG_VERSION").into());
+        // Pre-send redaction per PRIVACY.md: `uxcp_*` key material is
+        // scrubbed, absolute paths are reduced to basename + parent-dir
+        // hash, and the `device` context (hostname) is dropped.
+        opts.before_send = Some(std::sync::Arc::new(sentry_redact));
         sentry::init(opts)
     });
 
@@ -158,6 +162,75 @@ fn parse_sentry_dsn(raw: &str) -> Option<sentry::types::Dsn> {
     raw.parse().ok()
 }
 
+/// `uxcp_<64 hex>` API-key material must never reach Sentry. Scan for
+/// the `uxcp_` prefix and blank the run when it is 64 hex chars.
+fn scrub_keys(s: &str) -> String {
+    const PREFIX: &str = "uxcp_";
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find(PREFIX) {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i + PREFIX.len()..];
+        let key_len = tail.chars().take_while(|c| c.is_ascii_hexdigit()).count();
+        if key_len == 64 {
+            out.push_str("[REDACTED]");
+            rest = &tail[64..];
+        } else {
+            out.push_str(PREFIX);
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Absolute path → `<basename>#<8-hex hash of parent>` (PRIVACY.md).
+fn hash_path(p: &str) -> String {
+    let path = std::path::Path::new(p);
+    let base = path
+        .file_name()
+        .map(|b| b.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.to_string());
+    let parent = path
+        .parent()
+        .map(|p| p.to_string_lossy())
+        .unwrap_or_default();
+    let digest = blake3::hash(parent.as_bytes()).to_hex();
+    format!("{base}#{}", &digest[..8])
+}
+
+/// Pre-send scrub for Sentry events (PRIVACY.md "Redaction rules
+/// applied before send"): `uxcp_*` keys redacted, stack-frame
+/// filenames hashed, `device` context (hostname) dropped.
+fn sentry_redact(
+    mut event: sentry::protocol::Event<'static>,
+) -> Option<sentry::protocol::Event<'static>> {
+    if let Some(m) = &mut event.message {
+        *m = scrub_keys(m);
+    }
+    for exc in event.exception.values.iter_mut() {
+        if let Some(v) = &mut exc.value {
+            *v = scrub_keys(v);
+        }
+        if let Some(st) = &mut exc.stacktrace {
+            for f in st.frames.iter_mut() {
+                if let Some(fi) = f.filename.as_mut()
+                    && fi.starts_with('/')
+                {
+                    *fi = hash_path(fi);
+                }
+            }
+        }
+    }
+    for bc in event.breadcrumbs.values.iter_mut() {
+        if let Some(m) = &mut bc.message {
+            *m = scrub_keys(m);
+        }
+    }
+    event.contexts.remove("device");
+    Some(event)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +257,71 @@ mod tests {
         // for values that actually parse.
         assert!(parse_sentry_dsn("not a dsn").is_none());
         assert!(parse_sentry_dsn("uxcp_deadbeef").is_none());
+    }
+
+    #[test]
+    fn scrub_keys_redacts_uxcp_material() {
+        let key = format!("uxcp_{}", "a".repeat(64));
+        assert_eq!(scrub_keys(&format!("k={key} tail")), "k=[REDACTED] tail");
+        // Non-64-hex runs and short prefixes pass through.
+        assert_eq!(scrub_keys("uxcp_deadbeef"), "uxcp_deadbeef");
+        assert_eq!(scrub_keys("no keys here"), "no keys here");
+    }
+
+    #[test]
+    fn hash_path_keeps_basename_hashes_parent() {
+        let h = hash_path("/home/u/.ultranix-mcp/history.json");
+        assert!(h.starts_with("history.json#"));
+        assert!(!h.contains("/home/u"));
+        assert_eq!(
+            hash_path("relative.rs"),
+            "relative.rs#".to_string() + &blake3::hash(b"").to_hex()[..8]
+        );
+    }
+
+    #[test]
+    fn sentry_redact_strips_key_device_and_paths() {
+        use sentry::protocol::{Breadcrumb, Event, Exception, Frame, Stacktrace, Values};
+        let key = format!("uxcp_{}", "b".repeat(64));
+        let mut event = Event {
+            message: Some(format!("failed with {key}")),
+            breadcrumbs: Values::from(vec![Breadcrumb {
+                message: Some(key.clone()),
+                ..Default::default()
+            }]),
+            exception: Values::from(vec![Exception {
+                value: Some(format!("boom {key}")),
+                stacktrace: Some(Stacktrace {
+                    frames: vec![Frame {
+                        filename: Some("/home/u/src/x.rs".into()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        event.contexts.insert(
+            "device".into(),
+            sentry::protocol::Context::Other(Default::default()),
+        );
+        let event = sentry_redact(event).unwrap();
+        assert!(!event.message.unwrap().contains(&key));
+        assert!(
+            !event.exception.values[0]
+                .value
+                .as_deref()
+                .unwrap()
+                .contains(&key)
+        );
+        let f = &event.exception.values[0]
+            .stacktrace
+            .as_ref()
+            .unwrap()
+            .frames[0];
+        assert!(f.filename.as_deref().unwrap().starts_with("x.rs#"));
+        assert!(!event.contexts.contains_key("device"));
     }
 
     #[test]

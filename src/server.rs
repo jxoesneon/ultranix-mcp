@@ -129,6 +129,7 @@ impl UltraNixServer {
                                 "ui_automation": providers.ui_automation.is_some(),
                                 "vision": providers.vision.is_some(),
                                 "browser": providers.browser.is_some(),
+                                "overlay": providers.overlay.is_some(),
                             }
                         }))
                     }
@@ -196,18 +197,34 @@ async fn http_gate(
         "path": req.uri().path(),
     }));
     let audit_rejection = |outcome: &str, identity: &str| {
-        if let Some(sec) = &gate.security {
-            let _ = sec.audit.record(
-                "http_gate",
-                &request_hash,
-                outcome,
-                0,
-                crate::security::audit::CallContext {
-                    key_id: None,
-                    caller: Some(identity),
-                    consent: None,
-                },
-            );
+        let sec = gate.security.clone();
+        let hash = request_hash.clone();
+        let outcome = outcome.to_string();
+        let identity = identity.to_string();
+        // Consistent with the tool-call audit path: the file append runs
+        // on the blocking pool, not the runtime worker.
+        async move {
+            if let Some(sec) = sec {
+                let res = tokio::task::spawn_blocking(move || {
+                    sec.audit.record(
+                        "http_gate",
+                        &hash,
+                        &outcome,
+                        0,
+                        crate::security::audit::CallContext {
+                            key_id: None,
+                            caller: Some(&identity),
+                            consent: None,
+                        },
+                    )
+                })
+                .await;
+                match res {
+                    Ok(Err(e)) => tracing::warn!(%e, "gate audit record failed"),
+                    Err(e) => tracing::warn!(%e, "gate audit task panicked"),
+                    Ok(Ok(())) => {}
+                }
+            }
         }
     };
 
@@ -223,7 +240,7 @@ async fn http_gate(
             Err(f) => {
                 crate::metrics::record_rate_rejection("auth");
                 crate::metrics::record_auth_failure(f.reason());
-                audit_rejection("auth_rejected", &remote_id);
+                audit_rejection("auth_rejected", &remote_id).await;
                 tracing::warn!(reason = f.reason(), %remote, "HTTP auth rejected");
                 return (
                     StatusCode::UNAUTHORIZED,
@@ -236,7 +253,7 @@ async fn http_gate(
 
     if !gate.limiter.check(&identity) {
         crate::metrics::record_rate_rejection("rate_limit");
-        audit_rejection("rate_limited", &identity);
+        audit_rejection("rate_limited", &identity).await;
         // The bucket refills at `rps` tokens/second — one refill period
         // is the earliest a retry can succeed.
         let retry_after = (1.0 / gate.limiter.rps()).ceil().max(1.0) as u64;
@@ -263,7 +280,7 @@ impl ServerHandler for UltraNixServer {
             .map(|c| serde_json::Value::String(c.into()))
             .collect();
         let ultranix = serde_json::json!({
-            "toolSurfaceVersion": "1.0",
+            "toolSurfaceVersion": "2.0",
             "categories": cats,
             "providers": self.providers.backend_names,
             "features": {
@@ -337,7 +354,7 @@ impl ServerHandler for UltraNixServer {
                 serde_json::json!({
                     "server": "ultranix-mcp",
                     "serverVersion": env!("CARGO_PKG_VERSION"),
-                    "toolSurfaceVersion": "1.0",
+                    "toolSurfaceVersion": "2.0",
                     "protocolVersion": context
                         .peer
                         .peer_info()

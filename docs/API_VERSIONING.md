@@ -21,8 +21,15 @@ frozen per server release); the protocol version moves independently and is
 always the *highest mutually supported* version from the `initialize`
 handshake.
 
-**Current versions:** server `1.1.0` · tool surface `1.0`
+**Current versions:** server `1.1.0` · tool surface `2.0`
 (32 tools) · protocol negotiated per MCP spec.
+
+Tool-surface `2.0` (at server `1.1.0`): `find_element` and
+`wait_for_ui_element` changed response **structure** — the single-match
+envelope (`{found, bounds, center}` / `{found, element, elapsed_ms}`) is
+now the multi-match envelope
+`{found, count, matches: [{name, role, states, bounds, center}], …}` —
+a MAJOR bump per the matrix below.
 
 ## Versioning Scheme
 
@@ -101,8 +108,9 @@ alias (mapped to the new name) for the deprecation window, then rejected with
 
 **Changelog requirement**: every release that adds, deprecates, renames, or
 removes a tool MUST carry a `CHANGELOG.md` entry naming the tool and the
-migration path. A release PR without a changelog entry for a surface change
-fails CI (`cargo xtask verify-changelog`).
+migration path. This is a release-checklist gate: before tagging, verify
+every tool-surface change is named in the changelog (there is no
+automated CI check for it).
 
 ## Adding Tools
 
@@ -148,7 +156,7 @@ publishes an extension block:
     "capabilities": {
       "tools": { "listChanged": true },
       "ultranix": {
-        "toolSurfaceVersion": "1.0",
+        "toolSurfaceVersion": "2.0",
         "categories": ["mouse", "keyboard", "vision", "automation", "admin"],
         "providers": ["wlr-screencopy", "wlr-virtual-input", "atspi2", "hyprctl", "ort", "cdp"],
         "features": {
@@ -246,7 +254,7 @@ All `tools/call` results carry server identity in `result._meta`:
   "_meta": {
     "server": "ultranix-mcp",
     "serverVersion": "1.1.0",
-    "toolSurfaceVersion": "1.0",
+    "toolSurfaceVersion": "2.0",
     "protocolVersion": "2025-06-18"
   }
 }

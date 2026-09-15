@@ -60,10 +60,19 @@ aes-gcm = "0.10"
 ulid = "1"
 # Optional Sentry error reporting — initialised only when
 # ULTRANIX_MCP_SENTRY_DSN is set (src/main.rs); with no DSN the client is
-# never built, so the cost is zero. The `tracing` feature ships the
-# sentry-tracing subscriber layer so `tracing::error!` events reach
-# Sentry; panics ride the default `panic` integration.
-sentry = { version = "0.49", features = ["tracing"] }
+# never built, so the cost is zero. Minimal feature set: default
+# `transport` pulls reqwest+native-tls (openssl) — ureq+rustls is the
+# pure-Rust transport. `tracing` ships the sentry-tracing subscriber
+# layer so `tracing::error!` events reach Sentry; `panic`/`backtrace`/
+# `contexts` keep panic capture.
+sentry = { version = "0.49", default-features = false, features = [
+    "backtrace",
+    "contexts",
+    "panic",
+    "ureq",
+    "rustls",
+    "tracing",
+] }
 # PipeWire stream consumer for the portal capture path: when the
 # Screenshot portal is absent but RemoteDesktop is present, frames are
 # pulled from the granted PipeWire fd (src/providers/portal_capture.rs).

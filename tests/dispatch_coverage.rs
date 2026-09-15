@@ -1791,6 +1791,14 @@ async fn invalid_params_matrix_through_secured_gate() {
         ("screen_highlight", json!({"x":0,"y":0,"w":0,"h":5})),
         (
             "screen_highlight",
+            json!({"x":0,"y":0,"w":16385,"h":5,"duration_ms": 200}),
+        ),
+        (
+            "screen_highlight",
+            json!({"x":0,"y":0,"w":5,"h":16385,"duration_ms": 200}),
+        ),
+        (
+            "screen_highlight",
             json!({"x":0,"y":0,"w":5,"h":5,"duration_ms": 50}),
         ),
         (
