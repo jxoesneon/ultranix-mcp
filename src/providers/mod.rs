@@ -3,9 +3,11 @@
 //! degrade to `-32010 ProviderUnavailable` instead of failing silently.
 
 pub mod atspi;
+pub mod cdp_browser;
 pub mod grim_capture;
 pub mod hyprctl;
 pub mod mock;
+pub mod onnx_vision;
 pub mod uinput_input;
 pub mod wlr_capture;
 pub mod wlr_input;

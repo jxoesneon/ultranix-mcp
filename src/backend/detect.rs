@@ -22,7 +22,10 @@
 use std::sync::Arc;
 
 use crate::providers::Providers;
-use crate::traits::{CaptureProvider, InputProvider, UIAutomationProvider, WindowProvider};
+use crate::traits::{
+    BrowserProvider, CaptureProvider, InputProvider, UIAutomationProvider, VisionProvider,
+    WindowProvider,
+};
 
 /// Session class derived from `XDG_SESSION_TYPE`, with display-variable
 /// inference when that variable is unset or non-committal.
@@ -129,6 +132,21 @@ pub enum UiAutomationBackend {
     Atspi,
 }
 
+/// Ordered candidates for the vision slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisionBackend {
+    /// Local ONNX inference (`ort`): OCR + OWL-ViT, models fetched
+    /// on first use into the state dir.
+    Onnx,
+}
+
+/// Ordered candidates for the browser slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserBackend {
+    /// Chrome DevTools Protocol bridge on `127.0.0.1:9222`.
+    Cdp,
+}
+
 /// The ordered ladders [`detect_providers`] walks, resolved from session
 /// info alone. Pure and unit-testable — no syscalls, no constructors.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,8 +155,8 @@ pub struct DetectionPlan {
     pub input: Vec<InputBackend>,
     pub window: Vec<WindowBackend>,
     pub ui_automation: Vec<UiAutomationBackend>,
-    // vision / browser have no candidates yet: the ONNX and CDP backends
-    // land in Phase 3.
+    pub vision: Vec<VisionBackend>,
+    pub browser: Vec<BrowserBackend>,
 }
 
 /// Map a session snapshot onto the per-slot fallback ladders.
@@ -151,7 +169,10 @@ pub struct DetectionPlan {
 /// - window: `Hyprctl → None` (Hyprland sessions only)
 /// - ui_automation: `Atspi → None` on any non-headless session — the
 ///   accessibility bus is compositor-agnostic (Wayland and X11 alike)
-/// - vision / browser: `None` (Phase 3)
+/// - vision: `Onnx → None` on any non-headless session — frames come
+///   from the capture slot, which is empty headless anyway
+/// - browser: `Cdp → None` on any non-headless session — the loopback
+///   probe is cheap and no-op when nothing listens on :9222
 /// - headless: every ladder is empty — there is no display to automate.
 pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
     let capture = match session.session_type {
@@ -179,11 +200,23 @@ pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
         SessionType::Headless => vec![],
     };
 
+    let vision = match session.session_type {
+        SessionType::Wayland | SessionType::X11 => vec![VisionBackend::Onnx],
+        SessionType::Headless => vec![],
+    };
+
+    let browser = match session.session_type {
+        SessionType::Wayland | SessionType::X11 => vec![BrowserBackend::Cdp],
+        SessionType::Headless => vec![],
+    };
+
     DetectionPlan {
         capture,
         input,
         window,
         ui_automation,
+        vision,
+        browser,
     }
 }
 
@@ -209,8 +242,8 @@ pub fn detect_providers(session: &SessionInfo) -> Providers {
         input: detect_input(&plan.input),
         window: detect_window(&plan.window),
         ui_automation: detect_ui_automation(&plan.ui_automation),
-        // vision / browser: Phase 3, no rungs yet.
-        ..Providers::empty()
+        vision: detect_vision(&plan.vision),
+        browser: detect_browser(&plan.browser),
     };
 
     tracing::info!(
@@ -300,6 +333,36 @@ fn detect_ui_automation(
         }
     }
     tracing::debug!("ui_automation: no backend registered");
+    None
+}
+
+fn detect_vision(candidates: &[VisionBackend]) -> Option<Arc<dyn VisionProvider>> {
+    for &candidate in candidates {
+        match candidate {
+            VisionBackend::Onnx => {
+                if let Some(p) = crate::providers::onnx_vision::OnnxVision::new() {
+                    tracing::info!(backend = "onnx", "vision provider registered");
+                    return Some(Arc::new(p));
+                }
+            }
+        }
+    }
+    tracing::debug!("vision: no backend registered");
+    None
+}
+
+fn detect_browser(candidates: &[BrowserBackend]) -> Option<Arc<dyn BrowserProvider>> {
+    for &candidate in candidates {
+        match candidate {
+            BrowserBackend::Cdp => {
+                if let Some(p) = crate::providers::cdp_browser::CdpBrowser::new() {
+                    tracing::info!(backend = "cdp", "browser provider registered");
+                    return Some(Arc::new(p));
+                }
+            }
+        }
+    }
+    tracing::debug!("browser: no backend registered");
     None
 }
 

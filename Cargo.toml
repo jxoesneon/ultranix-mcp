@@ -36,6 +36,31 @@ atspi = { version = "0.30", default-features = false, features = ["connection", 
 # default-features=false drops the `udev` feature (libudev): Builder::default()
 # then opens /dev/uinput directly, matching the provider's probe semantics.
 uinput = { version = "0.1.3", default-features = false }
+# CDP bridge: WebSocket JSON-RPC client (+ server side for the hermetic
+# test stub). default-features=false keeps TLS stacks out — the endpoint is
+# loopback-only ws://, so `connect` is the whole surface we need.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
+# SinkExt/StreamExt for the WebSocket message pump.
+futures-util = { version = "0.3", features = ["sink"] }
+# Phase 3 vision backend (ADR 0005): ONNX Runtime via `ort`. The
+# `download-binaries` feature fetches a prebuilt CPU ONNX Runtime at build
+# time; model weights are never bundled — they are downloaded on first use
+# into the state dir (see src/providers/onnx_vision.rs). `ndarray` is left
+# off: tensors are built from `(shape, Vec)` tuples.
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "tracing", "download-binaries", "copy-dylibs", "tls-native", "api-27"] }
+# Blocking client only — model downloads run on `spawn_blocking` threads.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+# CLIP BPE tokenizer for OWL-ViT text queries. `fancy-regex` is pure Rust
+# (avoids a C oniguruma build) and covers the CLIP pre-tokenizer split.
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
+
+[features]
+default = []
+# ADR 0005 EP ladder: the prebuilt ONNX Runtime is CPU-only. These features
+# register the accelerated EPs and imply `ort/load-dynamic`, so a matching
+# ONNX Runtime build must be provided via `ORT_DYLIB_PATH`.
+vision-cuda = ["ort/cuda", "ort/load-dynamic"]
+vision-openvino = ["ort/openvino", "ort/load-dynamic"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

@@ -5,6 +5,26 @@ All notable changes to ultranix-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-09-15
+
+### Added
+
+- `OnnxVision` — `VisionProvider` on `ort` 2.0-rc (ONNX Runtime,
+  prebuilt CPU EP; `vision-cuda`/`vision-openvino` cargo features):
+  RapidOCR `ch_PP-OCRv4` det+rec pipeline for `find_text_on_screen`
+  (connected-components det, CTC greedy decode over
+  `ppocr_keys_v1.txt`) and quantized OWL-ViT-base for `find_icon`
+  (sigmoid + cxcywh→xyxy + NMS). Models download on first use into
+  `~/.ultranix-mcp/models/` with pinned URL+sha256, `.part` temp +
+  atomic rename + `0600`.
+- `CdpBrowser` — `BrowserProvider` on Chrome DevTools Protocol
+  (`tokio-tungstenite`, loopback `127.0.0.1:9222` only):
+  `query_selector` via `Runtime.evaluate` with JSON-encoded selector
+  (no string splicing), debugger-URL loopback revalidation, lazy
+  reconnect. Hermetic WS/HTTP stub test suite.
+- `VisionBackend::Onnx` + `BrowserBackend::Cdp` detection rungs —
+  all six provider slots now have real backends.
+
 ## [0.3.0] — 2026-09-15
 
 ### Added
