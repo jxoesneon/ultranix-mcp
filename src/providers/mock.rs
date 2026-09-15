@@ -83,7 +83,12 @@ impl WindowProvider for MockWindow {
             title: "mock-window".into(),
             class: "mock".into(),
             workspace: 1,
-            rect: Rect { x: 0, y: 0, w: 800, h: 600 },
+            rect: Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
             focused: true,
         }])
     }

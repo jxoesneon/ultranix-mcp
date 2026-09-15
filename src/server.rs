@@ -45,8 +45,7 @@ impl UltraNixServer {
     /// endpoint path `/mcp`).
     pub async fn serve_http(self, bind: &str) -> anyhow::Result<()> {
         use rmcp::transport::streamable_http_server::{
-            StreamableHttpServerConfig,
-            session::local::LocalSessionManager,
+            StreamableHttpServerConfig, session::local::LocalSessionManager,
             tower::StreamableHttpService,
         };
 
@@ -66,10 +65,12 @@ impl UltraNixServer {
 
 impl ServerHandler for UltraNixServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(
-                Implementation::from_build_env()
-            )
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_server_info({
+            let mut info = Implementation::from_build_env();
+            info.name = "ultranix-mcp".into();
+            info.version = env!("CARGO_PKG_VERSION").into();
+            info
+        })
     }
 
     async fn list_tools(
@@ -88,8 +89,12 @@ impl ServerHandler for UltraNixServer {
         params: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        tools::call_tool(&params.name, params.arguments.unwrap_or_default(), &self.providers)
-            .await
-            .map(CallToolResponse::Complete)
+        tools::call_tool(
+            &params.name,
+            params.arguments.unwrap_or_default(),
+            &self.providers,
+        )
+        .await
+        .map(CallToolResponse::Complete)
     }
 }

@@ -16,7 +16,11 @@ enum Transport {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "ultranix-mcp", version, about = "Linux desktop automation MCP server")]
+#[command(
+    name = "ultranix-mcp",
+    version,
+    about = "Linux desktop automation MCP server"
+)]
 struct Cli {
     /// Transport to serve.
     #[arg(long, value_enum, default_value_t = Transport::Stdio)]
@@ -50,7 +54,8 @@ async fn main() -> anyhow::Result<()> {
     // stdout is the JSON-RPC channel on stdio — diagnostics go to stderr.
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_env("ULTRANIX_MCP_LOG_LEVEL").unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_env("ULTRANIX_MCP_LOG_LEVEL")
+                .unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_writer(std::io::stderr)
         .init();

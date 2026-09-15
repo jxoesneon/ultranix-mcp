@@ -1,6 +1,22 @@
-target/
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock is intentionally committed — this is a binary crate.
+
+# ultranix-mcp runtime artifacts (~/.ultranix-mcp data dir, logs, history)
 .ultranix-mcp/
 *.log
-.DS_Store
-.vscode/
+*.jsonl
+
+# Editors / IDE
 .idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS noise
+.DS_Store
+Thumbs.db

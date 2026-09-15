@@ -5,6 +5,27 @@ All notable changes to ultranix-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] — 2026-09-15
+
+### Added
+
+- Phase 0 scaffold (delivered): Rust 2024 edition crate on `rmcp` with
+  stdio and streamable-HTTP transports, provider-trait layer with mock
+  providers, 32-tool schema registry, session detection, and `tracing`
+  logging — see the `[Unreleased]` phase breakdown below for the full plan
+- GitHub Actions CI (`rust_ci.yml`): `cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, headless
+  `cargo test --all-targets`, `cargo llvm-cov` coverage uploaded to
+  Codecov, and a non-blocking `cargo audit` job
+- Security scanning workflow (`security-scan.yml`): `cargo audit` plus
+  `cargo deny check` with a permissive `deny.toml` (advisories deny on
+  vulnerabilities, warn on unmaintained/yanked; no bans; license
+  allowlist covering ISC/MIT/Apache-2.0/BSD/Zlib/Unicode/MPL/CC0)
+- Repository hygiene: `.gitignore` (Rust target, `~/.ultranix-mcp`
+  runtime artifacts, editor dirs; `Cargo.lock` kept committed),
+  GitHub issue templates (bug report, feature request), and a pull
+  request template with a tests/clippy/docs checklist
+
 ## [Unreleased]
 
 Planned scope for the initial **0.1.0** release, organized by delivery phase.
