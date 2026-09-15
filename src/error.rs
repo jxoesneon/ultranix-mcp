@@ -39,3 +39,73 @@ impl UltraNixError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_variant_maps_to_its_documented_code() {
+        assert_eq!(
+            UltraNixError::ProviderUnavailable("capture").code(),
+            codes::PROVIDER_UNAVAILABLE
+        );
+        assert_eq!(
+            UltraNixError::InvalidParams("missing `x`".into()).code(),
+            ErrorCode::INVALID_PARAMS.0
+        );
+        assert_eq!(
+            UltraNixError::ConsentRequired("system_command".into()).code(),
+            codes::CONSENT_REQUIRED
+        );
+        assert_eq!(
+            UltraNixError::ArgConstraintViolation("dispatch exec".into()).code(),
+            codes::ARG_CONSTRAINT_VIOLATION
+        );
+        assert_eq!(
+            UltraNixError::Backend(anyhow::anyhow!("screencopy denied")).code(),
+            ErrorCode::INTERNAL_ERROR.0
+        );
+    }
+
+    #[test]
+    fn code_constants_match_tools_taxonomy() {
+        // docs/TOOLS.md freezes these values on the wire.
+        assert_eq!(codes::PROVIDER_UNAVAILABLE, -32010);
+        assert_eq!(codes::CONSENT_REQUIRED, -32015);
+        assert_eq!(codes::ARG_CONSTRAINT_VIOLATION, -32020);
+    }
+
+    #[test]
+    fn display_strings_embed_the_context() {
+        assert_eq!(
+            UltraNixError::ProviderUnavailable("vision").to_string(),
+            "provider unavailable: vision"
+        );
+        assert_eq!(
+            UltraNixError::InvalidParams("bad enum".into()).to_string(),
+            "invalid params: bad enum"
+        );
+        assert_eq!(
+            UltraNixError::ConsentRequired("replay_action".into()).to_string(),
+            "consent required: replay_action"
+        );
+        assert_eq!(
+            UltraNixError::ArgConstraintViolation("hyprctl exec".into()).to_string(),
+            "argument constraint violation: hyprctl exec"
+        );
+        assert_eq!(
+            UltraNixError::Backend(anyhow::anyhow!("dbus gone")).to_string(),
+            "backend error: dbus gone"
+        );
+    }
+
+    #[test]
+    fn anyhow_converts_into_backend_variant() {
+        let err: UltraNixError = anyhow::anyhow!("boom").into();
+        assert!(matches!(err, UltraNixError::Backend(_)));
+        assert_eq!(err.code(), ErrorCode::INTERNAL_ERROR.0);
+        // Debug derive stays informative for log/metrics paths.
+        assert!(format!("{err:?}").contains("Backend"));
+    }
+}
