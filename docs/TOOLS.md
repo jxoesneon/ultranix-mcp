@@ -819,8 +819,8 @@ anchored to the output containing the rect's centre.
   "properties": {
     "x": { "type": "integer" },
     "y": { "type": "integer" },
-    "w": { "type": "integer", "minimum": 1 },
-    "h": { "type": "integer", "minimum": 1 },
+    "w": { "type": "integer", "minimum": 1, "maximum": 16384 },
+    "h": { "type": "integer", "minimum": 1, "maximum": 16384 },
     "duration_ms": {
       "type": "integer", "default": 1500, "minimum": 100, "maximum": 30000
     }
@@ -1204,9 +1204,9 @@ elapses. Use after actions that trigger UI transitions.
 
 **Returns**: `text` containing JSON — on success
 `{"found": true, "count": 1, "matches": [<match>], "elapsed_ms": <n>}` where
-the match entry carries **geometry only** (`{"bounds": {…}, "center": {…}}` —
-the single-hit lookup reports no `name`/`role`/`states`, unlike
-`find_element`); on timeout
+the match entry is the same shape as `find_element`'s
+(`{"name","role","states","bounds","center"}` — backends that expose only
+geometry report `""`/`[]` for the metadata fields); on timeout
 `{"found": false, "timed_out": true, "elapsed_ms": <n>}` (a success result,
 not an error).
 

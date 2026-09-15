@@ -486,6 +486,7 @@ fn readyz_reports_mock_provider_shape() {
         "ui_automation",
         "vision",
         "browser",
+        "overlay",
     ] {
         assert_eq!(
             body["providers"][slot], true,

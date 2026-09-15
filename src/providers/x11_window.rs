@@ -627,7 +627,7 @@ mod tests {
         // getactivewindow → 90177548 = 0x0560000c → the planning window.
         assert!(windows[1].focused);
         assert!(!windows[0].focused);
-        // xprop can never pin (not whitelisted) → fullscreen stays None.
+        // xprop absent from the tempdir PATH → fullscreen stays None.
         assert!(windows.iter().all(|x| x.fullscreen.is_none()));
         assert!(
             windows

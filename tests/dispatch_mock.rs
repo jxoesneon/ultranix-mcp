@@ -27,7 +27,8 @@ async fn all_tools_valid_args_succeed_with_mocks() {
     // invoke_element (mock tree has no match → -32016 is legal),
     // system_command / replay_action / clear_action_history (consent gate),
     // get_action_history (history store may not exist yet), and
-    // screen_highlight (honest -32010: no overlay backend exists) are
+    // screen_highlight (MockOverlay no-ops; the -32010 path is covered
+    // in dispatch_coverage) are
     // exercised by dedicated tests below / in dispatch_coverage.
     let flexible = [
         "invoke_element",

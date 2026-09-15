@@ -44,6 +44,12 @@ async fn server_core_tools_never_report_provider_unavailable() {
         if is_provider_backed(name) {
             continue;
         }
+        // replay_action re-enters `call_tool` with the *recorded* tool, which
+        // may be provider-backed — under an empty registry -32010 is the
+        // honest outcome, so the core-only invariant does not apply to it.
+        if *name == "replay_action" {
+            continue;
+        }
         let res = call(name, valid_args(name), &providers).await;
         if let Err(e) = res {
             assert_ne!(

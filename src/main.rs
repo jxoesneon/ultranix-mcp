@@ -228,6 +228,9 @@ fn sentry_redact(
         }
     }
     event.contexts.remove("device");
+    // `sentry-contexts` fills server_name with the machine hostname —
+    // drop it too (PRIVACY.md redaction contract).
+    event.server_name = None;
     Some(event)
 }
 
@@ -307,6 +310,7 @@ mod tests {
             sentry::protocol::Context::Other(Default::default()),
         );
         let event = sentry_redact(event).unwrap();
+        assert!(event.server_name.is_none());
         assert!(!event.message.unwrap().contains(&key));
         assert!(
             !event.exception.values[0]

@@ -45,8 +45,8 @@ pub struct X11Capture {
     scrot: PathBuf,
     /// Pinned `xdotool` — `cursor_position`, `screen_info` fallback.
     xdotool: Option<PathBuf>,
-    /// Pinned `xrandr` — `screen_info` preferred path (see module docs;
-    /// resolves to `None` until `xrandr` joins the whitelist).
+    /// Pinned `xrandr` — `screen_info` preferred path (see module docs);
+    /// `None` when `xrandr` was absent at pin time.
     xrandr: Option<PathBuf>,
 }
 
@@ -471,7 +471,7 @@ mod tests {
         let cap = X11Capture::with_pins(&pins).unwrap();
 
         assert_eq!(cap.cursor_position().await.unwrap(), (11, 22));
-        // xrandr can never be pinned (not whitelisted) → the xdotool
+        // xrandr is absent from the tempdir PATH → the xdotool
         // fallback path is what runs here.
         let info = cap.screen_info().await.unwrap();
         assert_eq!(info["monitors"][0]["width"], json!(1920));
