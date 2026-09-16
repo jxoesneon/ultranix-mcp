@@ -1,7 +1,7 @@
 # Security Policy
 
 **Project**: ultranix-mcp — Rust MCP server for Linux desktop automation (Wayland/Hyprland, CachyOS)
-**Status**: Implemented (v1.2.0) — this document describes the shipped security design. Where the implementation still lags this document (called out inline), the gap is tracked as a defect or roadmap item.
+**Status**: Implemented (v1.3.0) — this document describes the shipped security design. Where the implementation still lags this document (called out inline), the gap is tracked as a defect or roadmap item.
 
 ultranix-mcp grants AI agents the ability to see the screen and inject input on a
 live desktop session. That is an inherently high-privilege capability. This
@@ -90,22 +90,24 @@ No layer is trusted to be sufficient on its own.
 ```
 API-key auth (HTTP only)
     → 10 req/s token bucket per client identity
+    → runtime policy (readonly/allow/deny/per-key roles)
     → shell-metacharacter sanitization
     → arg-constrained command whitelist {grim, slurp, hyprctl, scrot, xdotool, wmctrl}
     → path whitelist {$XDG_RUNTIME_DIR, /tmp, ~/.ultranix-mcp/**}
     → consent gate (destructive-class tools)
-    → audit log (JSONL, append-only, hash-chained)
+    → audit log (JSONL, append-only, hash-chained + optional HMAC)
 ```
 
 | Layer | Control | Failure mode |
 | ----- | ------- | ------------ |
 | Authentication | `uxcp_*` key from `ULTRANIX_MCP_API_KEY`, compared as SHA-256 hash in constant time | Reject + `auth.failure` audit event |
 | Rate limiting | Token bucket, 10 req/s per client identity (API-key ID; remote addr as fallback) | Reject + `ratelimit.exceeded` audit event |
+| Runtime policy | `--readonly` non-mutating preset, `--allow-tools`/`--deny-tools` per-tool lists, or `policy.toml` per-key roles | Reject + `denial_reason` audit event (`readonly_mode`/`not_in_tool_list`) |
 | Sanitization | Strip/reject shell metacharacters in any argument that reaches a spawned process | Reject + `sanitize.rejected` audit event |
 | Command whitelist | Arg-constrained closed set of desktop tools (below); binaries resolved to absolute paths and pinned at startup | Reject + `whitelist.violation` audit event |
 | Path whitelist | Canonicalized paths must resolve under `$XDG_RUNTIME_DIR`, `/tmp`, or `~/.ultranix-mcp/**` — `$HOME` at large is **not** writable; symlinks resolved before the check | Reject + `path.violation` audit event |
 | Consent gate | Destructive-class tools require a short-lived `consent_token` obtained via a `-32015 ConsentRequired` challenge | Challenge + `consent.required` audit event |
-| Audit | Every invocation — accepted or rejected — appended to `~/.ultranix-mcp/logs/audit.jsonl`, each record `prev_hash`-chained to its predecessor | Always-on |
+| Audit | Every invocation — accepted or rejected — appended to `~/.ultranix-mcp/logs/audit.jsonl`, each record `prev_hash`-chained to its predecessor; `ULTRANIX_MCP_AUDIT_SECRET` adds HMAC-SHA256 per line for tamper evidence | Always-on; an I/O failure logs a warning but does not block the call (fail-open audit posture — calls are never refused for audit unavailability) |
 
 #### Arg-constrained command whitelist
 
@@ -179,7 +181,7 @@ sessions, v1.2.0+) and **AT-SPI2** for the accessibility tree.
 | Artifact | Location | Protection |
 | -------- | -------- | ---------- |
 | Action history | `~/.ultranix-mcp/history.json` | AES-256-GCM at rest (`ULTRANIX_MCP_HISTORY_SECRET` or per-install derived key); `UNXHIST2` framed append format since v1.2.0 — O(1) sealed appends, full rewrite only on FIFO eviction or v1→v2 migration |
-| Audit log | `~/.ultranix-mcp/logs/audit.jsonl` | JSONL, file mode `0600`, dir mode `0700`; `prev_hash` hash-chaining makes silent edits detectable |
+| Audit log | `~/.ultranix-mcp/logs/audit.jsonl` | JSONL, file mode `0600`, dir mode `0700`; `prev_hash` hash-chaining makes silent edits detectable; optional `ULTRANIX_MCP_AUDIT_SECRET` signs each line with HMAC-SHA256 — enable it on a fresh/rotated log, since verification of a file containing pre-secret unsigned lines fails on those lines |
 | Plugin manifests | `~/.ultranix-mcp/plugins/*.json` | Declarative tool-macros (no code); strict validation; state dir `0700`; fresh read-only scan per call |
 | `screen_record` output | `~/.ultranix-mcp/captures/rec-*` (or `0700` `/tmp` dir fallback) | Server-owned `0700` dirs; ≤600 frames / ≤512 MiB per run; `manifest.json` audit |
 | API keys | Env `ULTRANIX_MCP_API_KEY` | Only SHA-256 hashes held in memory |
@@ -282,4 +284,4 @@ sessions, v1.2.0+) and **AT-SPI2** for the accessibility tree.
 
 ---
 
-**Last updated**: 2026 — Policy version 1.2.0
+**Last updated**: 2026 — Policy version 1.3.0

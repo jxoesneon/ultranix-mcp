@@ -7,8 +7,11 @@ X11-native providers, PipeWire capture, OCR cache, extra metrics) landed at
 **v1.1.0**, and the breadth wave (clipboard tools, plugin tool-macros,
 bounded `screen_record`, sway/Wayfire/river/KDE/GNOME detection + the
 `sway-ipc` window provider, per-backend cargo features, history v2) landed
-at **v1.2.0** — the package/channel rows below mark which submissions are
-still pending.
+at **v1.2.0**, and the policy-and-governance wave (runtime `policy.toml`
+access control with per-key role scoping, `--readonly`/`--allow-tools`/
+`--deny-tools`, `-32018`/`-32019` denials, backend + build-info metrics,
+audit-log HMAC signing) landed at **v1.3.0** — the package/channel rows
+below mark which submissions are still pending.
 
 **Date:** 2026-09-14
 **Maintainer:** jxoesneon (`https://github.com/jxoesneon`)
@@ -37,7 +40,7 @@ AES-256-GCM-encrypted action history.
 | crates.io | `ultranix-mcp` | publish pending (`cargo install ultranix-mcp`) |
 | AUR | `ultranix-mcp` (source build), `ultranix-mcp-bin` (prebuilt binary), `ultranix-mcp-git` (`main` HEAD) | PKGBUILDs shipped under `packaging/`; submission pending — see [PACKAGING.md](PACKAGING.md) |
 | GitHub Releases | `ultranix-mcp` (per-arch tarballs) | every tag (`release.yml`) |
-| OCI image | `ghcr.io/jxoesneon/ultranix-mcp` | planned — the committed `server.json` already points its single `packages[]` entry at `ghcr.io/jxoesneon/ultranix-mcp:1.2.0`; the image itself is a planned artifact for the **documented degraded mode** (headless/CI use only; the native install is primary — see [PACKAGING.md](PACKAGING.md) §1) |
+| OCI image | `ghcr.io/jxoesneon/ultranix-mcp` | planned — the committed `server.json` already points its single `packages[]` entry at `ghcr.io/jxoesneon/ultranix-mcp:1.3.0`; the image itself is a planned artifact for the **documented degraded mode** (headless/CI use only; the native install is primary — see [PACKAGING.md](PACKAGING.md) §1) |
 | Nix flake | `github:jxoesneon/ultranix-mcp` | `flake.nix` shipped at v1.2.0 — **unverified** (never evaluated; see [PACKAGING.md](PACKAGING.md) §4) |
 
 ## Install commands (documented in README)
@@ -70,6 +73,7 @@ ULTRANIX_MCP_API_KEY="uxcp_<64-hex>" ultranix-mcp --transport http --bind 127.0.
 | `ULTRANIX_MCP_DISABLE_AUTH` | Disable auth entirely (development only) | `false` |
 | `ULTRANIX_MCP_HISTORY_SECRET` | AES-256-GCM secret for `~/.ultranix-mcp/history.json` | per-install generated at first run; a dev fallback warns loudly |
 | `ULTRANIX_MCP_SENTRY_DSN` | Optional Sentry error reporting — opt-in; unset, empty, or malformed DSN disables it (malformed logs a startup warning) | unset |
+| `ULTRANIX_MCP_AUDIT_SECRET` | Optional HMAC-SHA256 signing of every `audit.jsonl` line (v1.3.0) — enable on a fresh/rotated log; pre-secret unsigned lines fail verification | unset |
 | `ULTRANIX_MCP_BIND` | HTTP bind address (or `--bind` flag) | `127.0.0.1:3010` |
 
 Key-source precedence: `ULTRANIX_MCP_API_KEY` → `ULTRANIX_MCP_API_KEY_FILE`
@@ -109,8 +113,8 @@ via `mcp-publisher` on each tag):
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.jxoesneon/ultranix-mcp",
-  "description": "Secure Linux desktop automation via MCP — input, screen/OCR/vision, AT-SPI2 UI tree,window,clipboard",
-  "version": "1.2.0",
+  "description": "Secure Linux desktop automation — input, screen/OCR/vision, AT-SPI2 UI tree, window, clipboard",
+  "version": "1.3.0",
   "title": "ultranix-mcp",
   "repository": {
     "url": "https://github.com/jxoesneon/ultranix-mcp",
@@ -120,8 +124,8 @@ via `mcp-publisher` on each tag):
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/jxoesneon/ultranix-mcp:1.2.0",
-      "version": "1.2.0",
+      "identifier": "ghcr.io/jxoesneon/ultranix-mcp:1.3.0",
+      "version": "1.3.0",
       "transport": { "type": "stdio" },
       "runtimeHint": "docker",
       "environmentVariables": [
@@ -129,7 +133,8 @@ via `mcp-publisher` on each tag):
         { "name": "ULTRANIX_MCP_API_KEY_FILE", "description": "Path to a 0600 file holding uxcp_* keys, one per line", "isRequired": false, "isSecret": false },
         { "name": "ULTRANIX_MCP_API_KEY_EXPIRES", "description": "Optional RFC 3339 expiry for the env-sourced key (self-revoking)", "isRequired": false, "isSecret": false },
         { "name": "ULTRANIX_MCP_HISTORY_SECRET", "description": "AES-256-GCM secret for encrypted action history (per-install generated if unset)", "isRequired": false, "isSecret": true },
-        { "name": "ULTRANIX_MCP_SENTRY_DSN", "description": "Optional Sentry DSN for error reporting (unset = disabled)", "isRequired": false, "isSecret": true }
+        { "name": "ULTRANIX_MCP_SENTRY_DSN", "description": "Optional Sentry DSN for error reporting (unset = disabled)", "isRequired": false, "isSecret": true },
+        { "name": "ULTRANIX_MCP_AUDIT_SECRET", "description": "Optional HMAC-SHA256 signing secret for audit.jsonl lines (tamper evidence for SIEM ingestion)", "isRequired": false, "isSecret": true }
       ]
     }
   ],
@@ -225,7 +230,8 @@ alphabetised and one line, per the list's contributing rules.
   (`--stdio` is an accepted alias)
 - **Env vars:** `ULTRANIX_MCP_API_KEY`, `ULTRANIX_MCP_API_KEY_FILE`,
   `ULTRANIX_MCP_API_KEY_EXPIRES`, `ULTRANIX_MCP_DISABLE_AUTH`,
-  `ULTRANIX_MCP_HISTORY_SECRET`, `ULTRANIX_MCP_SENTRY_DSN` (opt-in),
+  `ULTRANIX_MCP_HISTORY_SECRET`, `ULTRANIX_MCP_AUDIT_SECRET` (opt-in),
+  `ULTRANIX_MCP_SENTRY_DSN` (opt-in),
   `ULTRANIX_MCP_BIND` (default `127.0.0.1:3010`)
 - **Repo:** `https://github.com/jxoesneon/ultranix-mcp`
 
@@ -242,7 +248,7 @@ alphabetised and one line, per the list's contributing rules.
 - [ ] `Cargo.toml` metadata complete: `description`, `license = "ISC"`,
   `repository`, `keywords = ["mcp", "linux", "automation", "wayland", "hyprland"]`,
   `categories = ["command-line-utilities"]`
-- [ ] Release tag + notes published (`v1.2.0`)
+- [ ] Release tag + notes published (`v1.3.0`)
 - [ ] `cargo publish` run for `ultranix-mcp`; AUR `ultranix-mcp-bin` PKGBUILD
   submitted
 - [ ] GitHub topics set: `mcp`, `mcp-server`, `linux`, `wayland`, `hyprland`,

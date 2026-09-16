@@ -3,10 +3,12 @@
 ultranix-mcp's delivery plan for **v1.0.0** and beyond. Work proceeded in six
 phases, each with concrete deliverables, exit criteria, dependencies, and
 risk callouts — **Phases 0–5 are delivered as of v1.0.0, the v1.1.0 wave
-shipped the post-v1 items that had a real implementation path, and the
-v1.2.0 breadth wave landed the rest** (see
+shipped the post-v1 items that had a real implementation path, the
+v1.2.0 breadth wave landed the rest, and the v1.3.0 policy-and-governance
+wave added the runtime access-control surface** (see
 [CHANGELOG.md](CHANGELOG.md), [v1.1.0 — Post-v1 Wave](#v110--post-v1-wave-shipped),
-and [v1.2.0 — Breadth Wave](#v120--breadth-wave-shipped)
+[v1.2.0 — Breadth Wave](#v120--breadth-wave-shipped), and
+[v1.3.0 — Policy & Governance Wave](#v130--policy--governance-wave-shipped)
 below). This is a living document — update it as direction shifts.
 
 Legend: `[x]` done · `[ ]` planned · phases are strictly ordered; a phase's
@@ -238,8 +240,8 @@ them.)
       skeleton to every tool invocation: `key_id`, `args_hash` (never raw
       args), duration, outcome, `prev_hash` chaining; 30-day rotation
       (configurable via `ULTRANIX_MCP_AUDIT_RETENTION_DAYS`)
-- [x] Prometheus `/metrics` (4 series at v1.0.0; 8 as of v1.1.0 — see
-      ARCHITECTURE.md §7); `/health` and `/readyz` endpoints;
+- [x] Prometheus `/metrics` (4 series at v1.0.0; 8 as of v1.1.0; 10 since
+      v1.3.0 — see ARCHITECTURE.md §7); `/health` and `/readyz` endpoints;
       `ultranix-mcp keygen` CLI
 - [x] Optional Sentry error reporting via `ULTRANIX_MCP_SENTRY_DSN` —
       **shipped at v1.1.0** (opt-in; the `sentry-tracing` layer attaches
@@ -395,6 +397,42 @@ surface grew from 32 to **39 tools in 6 categories**:
 - [x] **AT-SPI scan cache** — `wait_for_ui_element` & friends reuse a
       cached `TreeScan` (300 ms TTL) instead of re-walking the tree every
       250 ms poll; staleness bounded by TTL + one poll
+
+## v1.3.0 — Policy & Governance Wave (shipped)
+
+Runtime access control and audit hardening — the tool surface is
+unchanged (39 tools / 6 categories); every item is an additive
+security/ops knob ([ADR 0010](docs/adr/0010-policy-controls.md)):
+
+- [x] **`policy.toml` runtime policy** — TOML file
+      (`~/.config/ultranix-mcp/policy.toml`, or `--policy=PATH`)
+      declaring `default_role`, named `roles` (`readonly` /
+      `allow_tools` / `deny_tools`), and a `keys` map binding API-key
+      fingerprints to roles for per-key scoping on HTTP (stdio and
+      unmapped keys resolve to `default_role`). Loading is fail-closed:
+      a missing/malformed explicit `--policy`, misspelled TOML keys
+      (`deny_unknown_fields`), and `keys` → undefined-role references
+      all abort startup
+- [x] **`--readonly`** — restricts the default role to the 15-tool
+      non-mutating preset; `allow_tools` unions with the preset, so
+      operators can opt individual mutating tools back in
+- [x] **`--allow-tools` / `--deny-tools`** — per-tool lists scoped to
+      `default_role` only: `--allow-tools` replaces the file's
+      default-role allowlist (unioning with the preset under
+      `--readonly`), `--deny-tools` adds to it; denials surface as
+      `-32018 ReadOnlyMode` / `-32019 NotInToolList` with an audited
+      `denial_reason`
+- [x] **Backend metrics + build info** —
+      `ultranix_mcp_backend_calls_total{backend,outcome}` and
+      `ultranix_mcp_build_info{version}` (10 shipped series); `denied`
+      joined the tool-call outcome vocabulary
+- [x] **Audit HMAC** — `ULTRANIX_MCP_AUDIT_SECRET` signs every
+      `audit.jsonl` line (HMAC-SHA256 over the canonical record;
+      `prev_hash` covers the signed line). Rollout caveat: enable on a
+      fresh/rotated log — pre-secret unsigned lines fail verification
+- [x] **Startup policy warnings** — CLI policy flags coexisting with
+      named roles, a `keys` map under an unrestricted `default_role`,
+      and a `keys` map on stdio/disabled auth all log loud warnings
 
 ## Post-v1 Ideas
 

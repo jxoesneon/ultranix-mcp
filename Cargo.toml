@@ -1,6 +1,6 @@
 [package]
 name = "ultranix-mcp"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Rust MCP server for Linux desktop automation — Wayland/Hyprland-first"
@@ -85,6 +85,13 @@ sentry = { version = "0.49", default-features = false, features = [
 pipewire = { version = "0.10", optional = true }
 blake3 = "1.8.7"
 dashmap = { version = "6.2.1", optional = true }
+# Runtime access-control policy: TOML config file for per-key scoping,
+# readonly mode, and per-tool allow/deny lists (ADR 0010).
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+# Optional HMAC-SHA256 over audit.jsonl lines for SIEM tamper evidence.
+hmac = "0.12"
+# Standard config-dir lookup for the default policy file path.
+dirs = "6"
 
 [features]
 # Per-backend feature split (v1.2.0): every backend group is default-on so

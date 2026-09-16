@@ -1,6 +1,6 @@
 # Architecture Overview
 
-> **Status:** Implemented (v1.2.0) — all six phases of the plan in
+> **Status:** Implemented (v1.3.0) — all six phases of the plan in
 > [Implementation Phases](#implementation-phases) have shipped, the
 > v1.1.0 wave landed the layer-shell `OverlayProvider`/`screen_highlight`,
 > the X11-native provider rungs (`scrot`/`xdotool`/`wmctrl`), PipeWire
@@ -11,7 +11,17 @@
 > `plugin_reload`), bounded `screen_record`, compositor-breadth session
 > detection (sway/Wayfire/river/KDE/GNOME) with the `sway-ipc` window
 > provider, the per-backend cargo-feature split, the framed v2 action-
-> history format, and the AT-SPI element-scan cache.
+> history format, and the AT-SPI element-scan cache. The v1.3.0
+> policy-and-governance wave then added the fail-closed TOML runtime
+> access-control policy (`--policy`, default
+> `~/.config/ultranix-mcp/policy.toml`; `default_role`/`roles`/`keys`
+> with per-key scoping on HTTP), the `--readonly`/`--allow-tools`/
+> `--deny-tools` CLI overrides scoped to `default_role`, the `-32018
+> ReadOnlyMode`/`-32019 NotInToolList` policy-denial codes, `denied` in
+> the tool-call outcome vocabulary, the `ultranix_mcp_backend_calls_total`
+> and `ultranix_mcp_build_info` series (10 shipped in §7), and optional
+> per-line HMAC-SHA256 signing of `audit.jsonl` via
+> `ULTRANIX_MCP_AUDIT_SECRET` (ADR 0010).
 > Items that remain unimplemented are marked inline as **planned /
 > post-v1**.
 
@@ -99,7 +109,7 @@ graph TB
 
     subgraph "Observability"
         HEALTH[Health Endpoints<br/>/health · /readyz]
-        METRICS[Prometheus /metrics<br/>8 shipped series]
+        METRICS[Prometheus /metrics<br/>10 shipped series]
         AUDIT[JSONL Audit Log]
         HISTORY[AES-256-GCM<br/>Action History]
         SENTRY[Optional Sentry<br/>opt-in via ULTRANIX_MCP_SENTRY_DSN]
@@ -477,7 +487,7 @@ graph TB
     EXEC --> ERR[Error Pipeline]
 
     LOG --> TRACING[tracing +<br/>tracing-subscriber]
-    METRICS --> PROM[src/metrics.rs<br/>dependency-free exporter<br/>8 shipped series]
+    METRICS --> PROM[src/metrics.rs<br/>dependency-free exporter<br/>10 shipped series]
     HISTORY --> JSON[~/.ultranix-mcp/<br/>history.json — AES-256-GCM]
     ERR --> SENTRY2[Optional Sentry<br/>ULTRANIX_MCP_SENTRY_DSN<br/>opt-in, off when unset/malformed]
 
@@ -485,7 +495,7 @@ graph TB
     PROM --> ENDPOINT[:3010/metrics]
 ```
 
-**The 8 shipped Prometheus series** — *this table is the canonical normative
+**The 10 shipped Prometheus series** — *this table is the canonical normative
 source for the metric catalog*; every other document (including the `metrics`
 tool reference in TOOLS.md) references these names rather than restating
 them. The registry is the dependency-free exporter in `src/metrics.rs` — no
@@ -493,8 +503,10 @@ them. The registry is the dependency-free exporter in `src/metrics.rs` — no
 
 | Metric | Type | Labels | Description |
 | ------ | ---- | ------ | ----------- |
-| `ultranix_mcp_tool_calls_total` | Counter | `tool`, `outcome` | Tool call count by outcome (`ok`, `tool_error`, `consent_required`, `error`) |
+| `ultranix_mcp_tool_calls_total` | Counter | `tool`, `outcome` | Tool call count by outcome (`ok`, `tool_error`, `consent_required`, `denied`, `error`) |
 | `ultranix_mcp_tool_duration_seconds` | Histogram | `tool` | Per-tool execution latency (fixed-bucket `_bucket{le}` / `_sum` / `_count`) |
+| `ultranix_mcp_backend_calls_total` | Counter | `backend`, `outcome` | Tool call count by resolved backend and outcome (v1.3.0 — `backend` is `"core"` for server-managed tools, else the provider backend name) |
+| `ultranix_mcp_build_info` | Gauge | `version` | Build information for the running binary — constant `1` labelled with `CARGO_PKG_VERSION` (v1.3.0) |
 | `ultranix_mcp_rate_limit_rejections_total` | Counter | `reason` | 429 rejections |
 | `ultranix_mcp_auth_failures_total` | Counter | `reason` | HTTP auth failures (401s) by rejection reason |
 | `ultranix_mcp_active_sessions` | Gauge | `transport` | Live stdio/HTTP sessions |
@@ -836,7 +848,7 @@ crate::metrics::record_call(tool_name, elapsed, "ok");
 | **1 — Hyprland I/O + security scaffolding** | wlr-screencopy capture, virtual-pointer/keyboard input, hyprctl WindowProvider; input sanitization, arg-constrained exec, path whitelist, audit skeleton, consent gate | Screenshot <50ms, click <10ms on real Hyprland; consent challenge on `system_command` |
 | **2 — AT-SPI2** | `AtspiUi` provider: tree, focus, multi-match `find_element`, AT-SPI action invocation (`invoke_element`); `set_spatial_focus` shipped process-scoped; `screen_highlight` draws a real `zwlr_layer_shell_v1` overlay (the layer-shell `Overlay` backend landed at v1.1.0) | `get_ui_tree` <500ms on live session |
 | **3 — Vision + CDP** | ort OCR + OWL-ViT, model cache, `CdpBrowser`, blake3-keyed OCR/icon result cache (v1.1.0) | `find_text_on_screen` <2s; `web_query` on :9222 |
-| **4 — Enterprise** | HTTP auth surface (`uxcp_*` enforcement on `:3010`, fail-closed bind), token-bucket rate limiting (10 req/s), AES-256-GCM history, JSONL audit rotation, 8 shipped metrics, health endpoints, opt-in Sentry via `ULTRANIX_MCP_SENTRY_DSN` (wired at v1.1.0) | Threat-model table fully enforced; `/metrics` live |
+| **4 — Enterprise** | HTTP auth surface (`uxcp_*` enforcement on `:3010`, fail-closed bind), token-bucket rate limiting (10 req/s), AES-256-GCM history, JSONL audit rotation, Prometheus metrics (8 series at ship; 10 since v1.3.0), health endpoints, opt-in Sentry via `ULTRANIX_MCP_SENTRY_DSN` (wired at v1.1.0) | Threat-model table fully enforced; `/metrics` live |
 | **5 — Portability + packaging** | uinput/portal fallback chains (session-agnostic), X11-native rungs (`scrot`/`xdotool`/`wmctrl`, shipped at v1.1.0), PipeWire RemoteDesktop stream consumption (v1.1.0), systemd unit, packaging, `server.json` registry manifest | Boots and degrades cleanly on non-Hyprland Wayland and X11 |
 
 ## References

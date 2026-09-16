@@ -2,7 +2,12 @@
 
 Complete API specification for every tool exposed by **ultranix-mcp**, the
 Rust MCP server for Linux desktop automation. This document describes the
-shipped v1.2.0 tool surface.
+shipped v1.2.0 tool surface — unchanged at v1.3.0, which added only
+runtime controls around it: the `policy.toml` access-control policy with
+per-key role scoping, the `--readonly`/`--allow-tools`/`--deny-tools`
+flags, `-32018`/`-32019` policy denials, per-backend/build-info metrics,
+and optional audit-log HMAC (see [Maturity Phases](#maturity-phases) and
+[ADR 0010](adr/0010-policy-controls.md)).
 
 - **Server**: `ultranix-mcp` (Rust 2024, tokio, `rmcp` SDK)
 - **Transports**: stdio and streamable HTTP on `:3010` (canonical JSON-RPC
@@ -377,6 +382,8 @@ Standard JSON-RPC 2.0 codes plus server-defined codes in the
 | `-32015` | `ConsentRequired` | Destructive call lacks a valid consent token | first `system_command`, `replay_action`, `clear_action_history`, `clipboard_set`, `clipboard_clear`, or `window_control{action:"close"}` without `consent_token`; `data` carries the challenge token (see [Destructive-Action Consent](#destructive-action-consent)) |
 | `-32016` | `ElementNotFound` | Action-targeted element query matched nothing | `invoke_element` query with no AT-SPI match |
 | `-32017` | `PluginStepError` | A `plugin_run` step failed at the tool level (`isError` result) or hit a post-validation template fault | `plugin_run` whose step returned an `isError` result; `data` carries `plugin`, `step`, `tool`, `detail`. JSON-RPC errors from the inner dispatch keep their own code instead (a step's `-32015 ConsentRequired` survives intact) |
+| `-32018` | `ReadOnlyMode` | Tool denied by a readonly role — the `--readonly` flag or `readonly = true` on the resolved role in `policy.toml` | a tool outside the 15-tool readonly preset (and not opted back in via `allow_tools`) called under a readonly role |
+| `-32019` | `NotInToolList` | Tool denied by the runtime policy allowlist/denylist | a tool not in `allow_tools`, or present in `deny_tools`, for the resolved role |
 
 Example error response:
 
@@ -2109,7 +2116,10 @@ filename order; later duplicates are skipped.
   secured dispatch + audit record — the cap keeps one `plugin_run`
   bounded).
 - `step.tool` must be a real catalog tool; `plugin_*` names are rejected
-  so plugins cannot compose into unbounded macro recursion.
+  so plugins cannot compose into unbounded macro recursion, and
+  `replay_action` is likewise rejected (since v1.3.0) — it re-enters the
+  secured dispatch layer and could chain a recorded `plugin_run` back
+  into plugin execution.
 - Every `${ref}` inside a step's string args must reference a declared
   param.
 
@@ -2146,3 +2156,13 @@ providers: a Phase-2 tool on a system without an AT-SPI bus is still listed
 called. Deployment-time `--category` filters (see
 [API_VERSIONING.md](API_VERSIONING.md#category-filters)) remove tools from the
 listing entirely.
+
+A second, finer-grained filter was added at v1.3.0: the runtime
+access-control policy (`docs/adr/0010-policy-controls.md`). The server can
+be started with `--readonly` (advertises only the non-mutating catalog),
+`--allow-tools=tool1,tool2`, `--deny-tools=tool3`, or `--policy=/path/to/policy.toml`
+for per-key role scoping. Policy-hidden tools are removed from
+`tools/list` *and* rejected in `tools/call` — a caller cannot guess a
+hidden tool into existence. Denied calls return `-32018 ReadOnlyMode`
+or `-32019 NotInToolList` and are audited with an explicit
+`denial_reason` field.

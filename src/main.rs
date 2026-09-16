@@ -1,6 +1,8 @@
 //! ultranix-mcp entrypoint — transport selection, provider bootstrap,
 //! stderr tracing (stdout is reserved for MCP JSON-RPC).
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
@@ -8,6 +10,7 @@ use tracing_subscriber::prelude::*;
 use ultranix_mcp::backend::detect::{SessionInfo, detect_providers};
 use ultranix_mcp::providers::Providers;
 use ultranix_mcp::security::SecurityContext;
+use ultranix_mcp::security::audit::HMAC_SECRET_ENV;
 use ultranix_mcp::server::UltraNixServer;
 use ultranix_mcp::state::StateDir;
 
@@ -48,6 +51,36 @@ struct Cli {
     /// every gated call is still audited, stamped "consent: bypassed").
     #[arg(long)]
     allow_destructive: bool,
+
+    /// Read-only mode: advertise and allow only the non-mutating
+    /// observation catalog (applies to the default role). Input,
+    /// window-control, system command, clipboard writes, and plugin_run
+    /// are denied with `denial_reason=readonly_mode`.
+    #[arg(long)]
+    readonly: bool,
+
+    /// Comma-separated list of tools the default role is explicitly
+    /// allowed to call. Replaces the policy file's default-role
+    /// allowlist (under `--readonly` it merges into the union of the
+    /// readonly preset and the file allowlist); every unlisted tool is
+    /// denied. Scopes to the default role only — named roles in a
+    /// policy file are unaffected.
+    #[arg(long, value_delimiter = ',')]
+    allow_tools: Vec<String>,
+
+    /// Comma-separated list of tools explicitly denied to the default
+    /// role even if a category or allowlist would otherwise permit them.
+    /// Scopes to the default role only.
+    #[arg(long, value_delimiter = ',')]
+    deny_tools: Vec<String>,
+
+    /// Path to a TOML policy file defining named roles and per-key
+    /// mappings (`~/.config/ultranix-mcp/policy.toml` is the default
+    /// when this flag is omitted and the file exists). An explicitly
+    /// named file that is missing or malformed aborts startup —
+    /// fail-closed.
+    #[arg(long)]
+    policy: Option<PathBuf>,
 
     /// Force mock providers regardless of detected backends (testing).
     #[arg(long)]
@@ -101,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     base.init();
+    ultranix_mcp::metrics::set_build_info();
 
     #[cfg(feature = "sentry")]
     {
@@ -139,19 +173,58 @@ async fn main() -> anyhow::Result<()> {
         detect_providers(&session)
     };
 
-    let security = SecurityContext::new(
+    let audit_secret = std::env::var(HMAC_SECRET_ENV)
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let mut security = SecurityContext::new(
         state.root(),
         cli.allow_destructive,
         matches!(
             session.session_type,
             ultranix_mcp::backend::detect::SessionType::X11
         ),
+    )?
+    .with_audit_secret(audit_secret);
+    let default_policy_path = dirs::config_dir()
+        .map(|p| p.join("ultranix-mcp").join("policy.toml"))
+        .filter(|p| p.is_file());
+    let policy = ultranix_mcp::security::policy::Policy::from_file_and_cli(
+        cli.policy.as_deref().or(default_policy_path.as_deref()),
+        cli.readonly,
+        &cli.allow_tools,
+        &cli.deny_tools,
     )?;
+    // Surface the silent-degradation cases the operator cannot otherwise see.
+    let cli_flags_scoped =
+        cli.readonly || !cli.allow_tools.is_empty() || !cli.deny_tools.is_empty();
+    if cli_flags_scoped && !policy.roles.is_empty() {
+        tracing::warn!(
+            "CLI policy flags scope to default_role only; named roles in the policy file are unaffected"
+        );
+    }
+    let keys_configured = !policy.keys.is_empty();
+    if keys_configured {
+        let default = &policy.default_role;
+        if !default.readonly && default.allow_tools.is_none() && default.deny_tools.is_empty() {
+            tracing::warn!(
+                "policy keys map is configured but default_role is unrestricted — unmapped keys get the full tool surface"
+            );
+        }
+    }
+    security.set_policy(policy);
     let session_id = ultranix_mcp::security::consent::new_session_id();
 
     let server = UltraNixServer::new(providers, cli.category).with_security(security, session_id);
 
     let use_stdio = cli.stdio || matches!(cli.transport, Transport::Stdio);
+    let auth_disabled = std::env::var_os(ultranix_mcp::security::auth::ENV_DISABLE_AUTH)
+        .map(|v| ultranix_mcp::security::auth::is_truthy(&v))
+        .unwrap_or(false);
+    if keys_configured && (use_stdio || auth_disabled) {
+        tracing::warn!(
+            "policy keys map is configured but per-key scoping will never resolve — caller identity is absent on stdio and when auth is disabled"
+        );
+    }
     if use_stdio {
         server.serve_stdio().await
     } else {
@@ -354,6 +427,32 @@ mod tests {
         assert!(cli.category.is_empty());
         assert!(!cli.allow_destructive);
         assert!(!cli.mock);
+        assert!(!cli.readonly);
+        assert!(cli.allow_tools.is_empty());
+        assert!(cli.deny_tools.is_empty());
+        assert!(cli.policy.is_none());
+    }
+
+    #[test]
+    fn cli_parses_policy_flags() {
+        let cli = Cli::try_parse_from([
+            "ultranix-mcp",
+            "--readonly",
+            "--allow-tools",
+            "screenshot,get_windows",
+            "--deny-tools",
+            "plugin_run",
+            "--policy",
+            "/tmp/policy.toml",
+        ])
+        .unwrap();
+        assert!(cli.readonly);
+        assert_eq!(cli.allow_tools, vec!["screenshot", "get_windows"]);
+        assert_eq!(cli.deny_tools, vec!["plugin_run"]);
+        assert_eq!(
+            cli.policy.as_deref(),
+            Some(std::path::Path::new("/tmp/policy.toml"))
+        );
     }
 
     #[test]

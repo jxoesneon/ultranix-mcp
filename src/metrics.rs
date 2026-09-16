@@ -12,6 +12,8 @@
 //! - `ultranix_mcp_tool_calls_total{tool,outcome}` — counter
 //! - `ultranix_mcp_tool_duration_seconds{tool}` — histogram
 //!   (`_bucket{le}` / `_sum` / `_count`)
+//! - `ultranix_mcp_backend_calls_total{backend,outcome}` — counter
+//! - `ultranix_mcp_build_info{version}` — gauge
 //! - `ultranix_mcp_rate_limit_rejections_total{reason}` — counter
 //! - `ultranix_mcp_auth_failures_total{reason}` — counter
 //! - `ultranix_mcp_active_sessions{transport}` — gauge
@@ -70,9 +72,13 @@ impl Histogram {
 #[derive(Default)]
 struct Registry {
     /// `ultranix_mcp_tool_calls_total` keyed by `(tool, outcome)`.
-    calls: BTreeMap<(String, String), u64>,
+    calls: BTreeMap<(&'static str, &'static str), u64>,
     /// `ultranix_mcp_tool_duration_seconds` keyed by `tool`.
-    durations: BTreeMap<String, Histogram>,
+    durations: BTreeMap<&'static str, Histogram>,
+    /// `ultranix_mcp_backend_calls_total` keyed by `(backend, outcome)`.
+    backend_calls: BTreeMap<(&'static str, &'static str), u64>,
+    /// Whether the process build-information gauge has been initialised.
+    build_info: bool,
     /// `ultranix_mcp_rate_limit_rejections_total` keyed by `reason`.
     rate_rejections: BTreeMap<String, u64>,
     /// `ultranix_mcp_auth_failures_total` keyed by `reason`.
@@ -100,20 +106,49 @@ fn registry() -> MutexGuard<'static, Registry> {
 /// in `ultranix_mcp_tool_duration_seconds{tool}`.
 ///
 /// `outcome` uses the audit vocabulary: `ok`, `tool_error`,
-/// `consent_required`, `error`.
-pub fn record_call(tool: &str, duration: Duration, outcome: &str) {
+/// `consent_required`, `denied`, `error`. All keys are `&'static` —
+/// callers pass the catalog tool name (`metric_label`) and fixed
+/// outcome literals — so a map hit allocates nothing.
+pub fn record_call(tool: &'static str, duration: Duration, outcome: &'static str) {
     let mut reg = registry();
-    *reg.calls
-        .entry((tool.to_string(), outcome.to_string()))
-        .or_insert(0) += 1;
+    record_tool_call(&mut reg, tool, duration, outcome);
+}
+
+/// Record one tool invocation and attribute it to its resolved provider
+/// backend. This emits the existing per-tool counter and histogram as well as
+/// `ultranix_mcp_backend_calls_total{backend,outcome}`.
+pub fn record_call_with_backend(
+    tool: &'static str,
+    backend: &'static str,
+    duration: Duration,
+    outcome: &'static str,
+) {
+    let mut reg = registry();
+    record_tool_call(&mut reg, tool, duration, outcome);
+    *reg.backend_calls.entry((backend, outcome)).or_insert(0) += 1;
+}
+
+fn record_tool_call(
+    reg: &mut Registry,
+    tool: &'static str,
+    duration: Duration,
+    outcome: &'static str,
+) {
+    *reg.calls.entry((tool, outcome)).or_insert(0) += 1;
     reg.durations
-        .entry(tool.to_string())
+        .entry(tool)
         .or_insert_with(|| Histogram {
             buckets: [0; N_BUCKETS],
             sum: 0.0,
             count: 0,
         })
         .observe(duration.as_secs_f64());
+}
+
+/// Initialise `ultranix_mcp_build_info` for this process. Repeated calls are
+/// idempotent; the version label is fixed at compile time.
+pub fn set_build_info() {
+    registry().build_info = true;
 }
 
 /// Increment `ultranix_mcp_rate_limit_rejections_total{reason}` —
@@ -206,6 +241,31 @@ pub fn exposition() -> String {
             "ultranix_mcp_tool_duration_seconds_count{{tool=\"{}\"}} {}",
             esc(tool),
             h.count
+        );
+    }
+
+    out.push_str(
+        "# HELP ultranix_mcp_backend_calls_total Tool call count by resolved backend and outcome.\n",
+    );
+    out.push_str("# TYPE ultranix_mcp_backend_calls_total counter\n");
+    for ((backend, outcome), n) in &reg.backend_calls {
+        let _ = writeln!(
+            out,
+            "ultranix_mcp_backend_calls_total{{backend=\"{}\",outcome=\"{}\"}} {n}",
+            esc(backend),
+            esc(outcome)
+        );
+    }
+
+    out.push_str(
+        "# HELP ultranix_mcp_build_info Build information for this UltraNix MCP binary.\n",
+    );
+    out.push_str("# TYPE ultranix_mcp_build_info gauge\n");
+    if reg.build_info {
+        let _ = writeln!(
+            out,
+            "ultranix_mcp_build_info{{version=\"{}\"}} 1",
+            esc(env!("CARGO_PKG_VERSION"))
         );
     }
 
@@ -312,6 +372,47 @@ mod tests {
             "ultranix_mcp_tool_calls_total{tool=\"test_ctr_tool\",outcome=\"error\"} 1\n"
         ));
         assert!(exp.contains("# TYPE ultranix_mcp_tool_calls_total counter\n"));
+    }
+
+    #[test]
+    fn backend_counter_increments_per_backend_outcome_pair() {
+        record_call_with_backend(
+            "test_backend_tool",
+            "test-backend-counter",
+            Duration::from_millis(2),
+            "ok",
+        );
+        record_call_with_backend(
+            "test_backend_tool",
+            "test-backend-counter",
+            Duration::from_millis(4),
+            "ok",
+        );
+        record_call_with_backend(
+            "test_backend_tool",
+            "test-backend-counter",
+            Duration::from_millis(1),
+            "tool_error",
+        );
+        let exp = exposition();
+        assert!(exp.contains(
+            "ultranix_mcp_backend_calls_total{backend=\"test-backend-counter\",outcome=\"ok\"} 2\n"
+        ));
+        assert!(exp.contains(
+            "ultranix_mcp_backend_calls_total{backend=\"test-backend-counter\",outcome=\"tool_error\"} 1\n"
+        ));
+        assert!(exp.contains("# TYPE ultranix_mcp_backend_calls_total counter\n"));
+    }
+
+    #[test]
+    fn build_info_gauge_reports_package_version() {
+        set_build_info();
+        let exp = exposition();
+        assert!(exp.contains(&format!(
+            "ultranix_mcp_build_info{{version=\"{}\"}} 1\n",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(exp.contains("# TYPE ultranix_mcp_build_info gauge\n"));
     }
 
     #[test]

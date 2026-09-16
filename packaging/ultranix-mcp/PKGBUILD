@@ -1,6 +1,6 @@
 # Maintainer: jxoesneon <jxoesneon@users.noreply.github.com>
 pkgname=ultranix-mcp
-pkgver=1.2.0
+pkgver=1.3.0
 pkgrel=1
 pkgdesc="Wayland-native, security-first MCP server for Linux desktop automation (Hyprland-first, with sway/KDE fallbacks and clipboard tools)"
 arch=('x86_64' 'aarch64')

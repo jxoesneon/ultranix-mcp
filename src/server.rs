@@ -216,6 +216,7 @@ async fn http_gate(
                             caller: Some(&identity),
                             consent: None,
                         },
+                        None,
                     )
                 })
                 .await;
@@ -304,10 +305,26 @@ impl ServerHandler for UltraNixServer {
     async fn list_tools(
         &self,
         _params: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        // Apply the runtime policy to the advertised catalog: per-key
+        // scoping on HTTP, default role on stdio.
+        let (policy, key_id) = if let Some(sec) = self.security.as_ref() {
+            let key_id = context
+                .extensions
+                .get::<axum::http::request::Parts>()
+                .and_then(|parts| parts.extensions.get::<McpKeyIdentity>())
+                .and_then(|k| k.0.clone());
+            (Some(&sec.policy), key_id)
+        } else {
+            (None, None)
+        };
         Ok(ListToolsResult {
-            tools: tools::list_tools(self.categories.as_deref().map(|v| v.as_slice())),
+            tools: tools::list_tools_for(
+                self.categories.as_deref().map(|v| v.as_slice()),
+                policy,
+                key_id.as_deref(),
+            ),
             ..Default::default()
         })
     }

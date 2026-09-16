@@ -14,6 +14,8 @@ fn codes_module_constants_match_spec() {
     assert_eq!(codes::PROVIDER_UNAVAILABLE, -32010);
     assert_eq!(codes::CONSENT_REQUIRED, -32015);
     assert_eq!(codes::PLUGIN_ERROR, -32017);
+    assert_eq!(codes::READ_ONLY_MODE, -32018);
+    assert_eq!(codes::NOT_IN_TOOL_LIST, -32019);
 }
 
 #[test]

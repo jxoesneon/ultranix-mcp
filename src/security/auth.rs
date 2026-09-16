@@ -461,7 +461,9 @@ fn extract_credential<'a>(header_key: Option<&'a str>, bearer: Option<&'a str>) 
 }
 
 /// `ULTRANIX_MCP_DISABLE_AUTH` truthiness: `true` (any case) or `1`.
-fn is_truthy(v: &OsString) -> bool {
+/// Shared with `main.rs` startup warnings so both interpret the hatch
+/// identically.
+pub fn is_truthy(v: &OsString) -> bool {
     let s = v.to_string_lossy();
     let s = s.trim();
     s.eq_ignore_ascii_case("true") || s == "1"

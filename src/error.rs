@@ -22,6 +22,11 @@ pub mod codes {
     /// from the inner dispatch keep their own code (so `-32015
     /// ConsentRequired` survives intact).
     pub const PLUGIN_ERROR: i32 = -32017;
+    /// Tool denied because the server is in `--readonly` mode.
+    pub const READ_ONLY_MODE: i32 = -32018;
+    /// Tool denied because it is outside the caller's per-tool allowlist
+    /// or inside its denylist (docs/adr/0010-policy-controls.md).
+    pub const NOT_IN_TOOL_LIST: i32 = -32019;
 }
 
 /// Tool-level failures that map onto MCP `CallToolResult` / JSON-RPC errors.
@@ -90,6 +95,8 @@ mod tests {
         assert_eq!(codes::PROVIDER_UNAVAILABLE, -32010);
         assert_eq!(codes::CONSENT_REQUIRED, -32015);
         assert_eq!(codes::PLUGIN_ERROR, -32017);
+        assert_eq!(codes::READ_ONLY_MODE, -32018);
+        assert_eq!(codes::NOT_IN_TOOL_LIST, -32019);
     }
 
     #[test]

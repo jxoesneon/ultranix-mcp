@@ -1,11 +1,11 @@
 # Threat Model — ultranix-mcp
 
-**Version**: 1.2.0 — **Status**: Implemented (describes the shipped v1.2.0
+**Version**: 1.3.0 — **Status**: Implemented (describes the shipped v1.3.0
 system; mitigations marked *post-v1* are roadmap)
 **Scope**: ultranix-mcp as deployed on its target environment — a single-user
 Wayland/Hyprland desktop on CachyOS (v1.2.0 detection additionally covers
-sway/Wayfire/river/KDE/GNOME sessions), consumed by a local or SSH-tunneled
-MCP client.
+sway/Wayfire/river/KDE/GNOME sessions; v1.3.0 adds the runtime policy
+layer), consumed by a local or SSH-tunneled MCP client.
 
 This is the security design document of record. It names the attackers we
 design against, maps STRIDE threats onto every component, dissects the
@@ -26,8 +26,9 @@ importantly — says plainly what we do **not** protect against.
                 │                 ultranix-mcp                   │
                 │  ┌──────────────────────────────────────────┐  │
                 │  │ Defense-in-depth pipeline                │  │
-                │  │ auth → rate-limit → sanitize → whitelist │  │
-                │  │   → path-whitelist → consent-gate → audit│  │
+                │  │ auth → rate-limit → policy → sanitize   │  │
+                │  │   → whitelist → path-whitelist          │  │
+                │  │   → consent-gate → audit                │  │
                 │  └──────────────────────────────────────────┘  │
                 │  ┌──────────┐ ┌──────────┐ ┌───────────────┐   │
                 │  │ capture  │ │  input   │ │  observation  │   │
@@ -99,7 +100,7 @@ not arbitrate whether a legitimate client's *intent* is good.
 | ------ | ------ | ---------- | -------- |
 | Spoofing | Unauthenticated requests; stolen `uxcp_*` key replayed | Mandatory API key unless `ULTRANIX_MCP_DISABLE_AUTH=true`; SHA-256 hashed compare, constant-time; per-request `auth.failure` audit | Medium: no key rotation enforcement, no mutual auth — see §6 R-1 |
 | Tampering | LAN attacker modifies plaintext HTTP | **No built-in TLS.** Recommended: loopback bind or SSH tunnel | Medium if exposed; Low on loopback |
-| Repudiation | Key shared across clients muddies attribution | Rate-limit/audit identity = key-ID (SHA-256 prefix); one key per client recommended | Medium if keys shared |
+| Repudiation | Key shared across clients muddies attribution | Rate-limit/audit identity = key-ID (SHA-256 prefix); one key per client recommended; v1.3.0 `policy.toml keys` can also bind each key-ID to a least-privilege role | Medium if keys shared |
 | Information disclosure | Response sniffing on LAN | Same as Tampering | Same |
 | DoS | Request flood / slow-loris | 10 req/s token bucket per client; connection caps; body-size limits | Low–Medium |
 | EoP | HTTP-layer bug reaching whitelisted `exec` | Sanitization + closed whitelist sit *behind* auth, not instead of it | Low |
@@ -152,7 +153,7 @@ not arbitrate whether a legitimate client's *intent* is good.
 | STRIDE | Threat | Mitigation | Residual |
 | ------ | ------ | ---------- | -------- |
 | Info. disclosure | `history.json` read by backup tools / same-UID peers | AES-256-GCM at rest; dir `0700` | Low at rest; plaintext exists in memory |
-| Tampering | Audit log rewritten to hide activity | Append-only JSONL; **no integrity sealing** — same-UID attacker can edit, §6 R-6 | Medium |
+| Tampering | Audit log rewritten to hide activity | Append-only JSONL, `prev_hash` chaining; **optional per-line HMAC-SHA256** (`ULTRANIX_MCP_AUDIT_SECRET`, v1.3.0) turns truncation/splicing into detectable forgeries — but the key lives in the same env an attacker may read, §6 R-6 | Medium (Low–Medium with HMAC + a protected secret) |
 | Info. disclosure | `/tmp` screenshot residue | `mktemp` + `0600` + deterministic cleanup; `PrivateTmp=yes` under systemd recommended | Low |
 | EoP | Key material on disk | Keys live in env, never written by the server | Low |
 
@@ -473,6 +474,57 @@ not judge intent. An injected agent can still move windows, focus attacker
 chosen targets, and drive input — bounded, audited, consent-gated where
 destructive, but real (§6 R-2).
 
+### 4.14 Runtime policy layer (v1.3.0) — least-privilege enforcement
+
+**Risk.** Bearer-key auth (TB-1) is binary: any valid `uxcp_*` key reaches
+the full 39-tool catalog. A scoped-down key for a read-only observer, or a
+"no input tools" profile for an untrusted agent, was previously
+impossible — every caller was as powerful as every other.
+
+**Mitigations.**
+
+- A `Policy` loaded at startup from `policy.toml`
+  (`~/.config/ultranix-mcp/policy.toml` or `--policy=`), layered with the
+  `--readonly` / `--allow-tools=` / `--deny-tools=` CLI flags, resolves
+  every `tools/list` and `tools/call` through a `Role`
+  (`readonly` preset ∪ `allow_tools`, minus `deny_tools` — deny always
+  wins). `tools/list` is *filtered*, so a denied tool is neither
+  advertised nor callable by name-guessing.
+- The policy check runs **before** consent, provider lookup, or any side
+  effect; denials audit `denial_reason` (`readonly_mode` /
+  `not_in_tool_list`) and return `-32018`/`-32019`. Plugin steps and
+  `replay_action` re-enter the same check under the same caller identity —
+  no dispatch path bypasses it.
+- **Per-key scoping**: `keys` maps 8-hex `key_id` fingerprints to named
+  roles, so different HTTP clients get different surfaces. Unmapped keys
+  and stdio resolve to `default_role`.
+- **Fail-closed loading**: an explicit `--policy` path that is missing or
+  malformed aborts startup; `deny_unknown_fields` turns misspelled TOML
+  keys into errors; `keys` entries referencing undefined roles abort
+  rather than silently granting `default_role`; malformed key
+  fingerprints and unknown tool names produce loud startup warnings.
+- The `--readonly` preset is strictly observational (15 tools) —
+  `invoke_element`, `screen_highlight`, `set_spatial_focus`,
+  `screen_record`, `clipboard_get`, `get_action_history`, and
+  `plugin_reload` are deliberately excluded despite being read-ish,
+  because each mutates state or discloses cross-caller data.
+
+**Residuals.**
+
+- **Policy file is same-UID writable** (R-16): the config that bounds a
+  key's power lives under the same `~/.config/` an attacker-as-user can
+  edit. Fail-closed parsing prevents silent widening via typos, but a
+  deliberate rewrite is an accepted same-UID risk (same class as
+  `plugins/*.json`, R-14).
+- **8-hex fingerprint bound** (R-16): `key_id` is the first 8 hex chars of
+  the key's SHA-256 — a ~32-bit space. Two configured keys colliding is
+  unlikely at realistic key counts (birthday bound ~77k keys for 50%), but
+  a collision silently aliases one client's role onto another.
+- **Union semantics can surprise**: under a `readonly` role, an
+  `allow_tools` entry *opts a mutating tool back in* — the union is
+  documented and deliberate, but an operator who expects `readonly` to be
+  a hard ceiling will be surprised. Deny lists are the hard ceiling.
+
 ---
 
 ## 5. Attack Trees — Top 3 Scenarios
@@ -541,7 +593,7 @@ bottom line.**
 | **R-3** | Same-UID local process reads `/proc/<pid>/environ` → recovers API key | Medium | Linux exposes env to same-UID readers; fundamental | Dedicated service user; stdio preferred for local clients |
 | **R-4** | CDP `:9222` open to all local processes → browser profile compromise | Medium–High | CDP has no auth; Chrome's design, not ours | `--remote-debugging-pipe`; dedicated browser profile; firewall |
 | **R-5** | Secret leakage into plaintext `audit.jsonl` despite redaction heuristics | Medium | No heuristic catches every secret shape | Treat `logs/` as sensitive; `0700`; avoid typing secrets via tools |
-| **R-6** | Same-UID attacker edits/forges `audit.jsonl` | Medium | `prev_hash` hash-chaining makes naive edits/truncation detectable, but there is no external anchor — an attacker who rewrites the file can recompute the whole chain | Ship logs to journald/SIEM via systemd stdout as well as file; verify chain integrity against the shipped copy |
+| **R-6** | Same-UID attacker edits/forges `audit.jsonl` | Medium | `prev_hash` hash-chaining makes naive edits/truncation detectable; the optional per-line HMAC (`ULTRANIX_MCP_AUDIT_SECRET`) makes forged or spliced lines verifiable — but the secret sits in the same process env the attacker may read, and there is still no external anchor: an attacker who learns the secret rewrites the file wholesale | Set `ULTRANIX_MCP_AUDIT_SECRET`; ship logs to journald/SIEM via systemd stdout as well as file; verify chain+HMAC integrity against the shipped copy |
 | **R-7** | uinput mode enables physical-equivalent input to privileged prompts (sudo/polkit) | Medium–High when active | Required fallback where virtual-input protocols unavailable | Prefer Wayland virtual input; dedicated udev group; watch `/readyz` + `backend.uinput.active` audit events + the `ultranix_mcp_backend_active{backend="uinput"}` gauge |
 | **R-8** | Portal consent self-approval loop (agent clicks its own consent dialog) | Medium | Consent UI rendered on the same automatable desktop. The `-32015` consent gate avoids this shape — its challenge travels the MCP channel, not a clickable dialog — but covers only the destructive tool class; portal dialogs remain exposed | Disable virtual input when portals in use; accept per-session consent is UX, not boundary |
 | **R-9** | No TLS on `:3010` — passive sniffing if bound beyond loopback | Medium (Low on loopback) | TLS out of scope for v1; local-first assumption | SSH tunnel or reverse proxy; never bind to LAN |
@@ -551,6 +603,7 @@ bottom line.**
 | **R-13** | `invoke_element` and pointer-class UI-interaction tools can activate privileged dialogs (polkit "Authenticate", `systemd-ask-password`) | Medium–High | UI-interaction tools are physical-input-equivalent — the same residual class as any input injector (R-7); the consent gate deliberately does not cover that class, since a per-call challenge adds friction, not a boundary | Trusted-session deployment only; full `args_hash` audit trail; keep `--allow-destructive` off unattended deployments; prefer the compositor-scoped Wayland virtual-input backend over uinput |
 | **R-14** | Same-UID attacker writes a hostile `plugins/*.json` manifest chaining semantically-powerful tools under one innocuous name | Medium | Requires the same-UID state-dir access that already reaches `history.json`; manifests are data (no code exec), `plugin_*` recursion is rejected, and every step re-enters consent/audit — but a *valid* macro can still chain real tools | Keep `~/.ultranix-mcp/` `0700` (default); review `plugin_reload` diagnostics; per-step consent stays on (`--allow-destructive` off unattended) |
 | **R-15** | `clipboard_get` exfiltrates clipboard-held secrets to an authorized/injected client | Medium | Ambient same-session readability of the clipboard — reads are audited, not gated (consistent with `screenshot`); writes/clears are consent-gated | Treat clipboard contents as sensitive; audit `clipboard_get` frequency; scope client keys |
+| **R-16** | Same-UID attacker rewrites `policy.toml` to widen a restricted key's role — or a key-fingerprint collision aliases roles | Medium | Policy is startup-loaded, same-UID config like `plugins/*.json`; the 8-hex `key_id` space (~32 bits) collides under ~77k configured keys | `0600`/`0400` the policy file, monitor it with file-integrity tooling, restart to apply changes; prefer deny-lists as the hard ceiling; keep configured key counts small |
 
 ### Explicitly out of scope
 
@@ -610,6 +663,17 @@ The following MUST hold in implementation and are candidates for CI tests:
     600 frames or 512 MiB of output.
 11. Every `audit.jsonl` record carries `args_hash` (never raw args) and a
     `prev_hash` equal to the hash of the preceding record.
+12. Every `tools/call` — including plugin steps and `replay_action`
+    re-entry — passes the runtime policy check **before** consent,
+    provider lookup, or side effects; a denied tool is absent from that
+    caller's `tools/list` and returns `-32018`/`-32019` with a
+    `denial_reason` in both the error `data` and the audit record.
+13. An explicit `--policy` path that is missing or malformed aborts
+    startup; unknown TOML fields and `keys`→undefined-role references
+    abort startup rather than degrade to a permissive default.
+14. Under a `readonly` role the effective allow set never exceeds the
+    15-tool observational preset ∪ the role's `allow_tools`, and
+    `deny_tools` always wins over both.
 
 ---
 

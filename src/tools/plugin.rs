@@ -180,7 +180,9 @@ async fn plugin_reload_in(
         "loaded": scan.plugins.len(),
         "plugins": scan.plugins.iter().map(plugin_json).collect::<Vec<_>>(),
         "skipped": scan.skipped.iter().map(|s| json!({
-            "file": s.file.display().to_string(),
+            // Basename only — absolute paths leak host filesystem layout
+            // to any caller that can reach plugin_list/plugin_reload.
+            "file": s.file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| s.file.display().to_string()),
             "error": s.error,
         })).collect::<Vec<_>>(),
     })))

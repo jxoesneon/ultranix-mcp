@@ -1,11 +1,11 @@
 # ultranix-mcp
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](Cargo.toml)
 [![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%28Wayland%20%2B%20Hyprland%29-lightgrey.svg)](https://hyprland.org/)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org/)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-rmcp-purple.svg)](https://github.com/modelcontextprotocol/rust-sdk)
-[![Status](https://img.shields.io/badge/status-1.2.0%20implemented-brightgreen.svg)](ROADMAP.md)
+[![Status](https://img.shields.io/badge/status-1.3.0%20implemented-brightgreen.svg)](ROADMAP.md)
 
 **ultranix-mcp is the enterprise-grade, secure Linux desktop-automation layer
 for AI agents.** It gives Model Context Protocol (MCP) clients — Claude
@@ -23,12 +23,15 @@ combine a cross-compositor fallback ladder, a full governance surface, and a
 tri-OS sibling contract — organisations can let agents control a Linux
 desktop without giving up control themselves.
 
-> **Status:** v1.2.0 implemented. Phases 0–5 of
+> **Status:** v1.3.0 implemented. Phases 0–5 of
 > [ROADMAP.md](ROADMAP.md) have shipped, plus the v1.1.0 wave (layer-shell
 > overlay, X11-native providers, PipeWire portal capture, opt-in Sentry,
-> OCR cache, additional metrics) and the v1.2.0 breadth wave (clipboard
+> OCR cache, additional metrics), the v1.2.0 breadth wave (clipboard
 > tools, plugin tool-macros, `screen_record`, sway/Wayfire/river/KDE/GNOME
-> session detection, per-backend cargo features, framed history v2) — see
+> session detection, per-backend cargo features, framed history v2), and
+> the v1.3.0 policy wave (runtime access-control policy with per-key
+> roles, `--readonly`/`--allow-tools`/`--deny-tools`, per-backend
+> invocation metrics, optional HMAC-signed audit lines) — see
 > [CHANGELOG.md](CHANGELOG.md) for per-release notes. The verified target
 > environment is **CachyOS (Arch) + Hyprland on Wayland**, PipeWire,
 > `xdg-desktop-portal-hyprland`, and a live AT-SPI2 bus, on Rust 1.98.1.
@@ -468,8 +471,11 @@ portal capture, opt-in Sentry, the OCR result cache, and four more
 Prometheus metrics, and the v1.2.0 wave added clipboard tools, plugin
 tool-macros, bounded `screen_record`, sway/Wayfire/river/KDE/GNOME session
 detection with a sway window provider, per-backend cargo features, and the
-framed v2 action-history format — see [CHANGELOG.md](CHANGELOG.md) for
-release notes.
+framed v2 action-history format, and the v1.3.0 wave added the runtime
+policy layer (TOML roles, per-key scoping, `--readonly` and tool
+allow/deny flags), per-backend invocation metrics, and optional
+HMAC-signed audit records — see [CHANGELOG.md](CHANGELOG.md) for release
+notes.
 
 ## 📚 Documentation
 

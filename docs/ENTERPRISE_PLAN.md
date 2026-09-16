@@ -6,12 +6,12 @@ drive a Linux desktop. Adapted from `ultramac/docs/ENTERPRISE_PLAN.md`; the
 primitives (audit JSONL, encrypted history, Prometheus, key auth) are shared
 across the Ultra\* family so operators see one control model on every OS.
 
-**Status: v1.2.0 shipped.** The core governance surface (key auth, consent
-gate, audit JSONL, AES-256-GCM history, rate limiting, Prometheus metrics,
-opt-in Sentry) is implemented; the v1.2.0 wave extended it — clipboard
-writes joined the consent-gated class, `plugin_run` steps re-enter the
-secured dispatch per step, and history moved to the framed `UNXHIST2`
-append format. Items still tagged *post-v1* below are the
+**Status: v1.3.0 shipped.** The core governance surface (key auth, consent
+gate, audit JSONL + HMAC signing, AES-256-GCM history, rate limiting,
+Prometheus metrics, opt-in Sentry) is implemented; the v1.3.0 wave added the
+runtime access-control policy (`policy.toml` + `--readonly`/`--allow-tools`/
+`--deny-tools`), per-key role scoping, and the per-backend/build-info metrics.
+Items still tagged *post-v1* below are the
 planned policy roadmap, not shipped features.
 
 ---
@@ -73,7 +73,7 @@ no external dependencies.
 
 One JSON object per line, append-only, fsync-batched. The v1 schema below
 extends the canonical record (`timestamp`, `tool`, `args_hash`, `outcome`,
-`duration`, `key_id`, `prev_hash`) mandated by `docs/ARCHITECTURE.md` §2/§7 —
+`duration_ms`, `key_id`, `prev_hash`) mandated by `docs/ARCHITECTURE.md` §2/§7 —
 **extension fields may be added, but canonical fields are never renamed**:
 
 | Field | Type | Description |
@@ -85,13 +85,14 @@ extends the canonical record (`timestamp`, `tool`, `args_hash`, `outcome`,
 | `category` | string | `mouse` \| `keyboard` \| `vision` \| `automation` \| `admin` \| `clipboard`. |
 | `args_hash` | string (SHA-256) | Hash of canonicalized arguments — enables correlation without storing secrets/typed text. |
 | `args_summary` | object | Redacted argument summary (coordinates, window id, selector kind — never raw typed strings). |
-| `outcome` | string | `ok` \| `error` \| `denied`. |
-| `denial_reason` | string \| null | `rate_limited` \| `not_whitelisted` \| `sanitization_rejected` \| `consent_required` \| `readonly_mode`. |
-| `duration` | number (ms) | Server-side execution time. |
+| `outcome` | string | `ok` \| `tool_error` \| `consent_required` \| `denied` \| `error`; `http_gate` records use `auth_rejected` \| `rate_limited`. |
+| `denial_reason` | string \| null | Emitted only on `tools/call` policy denials: `readonly_mode` \| `not_in_tool_list`. HTTP gate rejections (auth/rate-limit) record their reason in `outcome`, not here. |
+| `duration_ms` | number (ms) | Server-side execution time. |
 | `backend` | string | Executing backend: `wlroots` \| `uinput` \| `portal` \| `atspi` \| `hyprland-ipc` \| `cdp` \| `x11`. |
 | `client_id` | string | MCP client identity from `initialize` (e.g. `claude-desktop/1.x`). |
 | `key_id` | string (SHA-256, truncated to 8 hex chars) | Which `uxcp_*` key authorized the call — the same key-ID used by rate limiting and `auth.*` events (`docs/API_KEY_MANAGEMENT.md` §5); `null` for stdio. |
-| `prev_hash` | string (SHA-256) | Hash of the preceding audit record — chains the log for tamper-evidence before SIEM ingestion. |
+| `prev_hash` | string (SHA-256) | Hash of the preceding audit record's serialized line (including its `hmac`, when present) — chains the log for tamper-evidence before SIEM ingestion. |
+| `hmac` | string (hex) | Optional per-line HMAC-SHA256 over the record's canonical JSON *without* this field; present only when `ULTRANIX_MCP_AUDIT_SECRET` is set (v1.3.0). Enable on a fresh/rotated log — verification of a file containing pre-secret unsigned lines fails on those lines. |
 | `transport` | string | `stdio` \| `http` (+ remote IP for http). |
 | `version` | string | ultranix-mcp semver + build feature set. |
 
@@ -128,7 +129,7 @@ tamper-evidence is provided by shipping it to SIEM, not by hiding it.
 
 ### 2.5 Prometheus observability
 
-`GET /metrics` on `127.0.0.1:3010` (HTTP mode) exposes the eight shipped
+`GET /metrics` on `127.0.0.1:3010` (HTTP mode) exposes the ten shipped
 metrics. The table below **mirrors `docs/ARCHITECTURE.md` §7
 verbatim** — that document owns the metric names, types, and labels; this
 copy exists for reader convenience and must not diverge:
@@ -137,6 +138,8 @@ copy exists for reader convenience and must not diverge:
 | --- | --- | --- | --- |
 | `ultranix_mcp_tool_calls_total` | Counter | `tool`, `outcome` | Tool call count by outcome |
 | `ultranix_mcp_tool_duration_seconds` | Histogram | `tool` | Per-tool execution latency |
+| `ultranix_mcp_backend_calls_total` | Counter | `backend`, `outcome` | Tool call count by resolved backend and outcome (v1.3.0) |
+| `ultranix_mcp_build_info` | Gauge | `version` | Build info — constant `1` labelled with the package version (v1.3.0) |
 | `ultranix_mcp_rate_limit_rejections_total` | Counter | `reason` | 429 rejections |
 | `ultranix_mcp_auth_failures_total` | Counter | `reason` | HTTP auth failures (401s) |
 | `ultranix_mcp_active_sessions` | Gauge | `transport` | Live stdio/HTTP sessions |
@@ -149,8 +152,10 @@ providers resolved to `Some`, so monitoring can detect unexpected backend
 degradation (e.g. `CaptureProvider` falling from `WlrCapture` to portal
 or `None`).
 
-Candidate post-v1 additions under consideration (not yet canonical):
-per-backend invocation counters and a build-info gauge.
+The v1.3.0 wave shipped the two former candidates — the per-backend
+invocation counter (`ultranix_mcp_backend_calls_total`) and the
+build-info gauge (`ultranix_mcp_build_info`) — bringing the shipped set
+to ten series.
 
 Scrape config mirrors ultramac's `prometheus.yml`:
 
@@ -304,13 +309,14 @@ Shipped controls vs. planned policy surface:
 | Audit skeleton (JSONL append + schema) | **Shipped (v1.0.0)** | `audit.jsonl` with `key_id`/`args_hash`/`prev_hash` chaining. |
 | API-key auth + disable flag | **Shipped (v1.0.0)** | The HTTP-transport auth surface (`uxcp_*` key check, `X-API-Key`/`Bearer` headers, key files, rotation overlap, auth audit events). Fail-closed bind semantics are intrinsic — the server refuses to bind `:3010` without a key unless `ULTRANIX_MCP_DISABLE_AUTH=true`. |
 | Rate limiting (10 req/s token bucket per client identity) | **Shipped (v1.0.0)** | HTTP-transport feature; `/metrics` and health endpoints exempt; env-tunable budget. |
-| Encrypted history + Prometheus | **Shipped (v1.0.0)** | AES-256-GCM `history.json`, the shipped metrics (8 series as of v1.1.0), `/health`+`/readyz`. |
+| Encrypted history + Prometheus | **Shipped (v1.0.0)** | AES-256-GCM `history.json`, the shipped metrics (8 series as of v1.1.0; 10 since v1.3.0), `/health`+`/readyz`. |
 | Sentry crash reporting | **Shipped (v1.1.0)** | Opt-in via `ULTRANIX_MCP_SENTRY_DSN`; malformed DSN warns and disables. |
-| **Tool whitelists** (`--allow-tools=`, deny-by-default profiles) | **Post-v1** | Finer than category: e.g. serve `screenshot` but not `type_text`. Not implemented at v1.0.0. |
-| **Read-only mode** (`--readonly`) | **Post-v1** | Serves only `vision` + non-mutating `admin` tools; every input tool is denied (`outcome=denied`, `denial_reason=readonly_mode`). Not implemented at v1.0.0. |
+| **Tool whitelists** (`--allow-tools=`, deny-by-default profiles) | **Shipped (v1.3.0)** | `--allow-tools=t1,t2` and `--deny-tools=t3` on the CLI, plus `allow_tools`/`deny_tools` per role in `policy.toml`. Deny wins; unlisted tools get `-32019`. |
+| **Read-only mode** (`--readonly`) | **Shipped (v1.3.0)** | Advertises and allows only the non-mutating catalog (15 tools); every input/mutation call is denied (`-32018 ReadOnlyMode`, `denial_reason=readonly_mode`). |
 | **Approval gates (beyond the shipped consent gate)** | **Post-v1** | Out-of-band confirmation for sensitive calls — e.g. text typed into password-focused fields — pluggable: local libnotify/dunst prompt on the desktop, or a webhook to an approver service. Builds on, does not replace, the `-32015 ConsentRequired` challenge. |
-| **Per-key scoping** | **Post-v1** | `uxcp_*` keys carry a category/whitelist claim, so one daemon serves a read-only analyst key and a full-access automation key simultaneously. |
-| **Config file policy** (`~/.config/ultranix-mcp/policy.toml`) | **Post-v1** | Declarative: whitelists, rate budgets, approval-gate rules, audit redaction level. Fleet-managed via Ansible/Nix. |
+| **Per-key scoping** | **Shipped (v1.3.0)** | `policy.toml` maps API-key fingerprints to named roles; HTTP sessions see and call only their role's tools. Unknown keys fall back to `default_role`. |
+| **Config file policy** (`~/.config/ultranix-mcp/policy.toml` or `--policy`) | **Shipped (v1.3.0)** | TOML file defining `default_role`, named `roles`, and `keys` mappings; CLI flags layer on top. |
+| **Audit HMAC** (`ULTRANIX_MCP_AUDIT_SECRET`) | **Shipped (v1.3.0)** | Every `audit.jsonl` line is HMAC-SHA256-signed over its canonical JSON; `verify_hmac_at` validates the full chain + signatures. |
 
 ---
 
@@ -343,8 +349,11 @@ Shipped controls vs. planned policy surface:
 - [ ] OSS license: ISC (family convention) vs Apache-2.0 — revisit only if a
       commercial tier is introduced.
 - [ ] Approval-gate UX: local desktop prompt vs webhook — post-v1 design.
-- [ ] Whether audit JSONL needs optional signing (HMAC chain per line) for
-      tamper-evidence before SIEM ingestion, or whether shipping is enough.
+- [x] ~~Whether audit JSONL needs optional signing~~ — **resolved at
+      v1.3.0**: `ULTRANIX_MCP_AUDIT_SECRET` signs each line with
+      HMAC-SHA256 over its canonical JSON (optional, env-gated; the
+      `prev_hash` chain covers the signed line). Enable on a
+      fresh/rotated log — pre-secret unsigned lines fail verification.
 - [ ] Enterprise tier scope (if any): policy.toml fleet management,
       per-key scoping, and SSO-brokered key issuance are the natural paid
       surface — mirroring ultramac's $19–49/mo band.

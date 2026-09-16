@@ -330,11 +330,21 @@ mod tests {
 
     /// Write `body` as an executable named `name` inside `dir`.
     fn write_exe(dir: &Path, name: &str, body: &str) {
+        use std::io::Write;
         let path = dir.join(name);
-        std::fs::write(&path, body).unwrap();
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        // Write a sibling temp file then rename: `File::create` on a path
+        // that a still-running child exec'd earlier fails ETXTBSY, while a
+        // rename over a busy executable is atomic and allowed.
+        let tmp = dir.join(format!(".{name}.tmp-{}", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&tmp).unwrap();
+            f.write_all(body.as_bytes()).unwrap();
+            f.sync_all().unwrap();
+        }
+        let mut perms = std::fs::metadata(&tmp).unwrap().permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms).unwrap();
+        std::fs::set_permissions(&tmp, perms).unwrap();
+        std::fs::rename(&tmp, &path).unwrap();
     }
 
     /// Fake `xdotool`: appends its argv to `<dir>/xdotool.log` (one line

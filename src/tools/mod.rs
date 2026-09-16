@@ -28,6 +28,27 @@ use crate::traits::{
 /// (element lookup lands with Phase 2).
 const ELEMENT_NOT_FOUND: i32 = -32016;
 
+/// Policy-denial error constructors. The `denial_reason` is recorded in
+/// the audit log and returned as `data.denial_reason` so clients can
+/// distinguish `--readonly` from per-tool list violations.
+fn policy_denied(tool: &str, reason: &str) -> ErrorData {
+    let code = if reason == "readonly_mode" {
+        codes::READ_ONLY_MODE
+    } else {
+        codes::NOT_IN_TOOL_LIST
+    };
+    let kind = if reason == "readonly_mode" {
+        "ReadOnlyMode"
+    } else {
+        "NotInToolList"
+    };
+    ErrorData::new(
+        ErrorCode(code),
+        format!("{tool} denied: {reason}"),
+        Some(json!({"kind": kind, "denial_reason": reason})),
+    )
+}
+
 /// Frozen category → tool-name catalog (docs/TOOLS.md "Tool Summary").
 /// Names and membership are part of the stable public contract — do not
 /// rename without a spec change.
@@ -120,13 +141,84 @@ pub(crate) fn category_of(name: &str) -> Option<&'static str> {
 /// Metric-safe tool label: client-supplied names that aren't in the
 /// catalog collapse to `"__unknown__"` — otherwise every arbitrary name
 /// would mint a new `tool_calls_total`/`tool_duration_seconds` series
-/// (unbounded label cardinality).
-fn metric_label(name: &str) -> &str {
-    if category_of(name).is_some() {
-        name
-    } else {
-        "__unknown__"
-    }
+/// (unbounded label cardinality). Returns the catalog's own `&'static`
+/// name so the metrics maps can key on `&'static str` without copying.
+fn metric_label(name: &str) -> &'static str {
+    CATALOG
+        .iter()
+        .flat_map(|(_, names)| names.iter().copied())
+        .find(|n| *n == name)
+        .unwrap_or("__unknown__")
+}
+
+/// Resolve the provider name used by a tool from the startup backend registry.
+/// Names are capability-specific, so this remains correct when an earlier
+/// provider slot failed detection and is absent from `backend_names`. All
+/// returned names are `&'static` (provider names and sentinels), so the
+/// metric maps never allocate per call.
+fn metric_backend(name: &str, providers: &Providers) -> &'static str {
+    let candidates: &[&str] = match name {
+        "mouse_click"
+        | "mouse_double_click"
+        | "mouse_move"
+        | "mouse_get_position"
+        | "mouse_scroll"
+        | "mouse_drag"
+        | "mouse_button_control"
+        | "type_text"
+        | "key_control"
+        | "mouse_move_path" => &[
+            "wlr-virtual-input",
+            "uinput",
+            "portal-remote-desktop",
+            "xdotool",
+            "mock-input",
+        ],
+        "screenshot" | "screen_info" | "color_at" | "screen_record" => &[
+            "wlr-screencopy",
+            "grim",
+            "portal-screenshot",
+            "scrot",
+            "mock-capture",
+        ],
+        "screen_highlight" => &["wlr-layer-shell", "mock-overlay"],
+        "get_ui_tree"
+        | "get_focused_element"
+        | "find_element"
+        | "wait_for_ui_element"
+        | "invoke_element" => &["atspi2", "mock-ui-automation"],
+        "find_text_on_screen" | "find_icon" => &["onnx", "mock-vision"],
+        "web_query" => &["cdp", "mock-browser"],
+        "clipboard_get" | "clipboard_set" | "clipboard_clear" => {
+            &["wl-clipboard", "xclip", "mock-clipboard"]
+        }
+        "window_control" | "get_windows" | "get_active_window" => {
+            &["hyprctl", "sway-ipc", "kdotool", "wmctrl", "mock-window"]
+        }
+        // These execute entirely in the server even when they inspect or
+        // mutate state owned by a provider-backed subsystem.
+        _ => return "core",
+    };
+    providers
+        .backend_names
+        .iter()
+        .copied()
+        .find(|backend| candidates.contains(backend))
+        .unwrap_or("unknown")
+}
+
+fn record_tool_metric(
+    name: &str,
+    providers: &Providers,
+    duration: std::time::Duration,
+    outcome: &'static str,
+) {
+    crate::metrics::record_call_with_backend(
+        metric_label(name),
+        metric_backend(name, providers),
+        duration,
+        outcome,
+    );
 }
 
 /// `-32601 MethodNotFound` for a tool outside the enabled category set —
@@ -149,6 +241,22 @@ pub fn category_gate(name: &str, categories: Option<&[String]>) -> Option<ErrorD
             "tool": name,
         })),
     ))
+}
+
+/// `tools/list` with an optional runtime policy: per-key scoping on HTTP,
+/// default role on stdio. When `policy` is `None`, this is exactly
+/// [`list_tools`].
+pub fn list_tools_for(
+    categories: Option<&[String]>,
+    policy: Option<&crate::security::policy::Policy>,
+    key_id: Option<&str>,
+) -> Vec<Tool> {
+    let mut tools = list_tools(categories);
+    if let Some(policy) = policy {
+        let role = policy.resolve(key_id);
+        tools.retain(|t| policy.is_tool_allowed(role, &t.name));
+    }
+    tools
 }
 
 /// All advertised tools, filtered by enabled categories (`None` = all).
@@ -176,7 +284,7 @@ pub async fn call_tool(
 ) -> Result<CallToolResult, ErrorData> {
     let t0 = std::time::Instant::now();
     let result = dispatch(name, &args, providers).await;
-    crate::metrics::record_call(metric_label(name), t0.elapsed(), outcome_of(&result));
+    record_tool_metric(name, providers, t0.elapsed(), outcome_of(&result));
     result
 }
 
@@ -364,12 +472,14 @@ async fn audit_record(
     outcome: &'static str,
     duration_ms: u64,
     ctx: crate::security::audit::CallContext<'_>,
+    denial_reason: Option<&'static str>,
 ) {
     match security {
         SecRef::Shared(sec) => {
             let sec = Arc::clone(sec);
             let tool = tool.to_string();
             let args_hash = args_hash.to_string();
+            let denial_reason = denial_reason.map(str::to_string);
             // CallContext borrows caller strings — own them for the move.
             let key_id = ctx.key_id.map(str::to_string);
             let caller = ctx.caller.map(str::to_string);
@@ -385,6 +495,7 @@ async fn audit_record(
                         caller: caller.as_deref(),
                         consent: consent.as_deref(),
                     },
+                    denial_reason.as_deref(),
                 )
             })
             .await;
@@ -397,7 +508,10 @@ async fn audit_record(
             }
         }
         SecRef::Borrowed(sec) => {
-            if let Err(e) = sec.audit.record(tool, args_hash, outcome, duration_ms, ctx) {
+            if let Err(e) =
+                sec.audit
+                    .record(tool, args_hash, outcome, duration_ms, ctx, denial_reason)
+            {
                 tracing::warn!(%e, "audit record failed");
             }
         }
@@ -433,7 +547,7 @@ pub async fn call_tool_secured<'a>(
     // handler) so `replay_action`'s re-entry enforces it too.
     if let Some(err) = category_gate(name, security.categories.as_deref()) {
         let elapsed = t0.elapsed();
-        crate::metrics::record_call(metric_label(name), elapsed, "error");
+        record_tool_metric(name, providers, elapsed, "error");
         audit_record(
             security,
             name,
@@ -445,9 +559,40 @@ pub async fn call_tool_secured<'a>(
                 caller: Some(key_id.unwrap_or(session_id)),
                 consent: None,
             },
+            None,
         )
         .await;
         return Err(err);
+    }
+
+    // Per-caller runtime policy: per-key scoping on HTTP, default role on
+    // stdio. Hidden tools are rejected with a policy-specific code and
+    // audited as denied.
+    let role = security.policy.resolve(key_id);
+    if !security.policy.is_tool_allowed(role, name) {
+        let elapsed = t0.elapsed();
+        let reason =
+            if role.readonly && !crate::security::policy::readonly_allowlist().contains(&name) {
+                "readonly_mode"
+            } else {
+                "not_in_tool_list"
+            };
+        record_tool_metric(name, providers, elapsed, "denied");
+        audit_record(
+            security,
+            name,
+            &hash,
+            "denied",
+            elapsed.as_millis() as u64,
+            crate::security::audit::CallContext {
+                key_id,
+                caller: Some(key_id.unwrap_or(session_id)),
+                consent: None,
+            },
+            Some(reason),
+        )
+        .await;
+        return Err(policy_denied(name, reason));
     }
 
     // Resolve the execution-time target for target-scoped consent:
@@ -481,7 +626,7 @@ pub async fn call_tool_secured<'a>(
             )
         });
         if !ok {
-            crate::metrics::record_call(metric_label(name), t0.elapsed(), "consent_required");
+            record_tool_metric(name, providers, t0.elapsed(), "consent_required");
             audit_record(
                 security,
                 name,
@@ -493,6 +638,7 @@ pub async fn call_tool_secured<'a>(
                     caller: Some(key_id.unwrap_or(session_id)),
                     consent: None,
                 },
+                None,
             )
             .await;
             let ch = match resolved_target.as_deref() {
@@ -540,7 +686,7 @@ pub async fn call_tool_secured<'a>(
     // Every invocation — accepted or rejected").
     let elapsed = t0.elapsed();
     let outcome = outcome_of(&result);
-    crate::metrics::record_call(metric_label(name), elapsed, outcome);
+    record_tool_metric(name, providers, elapsed, outcome);
     audit_record(
         security,
         name,
@@ -552,6 +698,7 @@ pub async fn call_tool_secured<'a>(
             caller: Some(key_id.unwrap_or(session_id)),
             consent: consent_stamp,
         },
+        None,
     )
     .await;
 
@@ -1379,5 +1526,168 @@ mod tests {
         assert_eq!(line["caller"], "sess-arc");
         // A replayable call also refreshed the history-size gauge.
         assert!(crate::metrics::exposition().contains("ultranix_mcp_action_history_size"));
+    }
+
+    // --- runtime access-control policy (ADR 0010) ---
+
+    fn policy_sec(
+        dir: &std::path::Path,
+        f: impl FnOnce(&mut crate::security::policy::Policy),
+    ) -> crate::security::SecurityContext {
+        let mut sec = security_in(dir);
+        let mut p = crate::security::policy::Policy::default();
+        f(&mut p);
+        sec.set_policy(p);
+        sec
+    }
+
+    #[test]
+    fn readonly_list_tools_shows_only_non_mutating() {
+        let p = crate::security::policy::Policy {
+            default_role: crate::security::policy::Role {
+                readonly: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let names: Vec<String> = list_tools_for(None, Some(&p), None)
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(names.contains(&"screenshot".to_string()));
+        assert!(names.contains(&"get_windows".to_string()));
+        assert!(!names.contains(&"type_text".to_string()));
+        assert!(!names.contains(&"invoke_element".to_string()));
+        assert!(!names.contains(&"clipboard_get".to_string()));
+        assert!(!names.contains(&"screen_highlight".to_string()));
+        assert!(!names.contains(&"get_action_history".to_string()));
+        assert!(!names.contains(&"system_command".to_string()));
+        assert_eq!(names.len(), 15);
+    }
+
+    #[tokio::test]
+    async fn readonly_call_is_denied_and_audited() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sec = policy_sec(tmp.path(), |p| {
+            p.default_role.readonly = true;
+        });
+        let providers = Providers::all_mocks();
+        let err = call_tool_secured(
+            "type_text",
+            args(json!({"text": "x"})),
+            &providers,
+            &sec,
+            "sess-readonly",
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code.0, codes::READ_ONLY_MODE);
+        assert_eq!(err.data.as_ref().unwrap()["denial_reason"], "readonly_mode");
+        assert_eq!(err.data.as_ref().unwrap()["kind"], "ReadOnlyMode");
+
+        let content = std::fs::read_to_string(tmp.path().join("logs").join("audit.jsonl")).unwrap();
+        let line: Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(line["tool"], "type_text");
+        assert_eq!(line["outcome"], "denied");
+        assert_eq!(line["denial_reason"], "readonly_mode");
+    }
+
+    #[tokio::test]
+    async fn allowlist_denies_unlisted_tool() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sec = policy_sec(tmp.path(), |p| {
+            p.default_role.allow_tools = Some(["screenshot".to_string()].into_iter().collect());
+        });
+        let providers = Providers::all_mocks();
+        let err = call_tool_secured(
+            "system_command",
+            args(json!({"command": "slurp", "args": []})),
+            &providers,
+            &sec,
+            "sess-allow",
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code.0, codes::NOT_IN_TOOL_LIST);
+
+        let content = std::fs::read_to_string(tmp.path().join("logs").join("audit.jsonl")).unwrap();
+        let line: Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(line["denial_reason"], "not_in_tool_list");
+    }
+
+    #[tokio::test]
+    async fn denylist_overrides_category_and_allowlist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sec = policy_sec(tmp.path(), |p| {
+            p.default_role.deny_tools.insert("screenshot".to_string());
+        });
+        let providers = Providers::all_mocks();
+        let err = call_tool_secured(
+            "screenshot",
+            args(json!({})),
+            &providers,
+            &sec,
+            "sess-deny",
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code.0, codes::NOT_IN_TOOL_LIST);
+    }
+
+    #[tokio::test]
+    async fn per_key_scope_applies_to_call_tool() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sec = policy_sec(tmp.path(), |p| {
+            p.roles.insert(
+                "analyst".to_string(),
+                crate::security::policy::Role {
+                    allow_tools: Some(
+                        ["screenshot".to_string(), "get_windows".to_string()]
+                            .into_iter()
+                            .collect(),
+                    ),
+                    ..Default::default()
+                },
+            );
+            p.keys.insert("key-1".to_string(), "analyst".to_string());
+        });
+        let providers = Providers::all_mocks();
+        // key-1 is scoped to the analyst role — type_text is denied.
+        let err = call_tool_secured(
+            "type_text",
+            args(json!({"text": "x"})),
+            &providers,
+            &sec,
+            "sess-keyed",
+            Some("key-1"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code.0, codes::NOT_IN_TOOL_LIST);
+        // The mapped role still permits its own tools.
+        call_tool_secured(
+            "screenshot",
+            args(json!({})),
+            &providers,
+            &sec,
+            "sess-keyed",
+            Some("key-1"),
+        )
+        .await
+        .unwrap();
+        // An unknown key falls back to the default role (all allowed).
+        call_tool_secured(
+            "type_text",
+            args(json!({"text": "x"})),
+            &providers,
+            &sec,
+            "sess-other",
+            Some("unknown-key"),
+        )
+        .await
+        .unwrap();
     }
 }

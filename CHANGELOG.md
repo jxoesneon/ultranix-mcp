@@ -5,6 +5,89 @@ All notable changes to ultranix-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-09-16
+
+The policy wave: runtime access-control, per-key scoping, telemetry
+hardening, and audit tamper evidence land on top of v1.2.0. Tool surface
+is unchanged (**39 tools / 6 categories**); the changes are additive
+security/ops knobs with fail-closed defaults.
+
+### Added
+
+- **Runtime access-control policy** (`src/security/policy.rs`,
+  `docs/adr/0010-policy-controls.md`) — a `Policy` loaded once at startup
+  from an optional TOML file (`~/.config/ultranix-mcp/policy.toml` or
+  `--policy=...`) and layered with CLI overrides. It resolves every
+  `tools/list` and `tools/call` through a named `Role` that carries a
+  `readonly` preset, an `allow_tools` allowlist, and a `deny_tools`
+  denylist. Deny-first evaluation: explicit denies always win; a
+  `readonly` role permits the union of the readonly preset and
+  `allow_tools` (so individual mutating tools can be opted back in);
+  otherwise a set `allow_tools` restricts the callable set. Loading is
+  **fail-closed**: an explicit `--policy` path that is missing or
+  malformed aborts startup (the auto-discovered default path is read
+  only when it exists), `deny_unknown_fields` turns misspelled TOML keys
+  into startup errors, and `keys` entries referencing undefined roles
+  abort startup rather than silently granting `default_role`.
+- **`--readonly` mode** — advertises and allows only the non-mutating
+  catalog (15 tools: `screenshot`, `screen_info`, `color_at`,
+  `get_ui_tree`, `get_focused_element`, `find_element`,
+  `find_text_on_screen`, `find_icon`, `wait_for_ui_element`, `sleep`,
+  `mouse_get_position`, `get_windows`, `get_active_window`, `metrics`,
+  `plugin_list`). Everything else is denied with `-32018 ReadOnlyMode` —
+  including the observation-adjacent exclusions `invoke_element` (AT-SPI
+  actions), `screen_highlight` (visible overlay), `set_spatial_focus`
+  (process-global state), `screen_record` (file output),
+  `clipboard_get`/`get_action_history` (cross-caller disclosure), and
+  `plugin_reload` (server-state mutation).
+- **`--allow-tools=` / `--deny-tools=`** — comma-separated per-tool
+  allow/deny lists applied to the default role. When an allowlist is
+  present, unlisted tools are denied with `-32019 NotInToolList`.
+  `deny_tools` wins over `allow_tools` and `readonly`.
+- **Per-key scoping** — the policy `keys` map binds API-key fingerprints
+  (`key_id`) to named roles; HTTP sessions then see and can call only the
+  tools their role allows. Unknown key IDs fall back to `default_role`.
+- **Audit HMAC** — setting `ULTRANIX_MCP_AUDIT_SECRET` signs every
+  `audit.jsonl` line with HMAC-SHA256 over its canonical JSON (the
+  `prev_hash` chain still covers the final line). `verify_hmac_at()`
+  returns `false` for any missing or mismatched signature when a secret
+  is supplied. Rollout caveat: enable the secret on a fresh or rotated
+  log — every pre-secret unsigned line in an existing file fails
+  verification.
+- **New metrics** — `ultranix_mcp_backend_calls_total{backend,outcome}`
+  per-backend invocation counter and `ultranix_mcp_build_info{version}`
+  gauge. The backend label is `"core"` for server-managed tools and the
+  resolved provider name for provider-backed tools.
+
+### Security
+
+- `tools/list` now filters the advertised catalog by the caller's policy
+  role, so a hidden tool is both unlisted and uncallable.
+- `replay_action` is denied as a `plugin_run` step (new
+  `ManifestError::DispatchReentry`), preventing plugin recursion through
+  the secured dispatch layer.
+- `clipboard_get` payloads are suppressed from action-history summaries;
+  `plugin_run` results record only the plugin name and step count, not
+  step payloads.
+- Every `tools/call` **policy** denial now records an explicit
+  `denial_reason` field (`readonly_mode`, `not_in_tool_list`) in
+  `audit.jsonl` and returns it in the error `data` alongside `kind`.
+  HTTP gate rejections (auth/rate-limit) are unaffected — they still
+  record only `outcome` (`auth_rejected`/`rate_limited`) and carry no
+  `denial_reason`.
+
+### Still deferred (honest notes)
+
+- GNOME window management remains unimplemented (no usable compositor IPC).
+- Wayfire/river window management and GNOME-Wayland window/overlay rungs
+  remain empty (no compositor IPC exists).
+- True continuous live streaming capture is still open; `screen_record`
+  is the bounded burst version.
+- Third-party tool registration remains declarative macros over the
+  existing catalog; no new tool schemas are loaded at runtime.
+- The OCI image, crates.io publish, and AUR submissions are still pending
+  packaging work.
+
 ## [1.2.0] — 2026-09-15
 
 The breadth wave: the remaining post-v1 backlog items with a real

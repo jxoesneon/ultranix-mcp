@@ -238,7 +238,7 @@ Executed on the verified environment before tagging:
 - [ ] Non-Hyprland Wayland session (GNOME/KDE): portal/uinput chain resolves; documented degraded tools behave per spec
 - [ ] X11 session (or Xvfb): scrot/xdotool/wmctrl chain works end-to-end
 - [ ] Model cache: `find_icon` downloads once to `~/.ultranix-mcp/models/`; second boot reuses; digest mismatch re-fetches
-- [ ] Prometheus: all 8 shipped metrics present, correct types/labels; with `ULTRANIX_MCP_SENTRY_DSN` set, a forced error is captured by Sentry (a malformed DSN warns and disables)
+- [ ] Prometheus: all 10 shipped metrics present, correct types/labels; with `ULTRANIX_MCP_SENTRY_DSN` set, a forced error is captured by Sentry (a malformed DSN warns and disables)
 - [ ] `--category=vision` serves exactly the 13 vision tools; `--category` omitted serves all 39
 - [ ] Upgrade path: stop unit → replace binary → start; `history.json` and logs preserved under `~/.ultranix-mcp/`
 

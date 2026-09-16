@@ -11,6 +11,7 @@ use crate::state::StateDir;
 
 use audit::AuditLog;
 use consent::ConsentGate;
+use policy::Policy;
 use whitelist::PinnedBins;
 
 pub mod audit;
@@ -19,6 +20,7 @@ pub mod captures;
 pub mod consent;
 pub mod history;
 pub mod paths;
+pub mod policy;
 pub mod ratelimit;
 pub mod sanitize;
 pub mod spawn;
@@ -58,6 +60,10 @@ pub struct SecurityContext {
     /// categories enabled). [`UltraNixServer::with_security`] copies
     /// the server's configured set here.
     pub categories: Option<Vec<String>>,
+    /// Runtime access-control policy. Loaded from the optional policy
+    /// file + CLI overrides and applied to every `tools/list` and
+    /// `tools/call`. Default policy allows everything.
+    pub policy: Policy,
     /// State root this context was built for — the lazy
     /// [`history::HistoryStore`] opens `<data_dir>/history.json` here.
     data_dir: PathBuf,
@@ -109,9 +115,16 @@ impl SecurityContext {
             x11_active,
             allow_destructive,
             categories: None,
+            policy: Policy::default(),
             data_dir: data_dir.as_ref().to_path_buf(),
             history: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Replace the runtime policy after construction (used by `main` to
+    /// layer the CLI/config policy on top of the default-allow policy).
+    pub fn set_policy(&mut self, policy: Policy) {
+        self.policy = policy;
     }
 
     /// Lazily-opened AES-256-GCM action history at
@@ -131,6 +144,13 @@ impl SecurityContext {
     /// first callers resolves to a single store (`get_or_init`).
     pub fn history(&self) -> anyhow::Result<&history::HistoryStore> {
         self.history_store().map(std::sync::Arc::as_ref)
+    }
+
+    /// Attach (or replace) the audit-log HMAC signing secret. Empty strings
+    /// are treated as no secret.
+    pub fn with_audit_secret(mut self, secret: Option<String>) -> Self {
+        self.audit = self.audit.with_audit_secret(secret);
+        self
     }
 
     /// Owned handle to the same lazily-opened store as [`Self::history`]

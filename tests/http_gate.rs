@@ -19,6 +19,7 @@
 //! initialize → initialized → `tools/list` handshake, and asserts the
 //! 39-tool catalog plus a `tools/call` round-trip.
 
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::net::TcpListener;
 use std::path::Path;
@@ -28,6 +29,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use ultranix_mcp::providers::Providers;
 use ultranix_mcp::security::SecurityContext;
+use ultranix_mcp::security::policy::{Policy, Role};
 use ultranix_mcp::server::UltraNixServer;
 
 /// Env mutation is process-global: every test in this file serializes
@@ -46,6 +48,7 @@ const ENV_VARS: &[&str] = &[
     "ULTRANIX_MCP_STATE_DIR",
     "ULTRANIX_MCP_HISTORY_SECRET",
     "ULTRANIX_MCP_AUDIT_RETENTION_DAYS",
+    "ULTRANIX_MCP_AUDIT_SECRET",
 ];
 
 /// `uxcp_<64 lowercase hex>` — configured as the server's key in most
@@ -122,6 +125,18 @@ impl Drop for TestServer {
 /// (`ApiKeyStore::from_env`, `RateLimiter::from_env`) already ran, since
 /// both precede the bind in `serve_http`.
 fn spawn_server(rt: &tokio::runtime::Runtime, state_dir: &Path) -> TestServer {
+    spawn_server_with_policy(
+        rt,
+        state_dir,
+        ultranix_mcp::security::policy::Policy::default(),
+    )
+}
+
+fn spawn_server_with_policy(
+    rt: &tokio::runtime::Runtime,
+    state_dir: &Path,
+    policy: ultranix_mcp::security::policy::Policy,
+) -> TestServer {
     // Reserve a free port, release it, then let the server bind it — the
     // race window is tiny and loopback-only.
     let port = TcpListener::bind("127.0.0.1:0")
@@ -130,7 +145,8 @@ fn spawn_server(rt: &tokio::runtime::Runtime, state_dir: &Path) -> TestServer {
         .expect("local_addr")
         .port();
 
-    let security = SecurityContext::new(state_dir, false, false).expect("security context");
+    let mut security = SecurityContext::new(state_dir, false, false).expect("security context");
+    security.set_policy(policy);
     let server = UltraNixServer::new(Providers::all_mocks(), vec![])
         .with_security(security, "test-session".into());
     let bind = format!("127.0.0.1:{port}");
@@ -672,4 +688,97 @@ fn tools_call_over_http_returns_mock_json() {
         std::thread::sleep(Duration::from_millis(25));
     }
     assert!(found, "no audit record carried key_id={expected}");
+}
+
+// ---------------------------------------------------------------------------
+// Per-key runtime policy scoping (v1.3.0)
+// ---------------------------------------------------------------------------
+
+/// `tools/list` on an established session; returns the advertised tool
+/// names extracted from the SSE `data:` frame.
+fn mcp_list_tool_names(
+    client: &reqwest::blocking::Client,
+    port: u16,
+    session: &str,
+) -> Vec<String> {
+    let resp = mcp_post(
+        client,
+        port,
+        &json!({"jsonrpc": "2.0", "id": 90, "method": "tools/list", "params": {}}),
+    )
+    .header("mcp-session-id", session)
+    .header("x-api-key", TEST_KEY)
+    .send()
+    .expect("tools/list POST");
+    assert_eq!(resp.status().as_u16(), 200, "tools/list status");
+    let body = resp.text().expect("tools/list body");
+    let reply = sse_json(&body, 90);
+    reply
+        .pointer("/result/tools")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("tools/list reply: {reply}"))
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// First 8 hex chars of SHA-256(key) — the `key_id` `http_gate` derives
+/// from the authenticated credential and `policy.keys` maps to a role.
+fn test_key_id() -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(TEST_KEY.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()[..8]
+        .to_string()
+}
+
+#[test]
+fn per_key_role_scopes_list_and_call() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = EnvGuard::apply(&[
+        ("ULTRANIX_MCP_API_KEY", Some(TEST_KEY)),
+        ("ULTRANIX_MCP_STATE_DIR", tmp.path().to_str()),
+    ]);
+    // TEST_KEY's fingerprint → a role allowing only `screen_info`; every
+    // other tool is hidden from tools/list and denied on tools/call.
+    let policy = Policy {
+        roles: HashMap::from([(
+            "observer".to_string(),
+            Role {
+                allow_tools: Some(HashSet::from(["screen_info".to_string()])),
+                ..Role::default()
+            },
+        )]),
+        keys: HashMap::from([(test_key_id(), "observer".to_string())]),
+        ..Policy::default()
+    };
+    let rt = runtime();
+    let srv = spawn_server_with_policy(&rt, tmp.path(), policy);
+    let client = http_client();
+
+    let (session, _init) =
+        mcp_initialize(&client, srv.port, Some(("x-api-key", TEST_KEY.to_string())));
+    mcp_notify_initialized(&client, srv.port, &session);
+
+    let names = mcp_list_tool_names(&client, srv.port, &session);
+    assert_eq!(names, vec!["screen_info".to_string()]);
+
+    // The hidden tool cannot be invoked by guessing its name.
+    let reply = mcp_call_tool(&client, srv.port, &session, 3, "get_windows");
+    assert_eq!(
+        reply.pointer("/error/code").and_then(Value::as_i64),
+        Some(-32019),
+        "denied call reply: {reply}"
+    );
+    assert_eq!(
+        reply
+            .pointer("/error/data/denial_reason")
+            .and_then(Value::as_str),
+        Some("not_in_tool_list")
+    );
+
+    // The allowed tool still executes.
+    let reply = mcp_call_tool(&client, srv.port, &session, 4, "screen_info");
+    assert!(reply.pointer("/result/content/0/text").is_some(), "{reply}");
 }

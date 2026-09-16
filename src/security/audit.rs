@@ -4,11 +4,14 @@
 //! Every tool invocation — accepted or rejected — is appended to
 //! `~/.ultranix-mcp/logs/audit.jsonl`. Each record carries
 //! `{timestamp, tool, args_hash, outcome, duration_ms, key_id, caller,
-//! prev_hash}` where `prev_hash` is the SHA-256 of the *previous record's
-//! serialized bytes* (the JSON line, newline excluded). The genesis
-//! record's `prev_hash` is `"0"*64`. Raw arguments are **never**
-//! persisted — only the same canonical `args_hash` the consent gate
-//! binds to.
+//! consent?, denial_reason?, prev_hash, hmac?}` where `prev_hash` is the
+//! SHA-256 of the *previous record's serialized bytes* (the JSON line,
+//! newline excluded). The genesis record's `prev_hash` is `"0"*64`. Raw
+//! arguments are **never** persisted — only the same canonical
+//! `args_hash` the consent gate binds to. When
+//! [`HMAC_SECRET_ENV`] is set, `hmac` carries an HMAC-SHA256 over the
+//! canonical record *without* the `hmac` field, and `prev_hash` still
+//! covers the final serialized line including it.
 //!
 //! **Rotation / retention.** `audit.jsonl` is always the live file. When
 //! the UTC day rolls over — checked on every `record` and at `open` (via
@@ -33,7 +36,8 @@ use std::sync::Mutex;
 
 use anyhow::Context;
 use chrono::NaiveDate;
-use serde::Serialize;
+use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// `prev_hash` of the first record in a fresh log.
@@ -47,6 +51,10 @@ pub const DEFAULT_RETENTION_DAYS: u64 = 30;
 /// Env override for audit retention: a day count. `0` keeps archives
 /// forever; an unparseable value falls back to [`DEFAULT_RETENTION_DAYS`].
 pub const RETENTION_ENV: &str = "ULTRANIX_MCP_AUDIT_RETENTION_DAYS";
+
+/// Env override for the audit-log HMAC secret. When set and non-empty,
+/// every record is signed with HMAC-SHA256 over its canonical JSON.
+pub const HMAC_SECRET_ENV: &str = "ULTRANIX_MCP_AUDIT_SECRET";
 
 /// One audit record — the serialized line shape. Field order is fixed by
 /// declaration order so the chain hashes a stable encoding.
@@ -71,8 +79,41 @@ struct AuditRecord<'a> {
     /// `--allow-destructive`, absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     consent: Option<&'a str>,
+    /// Policy denial reason, e.g. `readonly_mode`, `not_in_tool_list`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    denial_reason: Option<&'a str>,
     /// SHA-256 of the previous record's serialized bytes; `"0"*64` genesis.
     prev_hash: &'a str,
+    /// HMAC-SHA256 over the canonical JSON of this record *without* this
+    /// field. Present only when an HMAC secret was configured at open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hmac: Option<String>,
+}
+
+/// Owned mirror of [`AuditRecord`] used for chain/HMAC verification. Field
+/// order must match [`AuditRecord`] exactly so re-serialization is byte
+/// identical to the canonical pre-HMAC form. `deny_unknown_fields` makes
+/// unknown JSON members a parse error — otherwise an attacker could pad
+/// the *last* record with forged fields that re-serialization silently
+/// drops while its HMAC still verifies. Consequence: adding a field to
+/// `AuditRecord` requires a lockstep update here plus a verifier upgrade.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct VerifiableRecord {
+    timestamp: String,
+    tool: String,
+    args_hash: String,
+    outcome: String,
+    duration_ms: u64,
+    key_id: Option<String>,
+    caller: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    consent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    denial_reason: Option<String>,
+    prev_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hmac: Option<String>,
 }
 
 /// Who made the call and how consent applied — the record fields that
@@ -97,6 +138,9 @@ pub struct AuditLog {
     path: PathBuf,
     /// Archive retention in days; `None` keeps archives forever.
     retention: Option<u64>,
+    /// Optional HMAC-SHA256 signing key, derived from the configured
+    /// secret via SHA-256(secret).
+    hmac_key: Option<Vec<u8>>,
     inner: Mutex<Inner>,
 }
 
@@ -150,12 +194,22 @@ impl AuditLog {
         Ok(Self {
             path: path.to_path_buf(),
             retention,
+            hmac_key: None,
             inner: Mutex::new(Inner {
                 file,
                 prev_hash,
                 date: today,
             }),
         })
+    }
+
+    /// Attach (or replace) the HMAC signing secret. Empty strings are
+    /// treated as `None`.
+    pub fn with_audit_secret(mut self, secret: Option<String>) -> Self {
+        self.hmac_key = secret
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| derive_hmac_key(&s));
+        self
     }
 
     /// Where this log lives on disk.
@@ -173,6 +227,7 @@ impl AuditLog {
         outcome: &str,
         duration_ms: u64,
         ctx: CallContext<'_>,
+        denial_reason: Option<&str>,
     ) -> anyhow::Result<()> {
         let mut inner = self.inner.lock().expect("audit log poisoned");
         let now = chrono::Utc::now();
@@ -188,7 +243,21 @@ impl AuditLog {
                 prune_archives(dir, today, self.retention, stem_of(&self.path))?;
             }
         }
-        let rec = AuditRecord {
+        // Client-supplied tool names are unbounded; cap them so a record
+        // stays well under the ~1 KiB the chain-resume tail scan assumes.
+        let tool = {
+            const MAX_TOOL_LEN: usize = 128;
+            if tool.len() <= MAX_TOOL_LEN {
+                tool
+            } else {
+                let mut end = MAX_TOOL_LEN;
+                while !tool.is_char_boundary(end) {
+                    end -= 1;
+                }
+                &tool[..end]
+            }
+        };
+        let mut rec = AuditRecord {
             timestamp: now.to_rfc3339(),
             tool,
             args_hash,
@@ -197,9 +266,18 @@ impl AuditLog {
             key_id: ctx.key_id,
             caller: ctx.caller,
             consent: ctx.consent,
+            denial_reason,
             prev_hash: &inner.prev_hash,
+            hmac: None,
         };
-        let line = serde_json::to_string(&rec).context("serialize audit record")?;
+        // The pre-HMAC canonical serialization only exists to be signed —
+        // skip it when no secret is configured so the common path
+        // serializes each record exactly once.
+        if let Some(key) = &self.hmac_key {
+            let canonical = serde_json::to_string(&rec).context("serialize audit record")?;
+            rec.hmac = Some(hmac_sha256_hex(key, canonical.as_bytes()));
+        }
+        let line = serde_json::to_string(&rec).context("serialize audit record with hmac")?;
         writeln!(inner.file, "{line}").context("append audit record")?;
         inner.file.flush().context("flush audit record")?;
         inner.prev_hash = sha256_hex(line.as_bytes());
@@ -219,6 +297,18 @@ impl AuditLog {
             .context("flush before verify")?;
         verify_chain_at(&self.path)
     }
+
+    /// Re-verify the chain and, if `secret` is supplied, every record's
+    /// HMAC-SHA256 signature. See [`verify_hmac_at`].
+    pub fn verify_hmac(&self, secret: Option<&str>) -> anyhow::Result<bool> {
+        self.inner
+            .lock()
+            .expect("audit log poisoned")
+            .file
+            .flush()
+            .context("flush before verify")?;
+        verify_hmac_at(&self.path, secret)
+    }
 }
 
 /// Standalone chain verification for a log file path — usable in tests and
@@ -237,6 +327,45 @@ pub fn verify_chain_at(path: &Path) -> anyhow::Result<bool> {
             .and_then(serde_json::Value::as_str)
             .context("audit record missing prev_hash")?;
         if claimed != expected {
+            return Ok(false);
+        }
+        expected = sha256_hex(raw_line);
+    }
+    Ok(true)
+}
+
+/// Re-verify both the hash chain and, if `secret` is supplied, every
+/// record's `hmac` field. With a secret, any line missing an `hmac` or
+/// whose HMAC does not match the canonical JSON (record without the `hmac`
+/// field) returns `Ok(false)`. With `secret = None` this is equivalent to
+/// [`verify_chain_at`].
+pub fn verify_hmac_at(path: &Path, secret: Option<&str>) -> anyhow::Result<bool> {
+    let key = secret.map(derive_hmac_key);
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut expected = GENESIS.to_string();
+    for raw_line in bytes.split(|b| *b == b'\n') {
+        if raw_line.is_empty() {
+            continue; // tolerate a trailing newline
+        }
+        let mut rec: VerifiableRecord =
+            serde_json::from_slice(raw_line).context("audit line is not valid JSON")?;
+        if let Some(ref k) = key {
+            let Some(claimed) = rec.hmac.take() else {
+                return Ok(false);
+            };
+            let canonical = serde_json::to_string(&rec)
+                .context("re-serialize audit record for hmac verification")?;
+            // Constant-time MAC comparison on raw bytes — the hex strings
+            // are only the serialized form.
+            type HmacSha256 = Hmac<Sha256>;
+            let mut mac = HmacSha256::new_from_slice(k).expect("HMAC accepts any key length");
+            mac.update(canonical.as_bytes());
+            match hex_to_bytes(&claimed) {
+                Some(bytes) if mac.verify_slice(&bytes).is_ok() => {}
+                _ => return Ok(false),
+            }
+        }
+        if rec.prev_hash != expected {
             return Ok(false);
         }
         expected = sha256_hex(raw_line);
@@ -272,7 +401,37 @@ fn last_line_hash(file: &mut File) -> anyhow::Result<Option<String>> {
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut s = String::with_capacity(64);
-    for b in digest {
+    for b in digest.as_slice() {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// Derive a 32-byte HMAC key from a configured secret: SHA-256(secret).
+fn derive_hmac_key(secret: &str) -> Vec<u8> {
+    Sha256::digest(secret.as_bytes()).as_slice().to_vec()
+}
+
+/// Decode a lowercase hex string to bytes; `None` on odd length or
+/// non-hex input. Verification-side helper for [`verify_hmac_at`].
+fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect()
+}
+
+/// HMAC-SHA256 over `data` using `key`, returned as a lowercase hex string.
+fn hmac_sha256_hex(key: &[u8], data: &[u8]) -> String {
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(data);
+    let bytes = mac.finalize().into_bytes();
+    let mut s = String::with_capacity(64);
+    for b in bytes.as_slice() {
         s.push_str(&format!("{b:02x}"));
     }
     s
@@ -422,6 +581,12 @@ mod tests {
         AuditLog::open(&dir.join("logs").join("audit.jsonl")).expect("open audit log")
     }
 
+    fn log_in_with_secret(dir: &Path, secret: &str) -> AuditLog {
+        AuditLog::open(&dir.join("logs").join("audit.jsonl"))
+            .expect("open audit log")
+            .with_audit_secret(Some(secret.to_string()))
+    }
+
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
@@ -448,6 +613,7 @@ mod tests {
                 caller: Some("sess-1"),
                 consent: None,
             },
+            None,
         )
         .unwrap();
         let content = fs::read_to_string(log.path()).unwrap();
@@ -471,7 +637,7 @@ mod tests {
         // The API takes only a hash — feed a hash of a secret-shaped arg and
         // confirm the raw secret isn't anywhere in the file. (Neutral tool
         // name: "system_command" itself contains the substring "command".)
-        log.record("tool", "d34db33f", "ok", 1, CallContext::default())
+        log.record("tool", "d34db33f", "ok", 1, CallContext::default(), None)
             .unwrap();
         let content = fs::read_to_string(log.path()).unwrap();
         assert!(!content.contains("hunter2"));
@@ -485,8 +651,15 @@ mod tests {
         {
             let log = log_in(tmp.path());
             for i in 0..5 {
-                log.record("tool", &format!("h{i}"), "ok", i, CallContext::default())
-                    .unwrap();
+                log.record(
+                    "tool",
+                    &format!("h{i}"),
+                    "ok",
+                    i,
+                    CallContext::default(),
+                    None,
+                )
+                .unwrap();
             }
             assert!(log.verify_chain().unwrap());
         }
@@ -516,8 +689,15 @@ mod tests {
         {
             let log = log_in(tmp.path());
             for i in 0..3 {
-                log.record("tool", &format!("h{i}"), "ok", i, CallContext::default())
-                    .unwrap();
+                log.record(
+                    "tool",
+                    &format!("h{i}"),
+                    "ok",
+                    i,
+                    CallContext::default(),
+                    None,
+                )
+                .unwrap();
             }
         }
         // Drop the last line: chain still verifies for what remains, but a
@@ -541,12 +721,12 @@ mod tests {
         let path = tmp.path().join("logs").join("audit.jsonl");
         {
             let log = log_in(tmp.path());
-            log.record("a", "h1", "ok", 1, CallContext::default())
+            log.record("a", "h1", "ok", 1, CallContext::default(), None)
                 .unwrap();
         }
         {
             let log = log_in(tmp.path());
-            log.record("b", "h2", "ok", 1, CallContext::default())
+            log.record("b", "h2", "ok", 1, CallContext::default(), None)
                 .unwrap();
             assert!(log.verify_chain().unwrap());
         }
@@ -573,13 +753,14 @@ mod tests {
                 caller: Some("s"),
                 consent: Some("bypassed"),
             },
+            None,
         )
         .unwrap();
         let content = fs::read_to_string(log.path()).unwrap();
         let line: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(line["consent"], "bypassed");
         // Absent when not stamped.
-        log.record("tool", "h", "ok", 1, CallContext::default())
+        log.record("tool", "h", "ok", 1, CallContext::default(), None)
             .unwrap();
         let second: serde_json::Value = serde_json::from_str(
             fs::read_to_string(log.path())
@@ -627,7 +808,7 @@ mod tests {
         // path is a fresh file.
         assert!(dir.join("audit-2020-03-04.jsonl").is_file());
         assert_eq!(log.path(), path.as_path());
-        log.record("new_tool", "h2", "ok", 1, CallContext::default())
+        log.record("new_tool", "h2", "ok", 1, CallContext::default(), None)
             .unwrap();
 
         // The archive keeps its original content and verifies
@@ -707,7 +888,7 @@ mod tests {
         let path = dir.join("audit.jsonl");
         {
             let log = AuditLog::open_with_retention(&path, Some(30)).unwrap();
-            log.record("a", "h1", "ok", 1, CallContext::default())
+            log.record("a", "h1", "ok", 1, CallContext::default(), None)
                 .unwrap();
         }
         let log = AuditLog::open_with_retention(&path, Some(30)).unwrap();
@@ -718,5 +899,145 @@ mod tests {
                 .all(|e| e.unwrap().file_name().to_str().unwrap() == "audit.jsonl")
         );
         assert!(log.verify_chain().unwrap());
+    }
+
+    #[test]
+    fn hmac_absent_when_secret_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = log_in(tmp.path());
+        log.record("tool", "h1", "ok", 1, CallContext::default(), None)
+            .unwrap();
+        let content = fs::read_to_string(log.path()).unwrap();
+        let line: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert!(line.get("hmac").is_none());
+    }
+
+    #[test]
+    fn hmac_present_when_secret_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = log_in_with_secret(tmp.path(), "super-secret");
+        log.record("tool", "h1", "ok", 1, CallContext::default(), None)
+            .unwrap();
+        let content = fs::read_to_string(log.path()).unwrap();
+        let line: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        let hmac = line
+            .get("hmac")
+            .expect("hmac field must be present")
+            .as_str()
+            .unwrap();
+        assert_eq!(hmac.len(), 64);
+        assert!(hmac.chars().all(|c| c.is_ascii_hexdigit()));
+        // The hmac must come after prev_hash in the serialized line.
+        let prev_pos = content.find("prev_hash").unwrap();
+        let hmac_pos = content.find("hmac").unwrap();
+        assert!(hmac_pos > prev_pos);
+    }
+
+    #[test]
+    fn verify_hmac_passes_with_correct_secret() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("logs").join("audit.jsonl");
+        let log = AuditLog::open(&path)
+            .unwrap()
+            .with_audit_secret(Some("correct-secret".to_string()));
+        for i in 0..3 {
+            log.record(
+                "tool",
+                &format!("h{i}"),
+                "ok",
+                i,
+                CallContext::default(),
+                None,
+            )
+            .unwrap();
+        }
+        assert!(log.verify_chain().unwrap());
+        assert!(verify_hmac_at(&path, Some("correct-secret")).unwrap());
+        // Method form too.
+        assert!(log.verify_hmac(Some("correct-secret")).unwrap());
+    }
+
+    #[test]
+    fn verify_hmac_fails_with_wrong_secret() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("logs").join("audit.jsonl");
+        let log = AuditLog::open(&path)
+            .unwrap()
+            .with_audit_secret(Some("correct-secret".to_string()));
+        log.record("tool", "h1", "ok", 1, CallContext::default(), None)
+            .unwrap();
+        assert!(!verify_hmac_at(&path, Some("wrong-secret")).unwrap());
+        assert!(!log.verify_hmac(Some("wrong-secret")).unwrap());
+    }
+
+    #[test]
+    fn verify_hmac_fails_when_line_lacks_hmac() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("logs").join("audit.jsonl");
+        let log = AuditLog::open(&path).unwrap(); // no secret
+        log.record("tool", "h1", "ok", 1, CallContext::default(), None)
+            .unwrap();
+        assert!(verify_hmac_at(&path, None).unwrap());
+        // A verifier that supplies a secret sees a missing hmac as failure.
+        assert!(!verify_hmac_at(&path, Some("any-secret")).unwrap());
+    }
+
+    #[test]
+    fn chain_still_verifies_with_hmac_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("logs").join("audit.jsonl");
+        let log = AuditLog::open(&path)
+            .unwrap()
+            .with_audit_secret(Some("chain-secret".to_string()));
+        for i in 0..4 {
+            log.record(
+                "tool",
+                &format!("h{i}"),
+                "ok",
+                i,
+                CallContext::default(),
+                None,
+            )
+            .unwrap();
+        }
+        // Hash-chain verification ignores the hmac field entirely.
+        assert!(log.verify_chain().unwrap());
+        assert!(verify_chain_at(&path).unwrap());
+        // prev_hash of record N must still be SHA-256 of the raw previous
+        // line (which now includes the hmac).
+        let content = fs::read_to_string(&path).unwrap();
+        let mut lines = content.lines();
+        let first = lines.next().unwrap();
+        let second: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert_eq!(second["prev_hash"], sha256_hex(first.as_bytes()));
+    }
+
+    #[test]
+    fn hmac_tampering_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("logs").join("audit.jsonl");
+        let log = AuditLog::open(&path)
+            .unwrap()
+            .with_audit_secret(Some("tamper-secret".to_string()));
+        log.record("tool", "h1", "ok", 1, CallContext::default(), None)
+            .unwrap();
+        assert!(verify_hmac_at(&path, Some("tamper-secret")).unwrap());
+
+        // Corrupt the hmac hex string in place.
+        let mut content = fs::read_to_string(&path).unwrap();
+        let hmac_start = content.find("\"hmac\":\"").unwrap() + 8;
+        let bytes = unsafe { content.as_bytes_mut() };
+        // Flip one hex digit in the hmac value.
+        bytes[hmac_start] = if bytes[hmac_start] == b'0' {
+            b'f'
+        } else {
+            b'0'
+        };
+        fs::write(&path, &content).unwrap();
+
+        // Chain verification still passes because prev_hash hashes the
+        // (now modified) raw line, but HMAC verification must fail.
+        assert!(verify_chain_at(&path).unwrap());
+        assert!(!verify_hmac_at(&path, Some("tamper-secret")).unwrap());
     }
 }

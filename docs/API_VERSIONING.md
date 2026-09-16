@@ -21,7 +21,7 @@ frozen per server release); the protocol version moves independently and is
 always the *highest mutually supported* version from the `initialize`
 handshake.
 
-**Current versions:** server `1.2.0` · tool surface `2.0`
+**Current versions:** server `1.3.0` · tool surface `2.0`
 (39 tools) · protocol negotiated per MCP spec.
 
 Tool-surface `2.0` (at server `1.1.0`): `find_element` and
@@ -37,6 +37,14 @@ seven new tools (`clipboard_get`/`clipboard_set`/`clipboard_clear`,
 category (`clipboard`), and one new error code (`-32017 PluginStepError`)
 — no existing name, schema, response shape, or code/kind set changed, so
 the tool-surface identifier stays `"2.0"`.
+
+Server `1.3.0` is also purely additive MINOR against surface `2.0`:
+no tools were added, but the runtime access-control policy
+(`policy.toml`, `--readonly`, `--allow-tools`, `--deny-tools`) changes
+which tools are *visible and callable per caller*. That is a policy
+decision, not a wire-schema change, so `toolSurfaceVersion` remains
+`"2.0"`; new error codes `-32018 ReadOnlyMode` and `-32019
+NotInToolList` are additive.
 
 ## Versioning Scheme
 
@@ -155,6 +163,18 @@ tool groups are registered:
   `keyboard`, `vision`, `automation`, `admin`, `clipboard` (added at
   server `1.2.0` — a MINOR change to the default category set).
 
+## Runtime Policy
+
+The v1.3.0 access-control policy is a *per-caller* filter layered on top of
+the static category filter. It is configured by an optional TOML file
+(`~/.config/ultranix-mcp/policy.toml` or `--policy=...`) plus the CLI
+overrides `--readonly`, `--allow-tools`, and `--deny-tools`. Policy-hidden
+tools are omitted from `tools/list` for that caller and denied in
+`tools/call`; the denial carries `-32018 ReadOnlyMode` or `-32019
+NotInToolList`. Per-key scoping is HTTP-only: the `key_id` fingerprint is
+looked up in `policy.keys`, falling back to `default_role` for stdio and
+unmapped keys. See [ADR 0010](adr/0010-policy-controls.md).
+
 ## Capability Negotiation
 
 On `initialize`, the server performs standard MCP negotiation and additionally
@@ -166,7 +186,7 @@ publishes an extension block:
   "id": 0,
   "result": {
     "protocolVersion": "2025-06-18",
-    "serverInfo": { "name": "ultranix-mcp", "version": "1.2.0" },
+    "serverInfo": { "name": "ultranix-mcp", "version": "1.3.0" },
     "capabilities": {
       "tools": {},
       "extensions": {
@@ -200,8 +220,9 @@ Rules:
   process-global rect that scopes `screenshot`/`find_text_on_screen`/
   `find_icon` (never persisted; see docs/TOOLS.md §Spatial Focus).
 - The server does not advertise `tools.listChanged`; dynamic tool-list updates
-  are not supported. The only supported runtime change to the advertised tool
-  surface is the static `--category` filter at startup.
+  are not supported. The advertised surface changes only via startup-time
+  `--category` filters or the per-caller runtime policy (see
+  [Runtime Policy](#runtime-policy)).
 
 ## Version Detection
 
@@ -213,10 +234,10 @@ assert_eq!(info.server_info.name, "ultranix-mcp");
 
 ```bash
 # Binary
-ultranix-mcp --version        # ultranix-mcp 1.2.0
+ultranix-mcp --version        # ultranix-mcp 1.3.0
 
 # HTTP transport
-curl -s http://127.0.0.1:3010/health | jq .version   # "1.2.0"
+curl -s http://127.0.0.1:3010/health | jq .version   # "1.3.0"
 
 # Package metadata
 cargo info ultranix-mcp | head -1
@@ -269,7 +290,7 @@ All `tools/call` results carry server identity in `result._meta`:
 {
   "_meta": {
     "server": "ultranix-mcp",
-    "serverVersion": "1.2.0",
+    "serverVersion": "1.3.0",
     "toolSurfaceVersion": "2.0",
     "protocolVersion": "2025-06-18"
   }
