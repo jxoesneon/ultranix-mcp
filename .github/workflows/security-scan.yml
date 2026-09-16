@@ -10,6 +10,13 @@ on:
     # even when the crate is not being actively pushed to.
     - cron: "0 6 * * 1"
 
+# audit-check creates check-run annotations for findings — needs
+# checks:write or it dies with "Resource not accessible by integration"
+# before reporting what it found.
+permissions:
+  contents: read
+  checks: write
+
 env:
   CARGO_TERM_COLOR: always
 

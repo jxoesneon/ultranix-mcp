@@ -55,7 +55,7 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libpipewire-0.3-dev
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libpipewire-0.3-dev
 
       - name: Lint
         run: cargo clippy --all-targets -- -D warnings
@@ -76,7 +76,7 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libpipewire-0.3-dev
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libpipewire-0.3-dev
 
       # The suite must run headless: mock providers cover the full tool
       # surface, so no Wayland session or display server is required.
@@ -104,7 +104,7 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libpipewire-0.3-dev
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libpipewire-0.3-dev
 
       - name: Generate coverage report
         run: cargo llvm-cov --all-targets --lcov --output-path lcov.info
@@ -150,7 +150,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends sway \
-            pkg-config libpipewire-0.3-dev
+            pkg-config libwayland-dev libxkbcommon-dev libpipewire-0.3-dev
 
       - name: Build server
         run: cargo build --bin ultranix-mcp

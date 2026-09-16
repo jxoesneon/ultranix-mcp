@@ -9,14 +9,16 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
-# Permissive: surface advisories but do not hard-fail on unmaintained/yanked
-# crates while the dependency tree is still settling during early phases.
+# Permissive on unmaintained/yanked, strict on vulnerabilities.
+# cargo-deny ≥0.18 removed `vulnerability`/`unsound`/`notice` (all now
+# error unconditionally) and changed `unmaintained` to a scope:
+# all | workspace | transitive | none. `workspace` fails only when a
+# DIRECT dep is unmaintained — transitive strays still surface via
+# `cargo audit` informational warnings.
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-vulnerability = "deny"
-unmaintained = "warn"
+unmaintained = "workspace"
 yanked = "warn"
-notice = "warn"
 ignore = []
 
 [bans]

@@ -22,7 +22,8 @@ env:
 
 jobs:
   publish:
-    name: Build & push ${{ env.IMAGE }}
+    # `env` is not in `jobs.<id>.name`'s allowed contexts — literal only.
+    name: Build & push ghcr.io/jxoesneon/ultranix-mcp
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -41,8 +42,10 @@ jobs:
           # manual default-branch runs), never on prereleases.
           flavor: |
             latest=auto
+          # v1.4.0 -> 1.4.0 (server.json identifier has no `v` prefix).
+          # A `#` line inside the block scalar would be literal input —
+          # keep comments outside `tags:`.
           tags: |
-            # v1.3.0 -> 1.3.0 (server.json identifier has no `v` prefix)
             type=semver,pattern={{version}}
 
       - name: Login to ghcr.io
