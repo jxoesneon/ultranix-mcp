@@ -21,9 +21,9 @@
 //!   releases in reverse order.
 //! - `mouse_click(x, y, b)` is a single `xdotool mousemove x y click N`
 //!   - one spawn, so the pointer can never be observed mid-flight. The
-//!   trait has no double-click primitive; the `mouse_double_click` tool
-//!   already composes two `mouse_click` calls inside the click interval
-//!   (`xdotool click --repeat 2` remains the equivalent native form).
+//!     trait has no double-click primitive; the `mouse_double_click` tool
+//!     already composes two `mouse_click` calls inside the click interval
+//!     (`xdotool click --repeat 2` remains the equivalent native form).
 //! - `scroll(dx, dy)` emits wheel buttons 4/5/6/7 (up/down/left/right)
 //!   with `click --repeat`, carrying sub-detent remainders across calls
 //!   like [`super::uinput_input`]'s `wheel_acc`.

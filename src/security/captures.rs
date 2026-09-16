@@ -40,7 +40,7 @@ const DIR_PREFIX: &str = "capture-";
 
 /// Directory-name prefix for bounded screen recordings (`screen_record`)
 /// - `rec-<ulid>` sorts chronologically and greps separately from
-/// single-shot `capture-` scratch dirs.
+///   single-shot `capture-` scratch dirs.
 const REC_PREFIX: &str = "rec-";
 
 /// Create a fresh, unpredictable, owner-only (`0700`) directory for one

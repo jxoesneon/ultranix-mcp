@@ -164,6 +164,9 @@ jobs:
     name: cargo audit
     runs-on: ubuntu-latest
     continue-on-error: true
+    permissions:
+      contents: read
+      checks: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4

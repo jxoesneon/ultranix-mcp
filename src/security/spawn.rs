@@ -27,6 +27,37 @@ pub const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 /// region-drag, so it gets a longer (still bounded) window.
 pub const INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// `exec` fails `ETXTBSY` while the target is open for writing - a
+/// just-installed or mid-upgrade pinned helper, or a test fixture the
+/// runner has not finished flushing. The window is milliseconds, so a
+/// short retry beats surfacing a transient OS race as a tool error.
+pub async fn spawn_retried(
+    cmd: &mut tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    for attempt in 0..4 {
+        match cmd.spawn() {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 3 => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            result => return result,
+        }
+    }
+    unreachable!("loop returns on the final attempt")
+}
+
+/// Blocking variant of [`spawn_retried`] for [`std_output_within`].
+fn std_spawn_retried(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    for attempt in 0..4 {
+        match cmd.spawn() {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 3 => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            result => return result,
+        }
+    }
+    unreachable!("loop returns on the final attempt")
+}
+
 /// Environment variables forwarded to spawned binaries; everything else
 /// is scrubbed by `env_clear()`.
 const PASS_ENV: &[&str] = &[
@@ -89,13 +120,11 @@ pub async fn output_within(cmd: &mut tokio::process::Command, dur: Duration) -> 
         buf
     }
 
-    let mut child = cmd
-        .stdin(Stdio::null())
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .context("spawn subprocess")?;
+        .kill_on_drop(true);
+    let mut child = spawn_retried(cmd).await.context("spawn subprocess")?;
     let out = tokio::spawn(drain_capped(child.stdout.take().expect("stdout is piped")));
     let err = tokio::spawn(drain_capped(child.stderr.take().expect("stderr is piped")));
     let status = match tokio::time::timeout(dur, child.wait()).await {
@@ -152,11 +181,8 @@ const MAX_STDOUT: usize = 4 * 1024 * 1024;
 pub fn std_output_within(cmd: &mut std::process::Command, dur: Duration) -> Option<Output> {
     use std::io::Read;
 
-    let mut child = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = std_spawn_retried(cmd).ok()?;
     // Drain stdout on a dedicated thread: a child emitting more than a
     // pipe buffer would otherwise block on write and never exit - and a
     // blocking read in this loop would wedge on a silent-but-alive

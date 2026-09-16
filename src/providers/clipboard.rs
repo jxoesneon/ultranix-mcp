@@ -105,8 +105,8 @@ async fn run_stdin(bin: &Path, args: &[&str], input: &[u8]) -> Result<()> {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut child = cmd
-        .spawn()
+    let mut child = spawn::spawn_retried(&mut cmd)
+        .await
         .with_context(|| format!("spawn {}", bin.display()))?;
     let mut stdin = child.stdin.take().expect("stdin was piped");
     // Feed the payload on its own task so a child that exits early (or
