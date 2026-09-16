@@ -114,7 +114,8 @@ LABEL org.opencontainers.image.title="ultranix-mcp" \
       org.opencontainers.image.description="Rust MCP server for Linux desktop automation — Wayland/Hyprland-first" \
       org.opencontainers.image.source="https://github.com/jxoesneon/ultranix-mcp" \
       org.opencontainers.image.url="https://github.com/jxoesneon/ultranix-mcp" \
-      org.opencontainers.image.licenses="ISC"
+      org.opencontainers.image.licenses="ISC" \
+      io.modelcontextprotocol.server.name="io.github.jxoesneon/ultranix-mcp"
 
 # Default: print help (smoke-test friendly). Real deployments pass e.g.
 #   --transport http --bind 127.0.0.1:3010
