@@ -64,8 +64,10 @@ jobs:
           context: .
           load: true
           tags: ultranix-mcp:smoke
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # scope=v2: the v1 scope holds dep layers whose static-archive
+          # link proved non-reproducible; start a fresh cache namespace.
+          cache-from: type=gha,scope=v2
+          cache-to: type=gha,mode=max,scope=v2
 
       - name: Smoke test - `ultranix-mcp --help`
         run: docker run --rm ultranix-mcp:smoke --help
@@ -77,4 +79,4 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          cache-from: type=gha,scope=v2

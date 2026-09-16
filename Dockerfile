@@ -19,7 +19,12 @@
 # ---------------------------------------------------------------------------
 # Builder
 # ---------------------------------------------------------------------------
-FROM rust:1-bookworm AS builder
+# trixie, not bookworm: ort's prebuilt ONNX Runtime archive references
+# glibc >=2.38 (`__isoc23_strtoll`) and newer libstdc++ internals
+# (`_M_replace_cold`). On bookworm (glibc 2.36) the link only succeeds
+# when --gc-sections happens to drop those archive members - a coin
+# flip per rebuild. trixie (glibc 2.41) satisfies them unconditionally.
+FROM rust:1-trixie AS builder
 
 # Native build inputs (mirrors .github/workflows/release.yml):
 #   pkg-config + libpipewire-0.3-dev - pipewire-sys resolves the lib via
@@ -61,7 +66,7 @@ RUN cargo build --release --locked \
 # ---------------------------------------------------------------------------
 # Runtime
 # ---------------------------------------------------------------------------
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 # Shared-library deps verified against `readelf -d` (see header), plus the
 # whitelisted helper binaries the providers shell out to at RUNTIME (they
@@ -77,11 +82,11 @@ FROM debian:bookworm-slim
 #   dbus                  - session bus for zbus (AT-SPI2 / portals) when the
 #                           host bus socket is not mounted
 #   ca-certificates       - HTTPS: ONNX model downloads, CDP /json, Sentry
-# NOT packaged in Debian (documented gaps): hyprctl (ships with Hyprland -
-# mount it or run the container on a Hyprland host with the host binary
-# bind-mounted), kdotool (KDE helper, not in bookworm), riverctl (ships
-# with river - river itself is not in bookworm). GNOME window ops need
-# the host-side Window Calls extension (D-Bus, not a binary).
+# Compositor helpers are intentionally not distro-packaged here: hyprctl,
+# riverctl and kdotool must match the *host* compositor's protocol/version,
+# so bind-mount the host's binaries (a distro-shipped copy would age out
+# of sync). GNOME window ops need the host-side Window Calls extension
+# (D-Bus, not a binary).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       libxkbcommon0 \
