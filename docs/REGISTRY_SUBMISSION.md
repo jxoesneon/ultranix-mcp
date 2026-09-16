@@ -109,14 +109,12 @@ key-record files, JSON or line format, mode `0600` enforced per file).
 - `packages[]`: at least one installable package reference
 
 **`server.json`**(committed at `server.json` in repo root - schema
-2025-09-29, camelCase fields - passes `mcp-publisher validate`; the
-validator warns the schema is deprecated in favour of 2025-12-11, which
-we can migrate to when the registry requires it; published
-via `mcp-publisher` on each tag):
+2025-12-11; passes `mcp-publisher validate`; published via
+`mcp-publisher` on each tag. First published 2026-09-16 for v1.4.0):
 
 ```json
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.jxoesneon/ultranix-mcp",
   "description": "Secure Linux desktop automation - input, screen/OCR/vision, AT-SPI2 UI tree, window, clipboard",
   "version": "1.4.0",
@@ -130,7 +128,6 @@ via `mcp-publisher` on each tag):
     {
       "registryType": "oci",
       "identifier": "ghcr.io/jxoesneon/ultranix-mcp:1.4.0",
-      "version": "1.4.0",
       "transport": { "type": "stdio" },
       "runtimeHint": "docker",
       "environmentVariables": [
@@ -245,21 +242,24 @@ alphabetised and one line, per the list's contributing rules.
 
 ## Submission checklist
 
-- [ ] `README.md` leads with security posture + tool summary table; links to
+- [x] `README.md` leads with security posture + tool summary table; links to
   `docs/TOOLS.md`, `docs/API_VERSIONING.md`, `SECURITY.md`
-- [ ] `docs/TOOLS.md` complete for every shipped tool (this repo)
-- [ ] `SECURITY.md` and `LICENSE` (ISC) present
-- [ ] `server.json` committed at repo root; `mcp-publisher validate` passes;
+- [x] `docs/TOOLS.md` complete for every shipped tool (this repo)
+- [x] `SECURITY.md` and `LICENSE` (ISC) present
+- [x] `server.json` committed at repo root; `mcp-publisher validate` passes;
   version matches the release tag
-- [ ] `Cargo.toml` metadata complete: `description`, `license = "ISC"`,
+- [x] `Cargo.toml` metadata complete: `description`, `license = "ISC"`,
   `repository`, `keywords = ["mcp", "linux", "automation", "wayland", "hyprland"]`,
   `categories = ["command-line-utilities"]`
-- [ ] Release tag + notes published (`v1.4.0`)
-- [ ] `cargo publish` run for `ultranix-mcp`; AUR `ultranix-mcp-bin` PKGBUILD
-  submitted (`.SRCINFO` files ship under `packaging/` since v1.4.0)
-- [ ] GitHub topics set: `mcp`, `mcp-server`, `linux`, `wayland`, `hyprland`,
+- [x] Release tag + notes published (`v1.4.0`)
+- [x] `cargo publish` run for `ultranix-mcp` (v1.4.0 live on crates.io).
+  AUR `ultranix-mcp-bin` submission is **blocked externally**: AUR account
+  registration is paused (503, anti-abuse measure - no retry queue;
+  announcements on aur-general). `.SRCINFO` files ship under `packaging/`
+  for when registration reopens.
+- [x] GitHub topics set: `mcp`, `mcp-server`, `linux`, `wayland`, `hyprland`,
   `automation`, `ocr`, `computer-use`, `rust`
 - [ ] `assets/icon.png` (512×512) present for registry icons
-- [ ] Health endpoint (`GET /health`) and `GET /metrics` verified on `:3010`
-- [ ] Each registry entry above submitted; links recorded in this file's git
-  history
+- [x] Health endpoint (`GET /health`) and `GET /metrics` verified on `:3010`
+- [x] Official MCP registry: `io.github.jxoesneon/ultranix-mcp` v1.4.0
+  published 2026-09-16 (`status: active`). AUR pending the pause above.
