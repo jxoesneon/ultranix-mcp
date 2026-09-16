@@ -45,6 +45,37 @@
 //!   plugins cannot compose into unbounded macro recursion.
 //! - Every `${ref}` inside a step's string args must reference a
 //!   declared param.
+//! - An optional `tool` (alias `expose_as_tool`) section registers the
+//!   plugin as a *first-class tool* in `tools/list`:
+//!   ```json
+//!   "tool": {
+//!     "name": "deploy_notes",
+//!     "description": "Deploy the notes bundle",
+//!     "params": { "env": {"type": "string", "required": true} }
+//!   }
+//!   ```
+//!   `tool.name` uses the tool grammar `^[a-z][a-z0-9_]{0,63}$` and is
+//!   advertised **verbatim** — no `plugin_` prefix. Verbatim names are
+//!   unambiguous by construction: the grammar reaches every catalog
+//!   name, so the catalog-collision check keeps them disjoint from the
+//!   static catalog, and scan-time dedup keeps them unique among
+//!   plugins (a second manifest claiming a registered tool name is
+//!   skipped with a diagnostic). `tool.description` is capped at
+//!   [`MAX_TOOL_DESCRIPTION`] chars. `tool.params` declares
+//!   *additional* params in the same shape as `params` — they merge
+//!   into the manifest's param set (so `${ref}` resolution and
+//!   `plugin_run` binding treat them identically); a name declared in
+//!   both places is an authoring error. `plugin_run` itself remains
+//!   the dispatch target: calling `deploy_notes{env: "prod"}` is
+//!   exactly `plugin_run{name: "deploy-notes", params: {env: "prod"}}`
+//!   through the secured pipeline.
+//!
+//! [`ToolRegistry`] is the server's live view over these exposed tools:
+//! it rescans the manifest dir on every access (the always-fresh model
+//! `plugin_list`/`plugin_run` already use), so `plugin_reload` needs no
+//! cache flush — and no `tools/list_changed` notification is emitted
+//! (the server does not advertise that capability; clients see the new
+//! surface on their next `tools/list`).
 //!
 //! Template rules (`${…}` in `args` string values, at any depth):
 //! - A string that is *exactly* `${name}` substitutes the typed JSON
@@ -77,6 +108,24 @@ pub const MAX_STEPS: usize = 32;
 
 /// Hard cap on declared `params` per manifest.
 pub const MAX_PARAMS: usize = 64;
+
+/// Hard cap on `tool.description` — tool metadata is bounded like the
+/// other manifest fields (a manifest is trusted content, but a
+/// runaway string still bloats every `tools/list` response).
+pub const MAX_TOOL_DESCRIPTION: usize = 256;
+
+/// Hard cap on a single manifest file — the largest legal manifest
+/// (64 params × short strings + 32 steps) fits in tens of KiB; 256 KiB
+/// is generous headroom while keeping a same-UID writer from making
+/// every `tools/list` parse megabytes of JSON.
+pub const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
+
+/// Hard cap on manifest files scanned per call — the scan reruns on
+/// every `tools/list`/`plugin_*`/dynamic-tool dispatch, so an
+/// unbounded dir would make each request do unbounded file I/O.
+/// Extras are skipped with a `tracing::warn` (they surface nowhere —
+/// the cap is a resource bound, not a correctness rule).
+pub const MAX_MANIFEST_FILES: usize = 256;
 
 // ---------------------------------------------------------------------------
 // Manifest schema
@@ -140,6 +189,32 @@ pub struct Step {
     pub args: Map<String, Value>,
 }
 
+/// A validated `tool`/`expose_as_tool` section — the plugin's own
+/// `tools/list` entry. The params advertised in its `inputSchema` are
+/// the manifest's merged [`PluginManifest::params`], so this carries
+/// only the name/description.
+#[derive(Debug, Clone)]
+pub struct ToolSpec {
+    /// `^[a-z][a-z0-9_]{0,63}$` — advertised verbatim (no `plugin_`
+    /// prefix; see the module docs for why that is unambiguous).
+    pub name: String,
+    /// Human-readable description (`""` when omitted).
+    pub description: String,
+}
+
+/// Serde target for the `tool` section — validated into [`ToolSpec`]
+/// by [`validate`]. `params` entries use the same [`ParamSpec`] shape
+/// as top-level `params` and merge into that set.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawToolSpec {
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    params: BTreeMap<String, ParamSpec>,
+}
+
 /// A validated manifest — the unit `plugin_run` executes.
 #[derive(Debug, Clone)]
 pub struct PluginManifest {
@@ -149,10 +224,53 @@ pub struct PluginManifest {
     pub version: String,
     /// Human-readable description (`""` when omitted).
     pub description: String,
-    /// Declared parameters, name → spec.
+    /// Declared parameters, name → spec — the union of `params` and
+    /// `tool.params` (merged at validation; the two sites must be
+    /// disjoint).
     pub params: BTreeMap<String, ParamSpec>,
     /// Ordered steps (1..=[`MAX_STEPS`]).
     pub steps: Vec<Step>,
+    /// `Some` when the manifest registers itself as a first-class
+    /// tool in `tools/list`.
+    pub tool: Option<ToolSpec>,
+}
+
+impl PluginManifest {
+    /// The `tools/list` entry for the `tool` section: an rmcp [`Tool`]
+    /// whose `inputSchema` is generated from the merged `params` —
+    /// `type: "object"`, per-param `type`/`description`, a `required`
+    /// array (omitted when empty, matching schemars' habit), and
+    /// `additionalProperties: false` — the same shape
+    /// `crate::tools::tool_schema` produces for the static catalog.
+    /// `None` when the manifest declares no `tool` section.
+    pub fn exposed_tool(&self) -> Option<rmcp::model::Tool> {
+        let spec = self.tool.as_ref()?;
+        let mut properties = Map::new();
+        let mut required = Vec::new();
+        for (name, p) in &self.params {
+            let mut prop = Map::from_iter([("type".into(), Value::from(p.ty.as_str()))]);
+            if let Some(d) = &p.description {
+                prop.insert("description".into(), Value::from(d.clone()));
+            }
+            properties.insert(name.clone(), Value::Object(prop));
+            if p.required {
+                required.push(Value::from(name.clone()));
+            }
+        }
+        let mut schema = Map::from_iter([
+            ("type".into(), Value::from("object")),
+            ("properties".into(), Value::Object(properties)),
+            ("additionalProperties".into(), Value::Bool(false)),
+        ]);
+        if !required.is_empty() {
+            schema.insert("required".into(), Value::Array(required));
+        }
+        Some(rmcp::model::Tool::new(
+            spec.name.clone(),
+            spec.description.clone(),
+            schema,
+        ))
+    }
 }
 
 /// The only manifest schema revision this server parses.
@@ -172,6 +290,10 @@ struct RawManifest {
     description: String,
     #[serde(default)]
     params: BTreeMap<String, ParamSpec>,
+    /// Optional self-registration as a `tools/list` tool.
+    /// `expose_as_tool` is accepted as an alias spelling.
+    #[serde(default, alias = "expose_as_tool")]
+    tool: Option<RawToolSpec>,
     steps: Vec<Step>,
 }
 
@@ -215,6 +337,20 @@ pub enum ManifestError {
     /// `steps` exceeds [`MAX_STEPS`].
     #[error("too many steps: {0} > {MAX_STEPS}")]
     TooManySteps(usize),
+    /// `tool.name` fails the tool-name grammar.
+    #[error("invalid tool name {0:?}: must match ^[a-z][a-z0-9_]{{0,63}}$")]
+    ToolName(String),
+    /// `tool.name` shadows a real catalog tool.
+    #[error("tool name {0:?} collides with a catalog tool name")]
+    ToolNameCollidesWithTool(String),
+    /// `tool.description` exceeds [`MAX_TOOL_DESCRIPTION`].
+    #[error("tool description too long: {0} chars > {MAX_TOOL_DESCRIPTION}")]
+    ToolDescription(usize),
+    /// A param is declared in both `params` and `tool.params` — the two
+    /// sites must be disjoint so the bindable set cannot diverge from
+    /// the advertised schema.
+    #[error("param {0:?} declared in both `params` and `tool.params`")]
+    ToolParamDuplicate(String),
     /// `step.tool` is not a catalog tool.
     #[error("step {index}: unknown tool {tool:?}")]
     UnknownTool {
@@ -467,6 +603,18 @@ fn validate(raw: RawManifest) -> Result<PluginManifest, ManifestError> {
             return Err(ManifestError::ParamName(name.clone()));
         }
     }
+    // The `tool` section validates into the param set it extends —
+    // `tool.params` entries are *additional* declarations merged into
+    // `params`, so `${ref}` resolution and `plugin_run` binding see a
+    // single declared set.
+    let mut params = raw.params;
+    let tool = raw
+        .tool
+        .map(|t| validate_tool(t, &mut params))
+        .transpose()?;
+    if params.len() > MAX_PARAMS {
+        return Err(ManifestError::TooManyParams(params.len()));
+    }
     if raw.steps.is_empty() {
         return Err(ManifestError::EmptySteps);
     }
@@ -504,7 +652,7 @@ fn validate(raw: RawManifest) -> Result<PluginManifest, ManifestError> {
                 .map_err(|source| ManifestError::Template { index, source })?;
         }
         for name in refs {
-            if !raw.params.contains_key(&name) {
+            if !params.contains_key(&name) {
                 return Err(ManifestError::UndeclaredParam { index, name });
             }
         }
@@ -513,8 +661,51 @@ fn validate(raw: RawManifest) -> Result<PluginManifest, ManifestError> {
         name: raw.name,
         version: raw.version,
         description: raw.description,
-        params: raw.params,
+        params,
         steps: raw.steps,
+        tool,
+    })
+}
+
+/// Validate the `tool`/`expose_as_tool` section. `tool.params` entries
+/// are additional declared params — merged into `params` here so the
+/// advertised `inputSchema`, `${ref}` resolution, and `plugin_run`
+/// binding can never disagree. A name already present in `params` is
+/// rejected rather than silently overridden.
+fn validate_tool(
+    raw: RawToolSpec,
+    params: &mut BTreeMap<String, ParamSpec>,
+) -> Result<ToolSpec, ManifestError> {
+    // Tool names use the *param* grammar (`^[a-z][a-z0-9_]{0,63}$` —
+    // underscores like `window_control`, never hyphens). The name is
+    // advertised verbatim: every catalog name is reachable by this
+    // grammar, so the collision check below is what keeps plugin tools
+    // disjoint from the static catalog; scan-time dedup keeps them
+    // unique among plugins.
+    if !valid_param_name(&raw.name) {
+        return Err(ManifestError::ToolName(raw.name));
+    }
+    if crate::tools::category_of(&raw.name).is_some() {
+        return Err(ManifestError::ToolNameCollidesWithTool(raw.name));
+    }
+    let desc_len = raw.description.chars().count();
+    if desc_len > MAX_TOOL_DESCRIPTION {
+        return Err(ManifestError::ToolDescription(desc_len));
+    }
+    if raw.params.len() > MAX_PARAMS {
+        return Err(ManifestError::TooManyParams(raw.params.len()));
+    }
+    for (name, spec) in raw.params {
+        if !valid_param_name(&name) {
+            return Err(ManifestError::ParamName(name));
+        }
+        if params.insert(name.clone(), spec).is_some() {
+            return Err(ManifestError::ToolParamDuplicate(name));
+        }
+    }
+    Ok(ToolSpec {
+        name: raw.name,
+        description: raw.description,
     })
 }
 
@@ -646,6 +837,7 @@ pub struct Scan {
 /// and an always-fresh view eliminates cache invalidation entirely
 /// (`plugin_reload` exists to surface *what* loaded and what was
 /// skipped, not to flush a cache).
+#[derive(Clone)]
 pub struct PluginStore {
     dir: PathBuf,
 }
@@ -701,21 +893,43 @@ impl PluginStore {
             .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "json"))
             .collect();
         paths.sort();
+        if paths.len() > MAX_MANIFEST_FILES {
+            tracing::warn!(
+                dir = %self.dir.display(),
+                files = paths.len(),
+                cap = MAX_MANIFEST_FILES,
+                "plugin dir exceeds the file cap — extra manifests skipped"
+            );
+            paths.truncate(MAX_MANIFEST_FILES);
+        }
 
         let mut seen = BTreeSet::new();
+        // Registered `tool.name`s — a plugin-exposed tool is a
+        // `tools/list` entry, so two manifests claiming the same tool
+        // name collide exactly like duplicate plugin names: first file
+        // in lexical order wins, the later one is skipped.
+        let mut seen_tools = BTreeSet::new();
         for path in paths {
             match load_one(&path) {
                 Ok(manifest) => {
-                    if seen.insert(manifest.name.clone()) {
-                        scan.plugins.push(Plugin {
-                            manifest,
-                            source: path,
-                        });
-                    } else {
+                    if !seen.insert(manifest.name.clone()) {
                         let error = format!("duplicate plugin name {:?}", manifest.name);
                         tracing::warn!(file = %path.display(), %error, "skipping plugin manifest");
                         scan.skipped.push(Skipped { file: path, error });
+                        continue;
                     }
+                    if let Some(tool) = manifest.tool.as_ref()
+                        && !seen_tools.insert(tool.name.clone())
+                    {
+                        let error = format!("duplicate plugin tool name {:?}", tool.name);
+                        tracing::warn!(file = %path.display(), %error, "skipping plugin manifest");
+                        scan.skipped.push(Skipped { file: path, error });
+                        continue;
+                    }
+                    scan.plugins.push(Plugin {
+                        manifest,
+                        source: path,
+                    });
                 }
                 Err(e) => {
                     tracing::warn!(file = %path.display(), %e, "skipping plugin manifest");
@@ -738,10 +952,103 @@ impl PluginStore {
             .into_iter()
             .find(|p| p.manifest.name == name)
     }
+
+    /// `scan` + lookup by *exposed tool* name (`manifest.tool.name`) —
+    /// the resolution `tools/call` uses for non-catalog names.
+    pub fn by_tool_name(&self, tool_name: &str) -> Option<Plugin> {
+        self.scan().plugins.into_iter().find(|p| {
+            p.manifest
+                .tool
+                .as_ref()
+                .is_some_and(|t| t.name == tool_name)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic tool registry
+// ---------------------------------------------------------------------------
+
+/// Live registry of plugin-exposed tools — the `tools/list` /
+/// `tools/call` view over manifests' `tool` sections.
+///
+/// Like [`PluginStore`] (which it wraps), every accessor rescans the
+/// manifest dir: `tools/list` always reflects the on-disk state,
+/// `plugin_reload` needs no cache flush, and dropping a manifest file
+/// in registers its tool on the next request — no restart. Callers on
+/// the async runtime should run these through
+/// `tokio::task::spawn_blocking` like the `plugin_*` tools do (a scan
+/// is a directory listing plus a JSON parse per manifest).
+#[derive(Clone)]
+pub struct ToolRegistry {
+    store: PluginStore,
+}
+
+impl ToolRegistry {
+    /// `<state-root>/plugins` resolved from the process environment —
+    /// the same root [`PluginStore::ambient`] uses.
+    pub fn ambient() -> Self {
+        Self {
+            store: PluginStore::ambient(),
+        }
+    }
+
+    /// `<state-root>/plugins` for an explicit root.
+    pub fn for_state_root(root: impl Into<PathBuf>) -> Self {
+        Self {
+            store: PluginStore::for_state_root(root),
+        }
+    }
+
+    /// Registry over an explicit manifest dir — the test seam.
+    pub fn at(dir: impl Into<PathBuf>) -> Self {
+        Self {
+            store: PluginStore::at(dir),
+        }
+    }
+
+    /// The manifest dir backing this registry.
+    pub fn dir(&self) -> &Path {
+        self.store.dir()
+    }
+
+    /// Every currently-registered plugin tool as an rmcp `Tool`,
+    /// sorted by tool name (blocking scan).
+    pub fn tools(&self) -> Vec<rmcp::model::Tool> {
+        let mut tools: Vec<rmcp::model::Tool> = self
+            .store
+            .scan()
+            .plugins
+            .iter()
+            .filter_map(|p| p.manifest.exposed_tool())
+            .collect();
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+        tools
+    }
+
+    /// The plugin exposing `tool_name`, or `None` (blocking scan).
+    pub fn resolve(&self, tool_name: &str) -> Option<Plugin> {
+        self.store.by_tool_name(tool_name)
+    }
 }
 
 fn load_one(path: &Path) -> Result<PluginManifest, ManifestError> {
-    let bytes = std::fs::read(path).map_err(|e| ManifestError::Io(e.to_string()))?;
+    // Bounded read — `scan` reruns per request, so an unbounded
+    // same-UID write must not make every scan slurp megabytes. `take`
+    // enforces the cap during the read itself (no stat-then-read
+    // TOCTOU window); the trailing byte signals "oversized".
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .map_err(|e| ManifestError::Io(e.to_string()))?
+        .take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| ManifestError::Io(e.to_string()))?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(ManifestError::Io(format!(
+            "manifest too large: > {MAX_MANIFEST_BYTES} bytes"
+        )));
+    }
     parse_manifest(&bytes)
 }
 
@@ -1147,6 +1454,265 @@ mod tests {
         let store = PluginStore::at(&dir);
         assert!(store.get("focus-firefox").is_some());
         assert!(store.get("nope").is_none());
+    }
+
+    // --- exposed tools (`tool` / `expose_as_tool` section) --------------------
+
+    /// The spec's example: a plugin that registers `deploy_notes`.
+    fn exposed() -> Value {
+        json!({
+            "manifest_version": 1,
+            "name": "deploy-notes",
+            "version": "1.0.0",
+            "tool": {
+                "name": "deploy_notes",
+                "description": "Deploy the notes bundle",
+                "params": { "env": {"type": "string", "description": "target env", "required": true} }
+            },
+            "steps": [ {"tool": "type_text", "args": {"text": "${env}"}} ]
+        })
+    }
+
+    #[test]
+    fn tool_section_registers_and_merges_params() {
+        let m = manifest(exposed()).unwrap();
+        let t = m.tool.as_ref().unwrap();
+        assert_eq!(t.name, "deploy_notes");
+        assert_eq!(t.description, "Deploy the notes bundle");
+        // `tool.params` merged into the bindable set — `${env}` resolved,
+        // and `plugin_run{name, params}` binds it identically.
+        assert!(m.params["env"].required);
+        let bound = bind_params(&m, obj(json!({"env": "prod"}))).unwrap();
+        assert_eq!(bound["env"], json!("prod"));
+    }
+
+    #[test]
+    fn expose_as_tool_alias_accepted() {
+        let mut v = exposed();
+        let tool = v.as_object_mut().unwrap().remove("tool").unwrap();
+        v.as_object_mut()
+            .unwrap()
+            .insert("expose_as_tool".into(), tool);
+        assert_eq!(manifest(v).unwrap().tool.unwrap().name, "deploy_notes");
+    }
+
+    #[test]
+    fn tool_absent_means_no_exposed_tool() {
+        let m = manifest(valid()).unwrap();
+        assert!(m.tool.is_none());
+        assert!(m.exposed_tool().is_none());
+    }
+
+    #[test]
+    fn tool_name_grammar() {
+        for bad in ["", "Deploy", "-x", "9x", "a-b", "a.b", &"a".repeat(65)] {
+            let mut v = exposed();
+            v["tool"]["name"] = json!(bad);
+            assert!(
+                matches!(manifest(v), Err(ManifestError::ToolName(_))),
+                "{bad} must be rejected"
+            );
+        }
+        for good in ["a", "deploy_notes", "x1_2_3", &"a".repeat(64)] {
+            let mut v = exposed();
+            v["tool"]["name"] = json!(good);
+            assert!(manifest(v).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
+    fn tool_name_colliding_with_catalog_rejected() {
+        // Unlike plugin names, the tool grammar reaches *every*
+        // catalog name (underscores included).
+        for tool in ["sleep", "metrics", "window_control", "plugin_run"] {
+            let mut v = exposed();
+            v["tool"]["name"] = json!(tool);
+            assert!(
+                matches!(manifest(v), Err(ManifestError::ToolNameCollidesWithTool(_))),
+                "{tool} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_description_capped() {
+        let mut v = exposed();
+        v["tool"]["description"] = json!("x".repeat(MAX_TOOL_DESCRIPTION));
+        assert!(manifest(v).is_ok());
+        let mut v = exposed();
+        v["tool"]["description"] = json!("x".repeat(MAX_TOOL_DESCRIPTION + 1));
+        assert!(matches!(
+            manifest(v),
+            Err(ManifestError::ToolDescription(n)) if n == MAX_TOOL_DESCRIPTION + 1
+        ));
+    }
+
+    #[test]
+    fn tool_params_validated_like_params() {
+        // Bad param name inside tool.params.
+        let mut v = exposed();
+        v["tool"]["params"] = json!({"Bad-Name": {"type": "string"}});
+        assert!(matches!(manifest(v), Err(ManifestError::ParamName(_))));
+        // >MAX_PARAMS tool params.
+        let many: Map<String, Value> = (0..=MAX_PARAMS)
+            .map(|i| (format!("p{i}"), json!({"type": "string"})))
+            .collect();
+        let mut v = exposed();
+        v["tool"]["params"] = Value::Object(many);
+        assert!(matches!(
+            manifest(v),
+            Err(ManifestError::TooManyParams(n)) if n == MAX_PARAMS + 1
+        ));
+    }
+
+    #[test]
+    fn tool_param_declared_twice_rejected() {
+        // `env` in both `params` and `tool.params` — declare once.
+        let mut v = exposed();
+        v["params"] = json!({"env": {"type": "string"}});
+        assert!(matches!(
+            manifest(v),
+            Err(ManifestError::ToolParamDuplicate(ref n)) if n == "env"
+        ));
+    }
+
+    #[test]
+    fn merged_param_count_capped() {
+        // params + disjoint tool.params can each be under the cap yet
+        // exceed it in union.
+        let many: Map<String, Value> = (0..MAX_PARAMS)
+            .map(|i| (format!("p{i}"), json!({"type": "string"})))
+            .collect();
+        let mut v = exposed();
+        v["params"] = Value::Object(many);
+        v["tool"]["params"] = json!({"extra": {"type": "string"}});
+        assert!(matches!(
+            manifest(v),
+            Err(ManifestError::TooManyParams(n)) if n == MAX_PARAMS + 1
+        ));
+    }
+
+    #[test]
+    fn malformed_tool_section_fails_closed() {
+        // tool not an object → JSON error (skipped at scan).
+        let mut v = exposed();
+        v["tool"] = json!("deploy_notes");
+        assert!(matches!(manifest(v), Err(ManifestError::Json(_))));
+        // tool missing `name`.
+        let mut v = exposed();
+        v["tool"].as_object_mut().unwrap().remove("name");
+        assert!(matches!(manifest(v), Err(ManifestError::Json(_))));
+        // Unknown key inside tool.
+        let mut v = exposed();
+        v["tool"]["exec"] = json!("rm -rf /");
+        assert!(matches!(manifest(v), Err(ManifestError::Json(_))));
+    }
+
+    #[test]
+    fn tool_schema_generation() {
+        let m = manifest(exposed()).unwrap();
+        let t = m.exposed_tool().unwrap();
+        assert_eq!(t.name.as_ref(), "deploy_notes");
+        assert_eq!(t.description.as_deref(), Some("Deploy the notes bundle"));
+        let s = &t.input_schema;
+        assert_eq!(s["type"], "object");
+        assert_eq!(s["additionalProperties"], false);
+        assert_eq!(s["properties"]["env"]["type"], "string");
+        assert_eq!(s["properties"]["env"]["description"], "target env");
+        assert_eq!(s["required"], json!(["env"]));
+    }
+
+    #[test]
+    fn tool_schema_falls_back_to_manifest_params() {
+        // `tool` without `params` advertises the manifest's own params.
+        let mut v = valid();
+        v["tool"] = json!({"name": "focus_firefox", "description": "Focus Firefox"});
+        let m = manifest(v).unwrap();
+        let t = m.exposed_tool().unwrap();
+        assert_eq!(t.input_schema["properties"]["title"]["type"], "string");
+        assert_eq!(t.input_schema["required"], json!(["title"]));
+    }
+
+    #[test]
+    fn tool_schema_without_params_omits_required() {
+        let mut v = exposed();
+        v["tool"].as_object_mut().unwrap().remove("params");
+        // The step still references ${env} → now undeclared → invalid.
+        assert!(matches!(
+            manifest(v),
+            Err(ManifestError::UndeclaredParam { .. })
+        ));
+        // With a param-free step the schema has an empty properties and
+        // no `required` key (schemars' convention for the catalog).
+        let v = json!({
+            "name": "ping",
+            "version": "1.0.0",
+            "tool": {"name": "ping_tool", "description": ""},
+            "steps": [{"tool": "metrics"}]
+        });
+        let m = manifest(v).unwrap();
+        let t = m.exposed_tool().unwrap();
+        assert_eq!(t.input_schema["properties"], json!({}));
+        assert!(t.input_schema.get("required").is_none());
+    }
+
+    #[test]
+    fn scan_skips_duplicate_tool_names() {
+        let tmp = tmp();
+        let dir = tmp.path().join("plugins");
+        fs::create_dir(&dir).unwrap();
+        write(
+            &dir,
+            "a-first.json",
+            &serde_json::to_string(&exposed()).unwrap(),
+        );
+        // Different plugin name, same tool name — must lose to the
+        // lexically-earlier file.
+        let mut second = exposed();
+        second["name"] = json!("deploy-other");
+        second["tool"]["description"] = json!("second file — must lose");
+        write(
+            &dir,
+            "z-second.json",
+            &serde_json::to_string(&second).unwrap(),
+        );
+
+        let scan = PluginStore::at(&dir).scan();
+        assert_eq!(scan.plugins.len(), 1);
+        assert_eq!(scan.plugins[0].manifest.name, "deploy-notes");
+        assert_eq!(scan.skipped.len(), 1);
+        assert!(
+            scan.skipped[0].error.contains("duplicate plugin tool name"),
+            "{}",
+            scan.skipped[0].error
+        );
+    }
+
+    #[test]
+    fn tool_registry_resolves_and_lists() {
+        let tmp = tmp();
+        let dir = tmp.path().join("plugins");
+        fs::create_dir(&dir).unwrap();
+        write(&dir, "d.json", &serde_json::to_string(&exposed()).unwrap());
+        write(&dir, "p.json", &serde_json::to_string(&valid()).unwrap());
+
+        let registry = ToolRegistry::at(&dir);
+        // resolve by tool name yields the owning plugin.
+        let p = registry.resolve("deploy_notes").unwrap();
+        assert_eq!(p.manifest.name, "deploy-notes");
+        assert!(registry.resolve("focus_firefox").is_none()); // valid() exposes none
+        assert!(registry.resolve("nope").is_none());
+        // tools() yields the exposed entries only.
+        let tools = registry.tools();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name.as_ref(), "deploy_notes");
+        // Live view: drop a manifest, next call sees it — the
+        // `plugin_reload` "refresh" is a scan, not a cache flush.
+        let mut extra = exposed();
+        extra["name"] = json!("other-plugin");
+        extra["tool"]["name"] = json!("other_tool");
+        write(&dir, "o.json", &serde_json::to_string(&extra).unwrap());
+        assert_eq!(registry.tools().len(), 2);
     }
 
     // --- bind_params ---------------------------------------------------------

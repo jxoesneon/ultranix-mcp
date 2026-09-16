@@ -1,6 +1,6 @@
 # Headless & Remote Authentication — ultranix-mcp
 
-**Status**: Implemented (v1.2.0) — everything here describes shipped behaviour
+**Status**: Implemented (v1.4.0) — everything here describes shipped behaviour
 except the Unix-socket listener, which remains a planned hardening option.
 **Audience**: operators running ultranix-mcp over SSH, on a headless box, or
 under `systemd --user` without an active graphical seat.
@@ -177,21 +177,23 @@ listener defaults to `127.0.0.1:3010`.
 | Screenshot / capture | wlr-screencopy | ✅ | ❌ no compositor |
 | Screenshot | portal Screenshot | ✅ (consent dialog) | ❌ **portals unavailable** — no `org.freedesktop.portal.*` without a session |
 | Input injection | zwlr_virtual_pointer_v1 + virtual-keyboard | ✅ | ❌ |
-| Input injection | uinput/evdev | ✅ | ⚠️ **Only** if the udev rule grants the service user `/dev/uinput` — kernel input works headless, but there is no session to receive it meaningfully |
+| Input injection | uinput/evdev | ✅ | ❌ never probed — the input ladder is empty on `SessionType::Headless`, so `/dev/uinput` is not even opened (see docs/HEADLESS.md §1) |
 | Input injection | portal RemoteDesktop | ✅ (consent) | ❌ unavailable |
 | Window/app control | hyprctl IPC | ✅ | ❌ no Hyprland |
-| a11y tree | AT-SPI2 | ✅ | ⚠️ bus exists via `dbus-run-session` but the tree is empty — no apps |
-| Browser automation | CDP `127.0.0.1:9222` | ✅ | ✅ if a browser is launched headless with a debug port |
+| a11y tree | AT-SPI2 | ✅ | ❌ `-32010` — the ui_automation ladder is empty headless, even under `dbus-run-session` |
+| Browser automation | CDP `127.0.0.1:9222` | ✅ | ❌ `-32010` — the browser ladder is empty headless; `CdpBrowser` is never probed even with Chrome listening on :9222. Run a headless compositor (docs/HEADLESS.md §2) to enable it |
 | Action history, audit, metrics | internal | ✅ | ✅ |
 
-**Bottom line for true headless hosts:** seatless mode degrades the input
-and capture providers along the standard fallback chain — each unavailable
-rung (virtual input → uinput → portal; wlr-screencopy → portal Screenshot)
-fails closed with an explicit `-32010 ProviderUnavailable` error rather than
-silently dropping to a weaker backend. What remains is browser automation
-(CDP), the encrypted history/audit/metrics core, and compositor-independent
-tools. Portals do not exist without a session, so nothing escalates into a
-consent dialog that can't render.
+**Bottom line for true headless hosts:** with no `WAYLAND_DISPLAY`/`DISPLAY`
+the session resolves to `SessionType::Headless` and **every** provider
+ladder is empty — all provider-backed tools fail closed with an explicit
+`-32010 ProviderUnavailable`. What remains is the compositor-independent
+core: encrypted history/audit/metrics, plugins, `sleep`, and
+`system_command` dispatch (its whitelisted helpers still fail at exec
+time without a display). Portals do not exist without a session, so
+nothing escalates into a consent dialog that can't render. If you need
+real automation on a seatless box, run the server under a headless
+wlroots compositor — see [HEADLESS.md](HEADLESS.md).
 
 ### The dangerous middle case: seat exists but nobody is watching
 
@@ -238,12 +240,14 @@ ssh -L 3010:127.0.0.1:3010 desktop-host
 
 No key, no port, no tunnel — the process-spawn boundary is the security model.
 
-### C. Headless host, browser automation only
+### C. Headless host — core tools only (no CDP either)
 
 ```bash
 systemctl --user start ultranix-mcp    # no graphical-session dependency
-google-chrome --headless --remote-debugging-port=9222 about:blank &
-# ultranix CDP tools work; capture/input tools return -32010 ProviderUnavailable
+# All provider-backed tools — including web_query/CDP — return
+# -32010 ProviderUnavailable: SessionType::Headless empties every ladder.
+# For browser automation on a headless box, run the server under a
+# headless wlroots compositor so WAYLAND_DISPLAY is set (docs/HEADLESS.md).
 ```
 
 ---
@@ -262,6 +266,7 @@ google-chrome --headless --remote-debugging-port=9222 about:blank &
 
 ---
 
-*See also: [API_KEY_MANAGEMENT.md](API_KEY_MANAGEMENT.md) (key sourcing under
-systemd credentials), [THREAT_MODEL.md](THREAT_MODEL.md) (TB-1, R-9 —
-unencrypted transport), [SECURITY.md](../SECURITY.md).*
+*See also: [HEADLESS.md](HEADLESS.md) (headless-compositor recipes and the
+`SessionType::Headless` tool matrix), [API_KEY_MANAGEMENT.md](API_KEY_MANAGEMENT.md)
+(key sourcing under systemd credentials), [THREAT_MODEL.md](THREAT_MODEL.md)
+(TB-1, R-9 — unencrypted transport), [SECURITY.md](../SECURITY.md).*

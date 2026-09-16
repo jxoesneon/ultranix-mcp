@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ErrorData, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo,
+    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, serve_server};
@@ -25,6 +25,11 @@ pub struct UltraNixServer {
     security: Option<Arc<crate::security::SecurityContext>>,
     /// CSPRNG session id binding consent tokens on stdio.
     session_id: Arc<str>,
+    /// Live registry of plugin-exposed tools (manifest `tool`
+    /// sections). Rescanned per request — `plugin_reload` needs no
+    /// cache flush, and no `tools/list_changed` notification is
+    /// emitted (the server does not advertise that capability).
+    plugin_tools: crate::plugins::ToolRegistry,
 }
 
 impl UltraNixServer {
@@ -43,7 +48,77 @@ impl UltraNixServer {
             },
             security: None,
             session_id: Arc::from("stdio-unbound"),
+            plugin_tools: crate::plugins::ToolRegistry::ambient(),
         }
+    }
+
+    /// Override the plugin-tool registry — tests point it at a
+    /// tempdir; production keeps the ambient `<state-root>/plugins`.
+    pub fn with_plugin_registry(mut self, registry: crate::plugins::ToolRegistry) -> Self {
+        self.plugin_tools = registry;
+        self
+    }
+
+    /// `tools/list` assembly: the static catalog (category + policy
+    /// filtered) plus the live plugin-tool registry. A plugin-exposed
+    /// tool is advertised iff `plugin_run`'s category (`admin`) is
+    /// enabled, the caller's role allows `plugin_run`, and the tool's
+    /// own name passes the role's allow/deny — mirroring the
+    /// dispatch-time conjuncts in `tools::plugin::run_exposed_tool`.
+    async fn advertised_tools(
+        &self,
+        policy: Option<&crate::security::policy::Policy>,
+        key_id: Option<&str>,
+    ) -> Vec<Tool> {
+        let cats = self.categories.as_deref().map(|v| v.as_slice());
+        let mut list = tools::list_tools_for(cats, policy, key_id);
+        // Plugin tools are uncatalogued — they inherit plugin_run's
+        // category, so a filter that removes `admin` removes them too.
+        if tools::category_gate("plugin_run", cats).is_some() {
+            return list;
+        }
+        // A role that may not run plugins sees none of their tools.
+        let role_allows_plugins = policy
+            .map(|p| p.is_tool_allowed(p.resolve(key_id), "plugin_run"))
+            .unwrap_or(true);
+        if !role_allows_plugins {
+            return list;
+        }
+        // Live scan on the blocking pool (same EFF-1 convention as the
+        // `plugin_*` tools' scans); a scan panic degrades to the
+        // static catalog rather than failing `tools/list`.
+        let registry = self.plugin_tools.clone();
+        let dynamic = match tokio::task::spawn_blocking(move || registry.tools()).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(%e, "plugin tool scan task panicked");
+                Vec::new()
+            }
+        };
+        match policy {
+            // An allowlist role hides plugin tools it does not name —
+            // `Role::allows` semantics, same as dispatch.
+            Some(p) => {
+                let role = p.resolve(key_id);
+                list.extend(
+                    dynamic
+                        .into_iter()
+                        .filter(|t| p.is_tool_allowed(role, t.name.as_ref())),
+                );
+            }
+            None => list.extend(dynamic),
+        }
+        list
+    }
+
+    /// Whether `name` is a registered plugin-exposed tool — a live
+    /// scan on the blocking pool.
+    async fn is_plugin_tool(&self, name: &str) -> bool {
+        let registry = self.plugin_tools.clone();
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || registry.resolve(&name).is_some())
+            .await
+            .unwrap_or(false)
     }
 
     /// Attach the security context and caller-identity session id.
@@ -320,11 +395,7 @@ impl ServerHandler for UltraNixServer {
             (None, None)
         };
         Ok(ListToolsResult {
-            tools: tools::list_tools_for(
-                self.categories.as_deref().map(|v| v.as_slice()),
-                policy,
-                key_id.as_deref(),
-            ),
+            tools: self.advertised_tools(policy, key_id.as_deref()).await,
             ..Default::default()
         })
     }
@@ -361,7 +432,24 @@ impl ServerHandler for UltraNixServer {
                 self.categories.as_deref().map(|v| v.as_slice()),
             ) {
                 Some(err) => Err(err),
-                None => tools::call_tool(&params.name, args, &self.providers).await,
+                None => {
+                    // A non-catalog name may be a plugin-exposed tool;
+                    // those inherit `plugin_run`'s category, so a
+                    // filter that excludes `admin` must gate them here
+                    // (the secured path applies the same conjunct in
+                    // `tools::plugin::run_exposed_tool`).
+                    if tools::category_of(&params.name).is_none()
+                        && self.is_plugin_tool(&params.name).await
+                        && let Some(err) = tools::category_gate(
+                            "plugin_run",
+                            self.categories.as_deref().map(|v| v.as_slice()),
+                        )
+                    {
+                        Err(err)
+                    } else {
+                        tools::call_tool(&params.name, args, &self.providers).await
+                    }
+                }
             },
         };
         // API_VERSIONING §Version Metadata — every tools/call result
@@ -383,5 +471,179 @@ impl ServerHandler for UltraNixServer {
             ));
             CallToolResponse::Complete(r)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+    use std::path::Path;
+
+    /// A plugin that registers itself as `deploy_notes` — the spec's
+    /// example manifest.
+    const DEPLOY: &str = r#"{
+        "name": "deploy-notes",
+        "version": "1.0.0",
+        "tool": {
+            "name": "deploy_notes",
+            "description": "Deploy the notes bundle",
+            "params": {"env": {"type": "string", "description": "target env", "required": true}}
+        },
+        "steps": [{"tool": "type_text", "args": {"text": "${env}"}}]
+    }"#;
+
+    fn server_with(dir: &Path, categories: Vec<String>) -> UltraNixServer {
+        UltraNixServer::new(Providers::all_mocks(), categories)
+            .with_plugin_registry(crate::plugins::ToolRegistry::at(dir))
+    }
+
+    fn write_plugin(dir: &Path, file: &str, body: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(file), body).unwrap();
+    }
+
+    fn names(list: &[Tool]) -> Vec<String> {
+        list.iter().map(|t| t.name.to_string()).collect()
+    }
+
+    fn policy(
+        f: impl FnOnce(&mut crate::security::policy::Role),
+    ) -> crate::security::policy::Policy {
+        let mut p = crate::security::policy::Policy::default();
+        f(&mut p.default_role);
+        p
+    }
+
+    #[tokio::test]
+    async fn list_includes_plugin_tool_with_generated_schema() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins");
+        write_plugin(&dir, "d.json", DEPLOY);
+        let s = server_with(&dir, vec![]);
+        let list = s.advertised_tools(None, None).await;
+        // The static catalog is intact and the plugin tool is appended.
+        assert!(names(&list).contains(&"plugin_run".to_string()));
+        let t = list
+            .iter()
+            .find(|t| t.name == "deploy_notes")
+            .expect("deploy_notes must be advertised");
+        assert_eq!(t.description.as_deref(), Some("Deploy the notes bundle"));
+        assert_eq!(t.input_schema["type"], Value::from("object"));
+        assert_eq!(t.input_schema["properties"]["env"]["type"], "string");
+        assert_eq!(
+            t.input_schema["properties"]["env"]["description"],
+            "target env"
+        );
+        assert_eq!(t.input_schema["required"], json!(["env"]));
+        assert_eq!(t.input_schema["additionalProperties"], false);
+    }
+
+    #[tokio::test]
+    async fn reload_picks_up_new_plugin_tools() {
+        // The registry is live — `plugin_reload` is a scan, not a cache
+        // flush; a new manifest registers on the next `tools/list`.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins");
+        write_plugin(&dir, "d.json", DEPLOY);
+        let s = server_with(&dir, vec![]);
+        assert!(names(&s.advertised_tools(None, None).await).contains(&"deploy_notes".to_string()));
+        write_plugin(
+            &dir,
+            "o.json",
+            r#"{
+                "name": "other-plugin",
+                "version": "1.0.0",
+                "tool": {"name": "other_tool"},
+                "steps": [{"tool": "metrics"}]
+            }"#,
+        );
+        let list = s.advertised_tools(None, None).await;
+        let found = names(&list);
+        assert!(found.contains(&"deploy_notes".to_string()));
+        assert!(found.contains(&"other_tool".to_string()));
+        // Removing the file unregisters it — no explicit reload needed.
+        std::fs::remove_file(dir.join("d.json")).unwrap();
+        assert!(
+            !names(&s.advertised_tools(None, None).await).contains(&"deploy_notes".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn category_filter_hides_plugin_tools() {
+        // Plugin tools live in `admin` — a mouse-only server advertises
+        // none of them.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins");
+        write_plugin(&dir, "d.json", DEPLOY);
+        let s = server_with(&dir, vec!["mouse".to_string()]);
+        let list = s.advertised_tools(None, None).await;
+        assert!(!names(&list).contains(&"deploy_notes".to_string()));
+        assert!(!names(&list).contains(&"plugin_run".to_string()));
+        // With `admin` enabled the plugin surface is back.
+        let s = server_with(&dir, vec!["admin".to_string()]);
+        assert!(names(&s.advertised_tools(None, None).await).contains(&"deploy_notes".to_string()));
+    }
+
+    #[tokio::test]
+    async fn allowlist_role_hides_unlisted_plugin_tool() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins");
+        write_plugin(&dir, "d.json", DEPLOY);
+        let s = server_with(&dir, vec![]);
+        // `plugin_run` allowed but `deploy_notes` unlisted → hidden.
+        let p = policy(|r| {
+            r.allow_tools = Some(
+                ["screenshot".to_string(), "plugin_run".to_string()]
+                    .into_iter()
+                    .collect(),
+            );
+        });
+        assert!(
+            !names(&s.advertised_tools(Some(&p), None).await).contains(&"deploy_notes".to_string())
+        );
+        // Listing the tool name advertises it.
+        let p = policy(|r| {
+            r.allow_tools = Some(
+                [
+                    "screenshot".to_string(),
+                    "plugin_run".to_string(),
+                    "deploy_notes".to_string(),
+                ]
+                .into_iter()
+                .collect(),
+            );
+        });
+        assert!(
+            names(&s.advertised_tools(Some(&p), None).await).contains(&"deploy_notes".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn deny_plugin_run_hides_every_plugin_tool() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins");
+        write_plugin(&dir, "d.json", DEPLOY);
+        let s = server_with(&dir, vec![]);
+        let p = policy(|r| {
+            r.deny_tools.insert("plugin_run".to_string());
+        });
+        assert!(
+            !names(&s.advertised_tools(Some(&p), None).await).contains(&"deploy_notes".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn denylist_hides_exposed_tool_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins");
+        write_plugin(&dir, "d.json", DEPLOY);
+        let s = server_with(&dir, vec![]);
+        let p = policy(|r| {
+            r.deny_tools.insert("deploy_notes".to_string());
+        });
+        assert!(
+            !names(&s.advertised_tools(Some(&p), None).await).contains(&"deploy_notes".to_string())
+        );
     }
 }

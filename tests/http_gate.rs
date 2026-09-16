@@ -17,7 +17,7 @@
 //! `tests/nested.rs::stdio_mock_transport_smoke` already spawns
 //! `ultranix-mcp --transport stdio --mock`, drives the
 //! initialize → initialized → `tools/list` handshake, and asserts the
-//! 39-tool catalog plus a `tools/call` round-trip.
+//! 40-tool catalog plus a `tools/call` round-trip.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;

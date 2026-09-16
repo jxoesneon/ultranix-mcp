@@ -6,7 +6,7 @@ use rmcp::model::{CallToolResult, ErrorData};
 use serde_json::{Map, Value, json};
 use ultranix_mcp::providers::Providers;
 
-/// The frozen catalog: `(tool_name, category)` — 39 entries, order matches
+/// The frozen catalog: `(tool_name, category)` — 40 entries, order matches
 /// the Tool Summary table in docs/TOOLS.md.
 pub const TOOLS: &[(&str, &str)] = &[
     // mouse (7)
@@ -20,7 +20,7 @@ pub const TOOLS: &[(&str, &str)] = &[
     // keyboard (2)
     ("type_text", "keyboard"),
     ("key_control", "keyboard"),
-    // vision (13)
+    // vision (14)
     ("screenshot", "vision"),
     ("screen_info", "vision"),
     ("screen_highlight", "vision"),
@@ -34,6 +34,7 @@ pub const TOOLS: &[(&str, &str)] = &[
     ("wait_for_ui_element", "vision"),
     ("invoke_element", "vision"),
     ("screen_record", "vision"),
+    ("screen_stream", "vision"),
     // automation (4)
     ("sleep", "automation"),
     ("mouse_move_path", "automation"),
@@ -96,6 +97,7 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     "clipboard_set",
     "clipboard_clear",
     "screen_record",
+    "screen_stream",
 ];
 
 /// Tools implemented by a provider backend (per the Tool Summary "Backend"
@@ -152,7 +154,7 @@ pub async fn call(
     ultranix_mcp::tools::call_tool(name, arguments, providers).await
 }
 
-/// Schema-valid arguments for each of the 39 tools (happy path).
+/// Schema-valid arguments for each of the 40 tools (happy path).
 pub fn valid_args(name: &str) -> Map<String, Value> {
     match name {
         "mouse_click" => args(json!({"x": 640, "y": 420, "button": "left"})),
@@ -202,6 +204,7 @@ pub fn valid_args(name: &str) -> Map<String, Value> {
         "clipboard_set" => args(json!({"text": "hi"})),
         "clipboard_clear" => args(json!({})),
         "screen_record" => args(json!({"duration_ms": 100, "interval_ms": 100})),
+        "screen_stream" => args(json!({"action": "status"})),
         other => panic!("no valid_args fixture for unknown tool {other}"),
     }
 }
@@ -279,6 +282,8 @@ pub fn invalid_args(name: &str) -> Map<String, Value> {
         "clipboard_clear" => args(json!({"bogus": 1})),
         // missing required `duration_ms`
         "screen_record" => args(json!({"interval_ms": 100})),
+        // action outside the enum
+        "screen_stream" => args(json!({"action": "pause"})),
         other => panic!("no invalid_args fixture for unknown tool {other}"),
     }
 }

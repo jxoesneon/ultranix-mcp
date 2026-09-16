@@ -10,10 +10,13 @@ bounded `screen_record`, sway/Wayfire/river/KDE/GNOME detection + the
 at **v1.2.0**, and the policy-and-governance wave (runtime `policy.toml`
 access control with per-key role scoping, `--readonly`/`--allow-tools`/
 `--deny-tools`, `-32018`/`-32019` denials, backend + build-info metrics,
-audit-log HMAC signing) landed at **v1.3.0** — the package/channel rows
+audit-log HMAC signing) landed at **v1.3.0**, and the reach wave
+(Wayfire/river/GNOME window rungs, `screen_stream` live capture,
+plugin-exposed dynamic tools, the OCI image pipeline + `-bin` package)
+landed at **v1.4.0** — the package/channel rows
 below mark which submissions are still pending.
 
-**Date:** 2026-09-14
+**Date:** 2026-09-16
 **Maintainer:** jxoesneon (`https://github.com/jxoesneon`)
 **Repo:** `https://github.com/jxoesneon/ultranix-mcp`
 **License:** ISC
@@ -24,8 +27,10 @@ below mark which submissions are still pending.
 
 ```
 ultranix-mcp — Enterprise-grade, secure Linux desktop automation for AI
-agents (mouse, keyboard, screen/OCR/vision + bounded recording, AT-SPI2 UI
-tree, Hyprland/sway window control, clipboard tools, plugin tool-macros,
+agents (mouse, keyboard, screen/OCR/vision + bounded & live rolling
+capture, AT-SPI2 UI
+tree, Hyprland/sway/Wayfire/GNOME window control, clipboard tools, plugin
+tool-macros,
 browser DOM) via the Model Context Protocol. Rust + tokio + rmcp.
 SOC2-ready posture: audit logging, rate limiting, input sanitization, and
 AES-256-GCM-encrypted action history.
@@ -40,7 +45,7 @@ AES-256-GCM-encrypted action history.
 | crates.io | `ultranix-mcp` | publish pending (`cargo install ultranix-mcp`) |
 | AUR | `ultranix-mcp` (source build), `ultranix-mcp-bin` (prebuilt binary), `ultranix-mcp-git` (`main` HEAD) | PKGBUILDs shipped under `packaging/`; submission pending — see [PACKAGING.md](PACKAGING.md) |
 | GitHub Releases | `ultranix-mcp` (per-arch tarballs) | every tag (`release.yml`) |
-| OCI image | `ghcr.io/jxoesneon/ultranix-mcp` | planned — the committed `server.json` already points its single `packages[]` entry at `ghcr.io/jxoesneon/ultranix-mcp:1.3.0`; the image itself is a planned artifact for the **documented degraded mode** (headless/CI use only; the native install is primary — see [PACKAGING.md](PACKAGING.md) §1) |
+| OCI image | `ghcr.io/jxoesneon/ultranix-mcp` | shipped at v1.4.0 — root `Dockerfile` + `.github/workflows/oci.yml` publish on `v*` tags and `workflow_dispatch`; the committed `server.json` points its single `packages[]` entry at `ghcr.io/jxoesneon/ultranix-mcp:1.4.0`; the image remains for the **documented degraded mode** (headless/CI use only; the native install is primary — see [PACKAGING.md](PACKAGING.md) §1) |
 | Nix flake | `github:jxoesneon/ultranix-mcp` | `flake.nix` shipped at v1.2.0 — **unverified** (never evaluated; see [PACKAGING.md](PACKAGING.md) §4) |
 
 ## Install commands (documented in README)
@@ -83,13 +88,17 @@ key-record files, JSON or line format, mode `0600` enforced per file).
 ## Runtime requirements (must appear in listings)
 
 - Linux, Wayland session; **Hyprland** for full functionality (uinput +
-  portal fallbacks cover other Wayland sessions — sway gets the `sway-ipc`
-  window provider, KDE/GNOME route capture/input through portals; X11
-  sessions get the shipped `scrot`/`xdotool`/`wmctrl` rungs)
+  portal fallbacks cover other Wayland sessions — sway gets `sway-ipc`,
+  Wayfire `wayfire-ipc` (v1.4.0), river the focused-view-only `riverctl`
+  rung (v1.4.0), KDE `kdotool`, GNOME the Window Calls Shell extension
+  (`gnome-shell`, v1.4.0 — extension install required); capture/input
+  fall back to portals where the session allows; X11 sessions get the
+  shipped `scrot`/`xdotool`/`wmctrl` rungs)
 - Optional: browser on `127.0.0.1:9222` (`--remote-debugging-port`) for
   `web_query`; AT-SPI2 enabled for `get_ui_tree`/`find_element`;
   `wl-clipboard` (`wl-copy`/`wl-paste`) or `xclip`/`xsel` for the
-  clipboard tools
+  clipboard tools; `riverctl` (ships with river) for the river window
+  rung
 - No Node/Python dependency — single static Rust binary
 
 ---
@@ -114,7 +123,7 @@ via `mcp-publisher` on each tag):
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.jxoesneon/ultranix-mcp",
   "description": "Secure Linux desktop automation — input, screen/OCR/vision, AT-SPI2 UI tree, window, clipboard",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "title": "ultranix-mcp",
   "repository": {
     "url": "https://github.com/jxoesneon/ultranix-mcp",
@@ -124,8 +133,8 @@ via `mcp-publisher` on each tag):
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/jxoesneon/ultranix-mcp:1.3.0",
-      "version": "1.3.0",
+      "identifier": "ghcr.io/jxoesneon/ultranix-mcp:1.4.0",
+      "version": "1.4.0",
       "transport": { "type": "stdio" },
       "runtimeHint": "docker",
       "environmentVariables": [
@@ -169,8 +178,9 @@ Notes for the submission PR:
 
 - **Name:** ultranix-mcp
 - **Description:** Secure Linux desktop automation MCP server: mouse,
-  keyboard, screenshots + bounded screen recording, OCR + vision finding,
-  AT-SPI2 UI tree, Hyprland/sway window control, clipboard tools, plugin
+  keyboard, screenshots + bounded/live screen capture, OCR + vision finding,
+  AT-SPI2 UI tree, Hyprland/sway/Wayfire/GNOME window control, clipboard
+  tools, plugin
   tool-macros, browser DOM queries. Enterprise controls (audit, rate
   limit, sanitization, encrypted action history, consent gate) built in.
 - **Repo:** `https://github.com/jxoesneon/ultranix-mcp`
@@ -183,7 +193,7 @@ Notes for the submission PR:
 Append under **🖥️ Desktop Automation**:
 
 ```markdown
-- [jxoesneon/ultranix-mcp](https://github.com/jxoesneon/ultranix-mcp) 🦀 🐧 🏠 - Secure Linux desktop automation for AI agents: mouse/keyboard injection, screenshots + bounded recording, OCR + OWL-ViT visual search, AT-SPI2 UI tree, Hyprland/sway window control, clipboard tools, plugin macros, and browser DOM queries. Rust + rmcp; stdio and streamable-HTTP transports.
+- [jxoesneon/ultranix-mcp](https://github.com/jxoesneon/ultranix-mcp) 🦀 🐧 🏠 - Secure Linux desktop automation for AI agents: mouse/keyboard injection, screenshots + bounded/live capture, OCR + OWL-ViT visual search, AT-SPI2 UI tree, Hyprland/sway/Wayfire/GNOME window control, clipboard tools, plugin macros, and browser DOM queries. Rust + rmcp; stdio and streamable-HTTP transports.
 ```
 
 Emoji legend compliance: 🦀 Rust, 🐧 Linux, 🏠 local/self-hosted. Entry is
@@ -248,9 +258,9 @@ alphabetised and one line, per the list's contributing rules.
 - [ ] `Cargo.toml` metadata complete: `description`, `license = "ISC"`,
   `repository`, `keywords = ["mcp", "linux", "automation", "wayland", "hyprland"]`,
   `categories = ["command-line-utilities"]`
-- [ ] Release tag + notes published (`v1.3.0`)
+- [ ] Release tag + notes published (`v1.4.0`)
 - [ ] `cargo publish` run for `ultranix-mcp`; AUR `ultranix-mcp-bin` PKGBUILD
-  submitted
+  submitted (`.SRCINFO` files ship under `packaging/` since v1.4.0)
 - [ ] GitHub topics set: `mcp`, `mcp-server`, `linux`, `wayland`, `hyprland`,
   `automation`, `ocr`, `computer-use`, `rust`
 - [ ] `assets/icon.png` (512×512) present for registry icons

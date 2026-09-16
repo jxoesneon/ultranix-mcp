@@ -1,5 +1,5 @@
 //! Tool registry: schemas, categories, dispatch. Canonical catalog lives in
-//! docs/TOOLS.md — this module is its compiled mirror (39 tools).
+//! docs/TOOLS.md — this module is its compiled mirror (40 tools).
 
 mod admin;
 mod automation;
@@ -8,6 +8,7 @@ mod keyboard;
 mod mouse;
 mod plugin;
 mod record;
+mod stream;
 mod vision;
 
 use std::sync::{Arc, LazyLock};
@@ -82,6 +83,7 @@ const CATALOG: &[(&str, &[&str])] = &[
             "wait_for_ui_element",
             "invoke_element",
             "screen_record",
+            "screen_stream",
         ],
     ),
     (
@@ -112,7 +114,7 @@ const CATALOG: &[(&str, &[&str])] = &[
 /// Every advertised tool definition, built once (schemas are static).
 fn all_tools() -> &'static [Tool] {
     static ALL: LazyLock<Vec<Tool>> = LazyLock::new(|| {
-        let mut v = Vec::with_capacity(39);
+        let mut v = Vec::with_capacity(40);
         v.extend(mouse::tools());
         v.extend(keyboard::tools());
         v.extend(vision::tools());
@@ -120,6 +122,7 @@ fn all_tools() -> &'static [Tool] {
         v.extend(admin::tools());
         v.extend(clipboard::tools());
         v.extend(record::tools());
+        v.extend(stream::tools());
         v.extend(plugin::tools());
         v
     });
@@ -174,7 +177,7 @@ fn metric_backend(name: &str, providers: &Providers) -> &'static str {
             "xdotool",
             "mock-input",
         ],
-        "screenshot" | "screen_info" | "color_at" | "screen_record" => &[
+        "screenshot" | "screen_info" | "color_at" | "screen_record" | "screen_stream" => &[
             "wlr-screencopy",
             "grim",
             "portal-screenshot",
@@ -192,9 +195,16 @@ fn metric_backend(name: &str, providers: &Providers) -> &'static str {
         "clipboard_get" | "clipboard_set" | "clipboard_clear" => {
             &["wl-clipboard", "xclip", "mock-clipboard"]
         }
-        "window_control" | "get_windows" | "get_active_window" => {
-            &["hyprctl", "sway-ipc", "kdotool", "wmctrl", "mock-window"]
-        }
+        "window_control" | "get_windows" | "get_active_window" => &[
+            "hyprctl",
+            "sway-ipc",
+            "kdotool",
+            "wayfire-ipc",
+            "riverctl",
+            "gnome-shell",
+            "wmctrl",
+            "mock-window",
+        ],
         // These execute entirely in the server even when they inspect or
         // mutate state owned by a provider-backed subsystem.
         _ => return "core",
@@ -317,6 +327,9 @@ async fn dispatch(
     if let Some(r) = record::dispatch(name, args, providers).await {
         return r;
     }
+    if let Some(r) = stream::dispatch(name, args, providers).await {
+        return r;
+    }
     if let Some(r) = plugin::dispatch(name, args, providers).await {
         return r;
     }
@@ -357,6 +370,9 @@ async fn dispatch_secured(
         return r;
     }
     if let Some(r) = record::dispatch(name, args, providers).await {
+        return r;
+    }
+    if let Some(r) = stream::dispatch(name, args, providers).await {
         return r;
     }
     if let Some(r) =
@@ -707,7 +723,7 @@ pub async fn call_tool_secured<'a>(
     // them is meaningless and recording them is noise). The append does
     // blocking file + crypto work, so it runs on `spawn_blocking`
     // instead of a runtime worker (EFF-1).
-    if !admin::NON_REPLAYABLE.contains(&name)
+    if !admin::is_unrecorded(name, &argsv)
         && let Ok(store) = security.history_arc()
     {
         // Strip the spent consent token — the store holds replayable
@@ -751,6 +767,15 @@ async fn resolve_close_target(
     window: &dyn WindowProvider,
     selector: Option<&str>,
 ) -> Option<String> {
+    // Focused-view-only backend (river): every close targets the focused
+    // view, which cannot be identified further — bind the token to the
+    // focused selector itself.
+    if let Some(fid) = window.focused_view_selector() {
+        return match selector {
+            None => Some(fid.to_string()),
+            Some(sel) => (sel == fid).then(|| fid.to_string()),
+        };
+    }
     match selector {
         None => window.active_window().await.ok().flatten().map(|w| w.id),
         Some(sel) => {
@@ -777,26 +802,27 @@ async fn resolve_close_target(
 /// managers copy through the clipboard), so the summary keeps only the
 /// MIME type and payload length — never the payload itself, the same
 /// threat model as the `type_text`/`clipboard_set` arg redaction.
-/// `plugin_run` is also special-cased: step payloads (which may come from
-/// secret-bearing tools like `clipboard_get`) are never persisted; only
-/// the plugin name and step count are recorded.
+/// `plugin_run` — and any plugin-exposed dynamic tool — is also
+/// special-cased: step payloads (which may come from secret-bearing
+/// tools like `clipboard_get`) are never persisted; only the plugin name
+/// and step count are recorded. The check is on the *result shape*
+/// (`{"plugin": …, "steps_run": …}`), not the dispatch name, so exposed
+/// tools are covered without a registry lookup on the record path.
 fn result_summary(tool: &str, result: &Result<CallToolResult, ErrorData>) -> String {
-    if tool == "plugin_run"
-        && let Ok(r) = result
-    {
-        return r
+    if let Ok(r) = result
+        && let Some(v) = r
             .content
             .first()
             .and_then(ContentBlock::as_text)
             .and_then(|t| serde_json::from_str::<Value>(&t.text).ok())
-            .map(|v| {
-                format!(
-                    "plugin={} steps={}",
-                    v.get("plugin").and_then(Value::as_str).unwrap_or("?"),
-                    v.get("steps_run").and_then(Value::as_u64).unwrap_or(0)
-                )
-            })
-            .unwrap_or_else(|| "<plugin run>".into());
+        && v.get("plugin").and_then(Value::as_str).is_some()
+        && v.get("steps_run").and_then(Value::as_u64).is_some()
+    {
+        return format!(
+            "plugin={} steps={}",
+            v.get("plugin").and_then(Value::as_str).unwrap_or("?"),
+            v.get("steps_run").and_then(Value::as_u64).unwrap_or(0)
+        );
     }
     if tool == "clipboard_get"
         && let Ok(r) = result

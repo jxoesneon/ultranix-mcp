@@ -5,6 +5,163 @@ All notable changes to ultranix-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-09-16
+
+The reach wave: every compositor now gets its honest window rung
+(Wayfire IPC, river `riverctl`, GNOME Window Calls), `screen_stream`
+lands as the live counterpart to `screen_record`, plugin manifests can
+register first-class dynamic tools, and the distribution artifacts
+(OCI image, `-bin` package) ship. Tool surface grows from 39 to **40
+tools in 6 categories** (additive MINOR changes; no schema or response
+shape changed — `toolSurfaceVersion` stays `"2.0"`). See
+[ADR 0011](docs/adr/0011-reach-wave.md).
+
+### Added
+
+- **`WayfireWindow` provider** — `WindowProvider` over Wayfire's `ipc`/
+  `ipc-rules` plugins on `$WAYFIRE_SOCKET`
+  (`src/providers/wayfire_window.rs`): length-prefixed JSON transport
+  (4-byte LE length + UTF-8 JSON), `window-rules/list-views` for
+  list/geometry, `window-rules/get-focused-view` for the active window,
+  `view-info`/`focus-view`/`close-view`/`configure-view` for dispatch,
+  `wm-actions/set-minimized` for minimize (honest compositor `error`
+  reply on builds without `wm-actions`). Only `toplevel` views are
+  listed; `floating` reports `None` (Wayfire has no floating-vs-tiled
+  class — `tiled-edges` is a snap bitmask); `workspace` maps from
+  `wset-index`. Short-lived connection per request, 2 s bound, capped
+  reply read — the `sway_window.rs` shape. Backend name `"wayfire-ipc"`.
+- **`RiverWindow` provider** — `WindowProvider` over the pinned
+  `riverctl` subprocess (`src/providers/river_window.rs`), the river
+  rung of the window ladder — **partial by design**: river exposes no
+  window-list IPC, so `list_windows`/`active_window` return
+  `ProviderUnavailable` honestly, and `dispatch` operates on the focused
+  view only (`window_id` must be `"focused"` or empty). Closed verb set:
+  `close` → `riverctl close`; `move`/`resize` → relative
+  `move <dir> <delta>` / `resize <axis> <delta>` (deltas clamped
+  ±8192, floating-view ops — no-op on tiled focus); absolute
+  `x,y`/`w,h`, `focus`, and `minimize` have no riverctl form and error
+  honestly. At the tool surface, `window_control` reaches the focused
+  view through `window:"focused"` or an omitted selector (the provider's
+  `focused_view_selector()` bypasses `list_windows`/`active_window`
+  resolution), and `move`/`resize` accept the new relative `dx,dy`/
+  `dw,dh` params — `close` and delta-form move/resize are live on river;
+  `get_windows`/`get_active_window` still return `isError` results
+  (river genuinely cannot enumerate or identify views). Backend name
+  `"riverctl"`.
+- **`GnomeShellWindow` provider** — `WindowProvider` over the community
+  "Window Calls" GNOME Shell extension on the session D-Bus
+  (`src/providers/gnome_window.rs`): `org.gnome.Shell`'s
+  `/org/gnome/Shell/Extensions/Windows` object (`List`, `Activate`,
+  `Close`, `Minimize`, `Move`, `Resize`, `MoveResize`,
+  `MoveToWorkspace`, …). `org.gnome.Shell.Eval` is deliberately **not**
+  used — it is an arbitrary-JS primitive, commonly disabled, and a
+  security hazard. Requires the extension installed
+  (`gnome-extensions install <window-calls zip>`, EGO extension 4724);
+  without it the rung fails detection and GNOME reports
+  `ProviderUnavailable` as before. `floating`/`fullscreen` report `None`
+  (the `List()` payload does not carry them). Backend name
+  `"gnome-shell"`. GNOME-X11 ladders try `GnomeShell` then `wmctrl`.
+- **`screen_stream` (vision)** — continuous live capture with a
+  `start`/`status`/`latest`/`stop` lifecycle
+  (`src/tools/stream.rs`): `start` spawns a background task capturing
+  one PNG frame per `fps` interval (1–10, default 2) into a fresh
+  `stream-<ulid>` `0700` dir under the captures root, keeping a rolling
+  window bounded by `max_frames` (1–1800, default 600) and `max_bytes`
+  (default and ceiling 512 MiB) — oldest frames are evicted and counted
+  as `dropped_frames`; a frame larger than the whole budget is dropped
+  unwritten. `latest` returns the newest frame in `screenshot`'s
+  two-block image shape for polling; `status` reports live counters;
+  `stop` joins the task and returns final stats. The task writes
+  `manifest.json` on every exit path (`stopped` | `capture_error` |
+  `io_error`). Single active stream server-wide (the registry is
+  process-global; a second `start` while alive is an `isError`, a dead
+  task does not block a fresh start). Not consent-gated — same posture
+  as `screen_record` (server-owned `0700` output only). This is a
+  rolling-window disk capture, not an RTP/streaming protocol.
+- **Dynamic plugin tool registration** — manifests gain an optional
+  `tool` (alias `expose_as_tool`) section (`src/plugins.rs`
+  `ToolRegistry`, `src/server.rs` `advertised_tools`,
+  `src/tools/plugin.rs` `run_exposed_tool`): `{name
+  ^[a-z][a-z0-9_]{0,63}$, description ≤256 chars, params}` registers the
+  plugin as a first-class `tools/list` entry with a generated
+  `inputSchema` (per-param `type`/`description`, `required` array,
+  `additionalProperties: false`). `tool.params` merge into the
+  manifest's param set (declaring the same name in both sites is an
+  authoring error); names are advertised verbatim and must not collide
+  with the catalog or a sibling plugin's tool name (later claims are
+  skipped with a `plugin_reload` diagnostic). Calling the tool is
+  exactly `plugin_run{name, params}` through the secured dispatch:
+  policy is applied to the tool's **own name** *and* the call requires
+  the role to allow `plugin_run` (denials are `-32018`/`-32019` with
+  `denial_reason`); steps keep per-step consent/audit/history/metrics.
+  Plugin tools inherit `plugin_run`'s `admin` category for
+  `--category` filtering, and **no `tools/list_changed` notification is
+  emitted** — the registry rescans per request, so clients see new
+  tools on their next `tools/list`.
+- **Distribution artifacts** — root `Dockerfile` (bookworm builder +
+  distroless-style runtime; verified runtime linkage documented in the
+  header comment) and `.github/workflows/oci.yml` publish
+  `ghcr.io/jxoesneon/ultranix-mcp` on `v*` tags and `workflow_dispatch`
+  (the `server.json` `packages[]` identifier already points there). New
+  `packaging/ultranix-mcp-bin/` PKGBUILD (prebuilt-binary package) plus
+  `.SRCINFO` files for `ultranix-mcp` and `ultranix-mcp-git` keep the
+  AUR set submission-ready. `docs/HEADLESS.md` documents
+  `SessionType::Headless` semantics and headless-compositor operation.
+  `flake.nix` fixes.
+
+### Security
+
+- `riverctl` joined the startup pin set as **provider-internal only** —
+  pinned to an absolute path, spawned under the scrubbed environment and
+  bounded wait, but with no `validate_command` arm: `system_command`
+  cannot invoke it.
+- `screen_stream` writes only inside a fresh server-owned `stream-<ulid>`
+  `0700` directory (the same `fresh_recording_dir` discipline as
+  `screen_record`, renamed atomically in the same parent); the rolling
+  byte cap (`buffered_bytes <= max_bytes <= 512 MiB`) holds
+  unconditionally. The tool is in `NON_REPLAYABLE` — replaying a
+  recorded `start` would spawn a background capture task, so
+  `replay_action` refuses it; `start`/`stop` are still recorded to
+  audit/history while the `status`/`latest` polls are suppressed from
+  history (per-frame reads would flood the bounded store).
+- Plugin-exposed tools add no new code-exec surface: they route through
+  `plugin_run`'s secured dispatch with **dual policy** (the tool's own
+  name must pass the role's allow/deny *and* `plugin_run` must be
+  allowed), per-step consent re-challenge, and result-shape-based
+  history redaction identical to `plugin_run`. History redaction is
+  symmetric the other way too: a non-catalog (plugin-exposed) tool's
+  args collapse to `<redacted:N params>` before they can persist into
+  the queryable, replayable store, and `deny_tools` is likewise
+  symmetric — naming either the plugin (`deploy-notes`) or its exposed
+  tool (`deploy_notes`) denies the manifest under both addresses.
+- `screen_stream` leaf I/O opens frames and `manifest.json` with
+  `O_NOFOLLOW` at `0600` (async mirror of `open_nofollow`), and the
+  plugin scanner bounds itself — ≤256 KiB per manifest, ≤256 files per
+  scan.
+- `WAYFIRE_SOCKET` is confined to wayfire's own socket root
+  (`XDG_RUNTIME_DIR`, or `/tmp` when unset) — an out-of-root socket
+  declines the provider instead of connecting.
+- GNOME `Eval` remains deliberately unused — the Window Calls extension
+  is the only GNOME window channel; its `List()` reply is bounded at
+  1 MiB.
+
+### Still deferred (honest notes)
+
+- river has no window-list IPC — `get_windows`/`get_active_window`
+  return an `isError` result on river; only the focused-view ops are
+  reachable (`window_control` on `"focused"`/omitted selector: `close`,
+  delta `move`/`resize`).
+- GNOME window management requires the Window Calls extension installed
+  and enabled; without it the rung drops out of detection (nothing to
+  fall back to on GNOME-Wayland).
+- `screen_stream` is rolling-window capture with polled `latest`
+  frames — not RTP/WebRTC streaming; there is no push channel.
+- `tools/list_changed` is not advertised — dynamic plugin tools appear
+  on the next `tools/list`; clients must re-list after `plugin_reload`.
+- crates.io publish and the AUR submissions themselves are still
+  pending (PKGBUILDs + `.SRCINFO` are ready; see
+  docs/REGISTRY_SUBMISSION.md).
+
 ## [1.3.0] — 2026-09-16
 
 The policy wave: runtime access-control, per-key scoping, telemetry

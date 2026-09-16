@@ -4,11 +4,15 @@ ultranix-mcp's delivery plan for **v1.0.0** and beyond. Work proceeded in six
 phases, each with concrete deliverables, exit criteria, dependencies, and
 risk callouts — **Phases 0–5 are delivered as of v1.0.0, the v1.1.0 wave
 shipped the post-v1 items that had a real implementation path, the
-v1.2.0 breadth wave landed the rest, and the v1.3.0 policy-and-governance
-wave added the runtime access-control surface** (see
+v1.2.0 breadth wave landed the rest, the v1.3.0 policy-and-governance
+wave added the runtime access-control surface, and the v1.4.0 reach wave
+closed the compositor-coverage gaps (Wayfire/river/GNOME window rungs),
+shipped live `screen_stream` capture, dynamic plugin tool registration,
+and the OCI/`-bin` distribution artifacts** (see
 [CHANGELOG.md](CHANGELOG.md), [v1.1.0 — Post-v1 Wave](#v110--post-v1-wave-shipped),
-[v1.2.0 — Breadth Wave](#v120--breadth-wave-shipped), and
-[v1.3.0 — Policy & Governance Wave](#v130--policy--governance-wave-shipped)
+[v1.2.0 — Breadth Wave](#v120--breadth-wave-shipped),
+[v1.3.0 — Policy & Governance Wave](#v130--policy--governance-wave-shipped), and
+[v1.4.0 — Reach Wave](#v140--reach-wave-shipped)
 below). This is a living document — update it as direction shifts.
 
 Legend: `[x]` done · `[ ]` planned · phases are strictly ordered; a phase's
@@ -20,8 +24,10 @@ Installed session tools: `hyprctl`, `grim`, `slurp`. X11 sessions use the
 shipped `scrot`/`xdotool`/`wmctrl` rungs (`xrandr`/`xprop` are pinned as
 provider-internal helpers, not `system_command`-invocable). Optional:
 `wl-clipboard` (`wl-copy`/`wl-paste` — clipboard tools on Wayland),
-`xclip`/`xsel` (clipboard tools on X11/XWayland; all four are likewise
-provider-internal pins, unreachable by `system_command`). Not required:
+`xclip`/`xsel` (clipboard tools on X11/XWayland), `kdotool` (KDE window
+rung), `riverctl` (river window rung) — all likewise provider-internal
+pins, unreachable by `system_command`; the GNOME Window Calls extension
+enables the GNOME window rung. Not required:
 `gdbus`/`busctl` — removed from the command whitelist. Absent by design:
 `wtype`, `ydotool`, `tesseract` — ultranix-mcp does not depend on them.
 
@@ -434,25 +440,91 @@ security/ops knob ([ADR 0010](docs/adr/0010-policy-controls.md)):
       named roles, a `keys` map under an unrestricted `default_role`,
       and a `keys` map on stdio/disabled auth all log loud warnings
 
+## v1.4.0 — Reach Wave (shipped)
+
+The last "no IPC exists" gaps re-examined for real implementation paths —
+the tool surface grew from 39 to **40 tools in 6 categories**
+([ADR 0011](docs/adr/0011-reach-wave.md)):
+
+- [x] **GNOME window backend** — `GnomeShellWindow` (`gnome-shell`) over
+      the community **Window Calls** Shell extension
+      (`org.gnome.Shell.Extensions.Windows`: `List`/`Activate`/`Close`/
+      `Minimize`/`Move`/`Resize`/`MoveResize`/`MoveToWorkspace`).
+      Requires the extension installed (EGO 4724) — without it the rung
+      drops out and GNOME reports `ProviderUnavailable` as before.
+      `org.gnome.Shell.Eval` deliberately unused (arbitrary-JS hazard).
+- [x] **Wayfire window backend** — `WayfireWindow` (`wayfire-ipc`) over
+      the `ipc`/`ipc-rules` plugins on `$WAYFIRE_SOCKET` (length-prefixed
+      JSON): `list-views`, `get-focused-view`, `focus-view`,
+      `close-view`, `configure-view`, `wm-actions/set-minimized`.
+      Toplevel views only; `floating` honestly `None`.
+- [x] **river window backend (partial)** — `RiverWindow` (`riverctl`)
+      over the pinned `riverctl` subprocess: river genuinely has no
+      window-list IPC, so `get_windows`/`get_active_window` return
+      `ProviderUnavailable`, but `window_control` reaches the focused
+      view via `window:"focused"` or an omitted selector
+      (`focused_view_selector()` bypasses list/active resolution) —
+      `close`, and `move`/`resize` through the new relative `dx,dy`/
+      `dw,dh` params; `focus`/`minimize`/absolute geometry error
+      honestly (no riverctl form). `riverctl` is pin-only (no
+      `validate_command` arm — unreachable by `system_command`).
+- [x] **Live streaming capture** — `screen_stream` (vision):
+      `start`/`status`/`latest`/`stop` lifecycle; a background task
+      captures `fps` frames/s into a `stream-<ulid>` `0700` dir under
+      the captures root with a rolling window (`max_frames` ≤1800,
+      `max_bytes` ≤512 MiB, oldest evicted → `dropped_frames`);
+      `latest` returns the newest frame in `screenshot`'s image shape;
+      `manifest.json` on every exit path; one active stream server-wide;
+      `NON_REPLAYABLE`. Rolling-window disk capture — not RTP.
+- [x] **Dynamic tool registration** — manifest `tool` sections
+      (`name`/`description`/`params`) register first-class `tools/list`
+      entries with generated `inputSchema`s; calls route through
+      `plugin_run`'s secured dispatch with dual policy (own name +
+      `plugin_run` allowed); `admin` category; no
+      `tools/list_changed` — clients re-list after `plugin_reload`.
+- [x] **Headless operation** — [docs/HEADLESS.md](docs/HEADLESS.md)
+      documents `SessionType::Headless` (all provider ladders empty,
+      fail-closed) vs headless-compositor operation (full ladders, no
+      physical outputs); detection already resolves both.
+- [x] **Distribution** — root `Dockerfile` + `.github/workflows/oci.yml`
+      publish `ghcr.io/jxoesneon/ultranix-mcp` on `v*` tags;
+      `packaging/ultranix-mcp-bin/` (prebuilt package) + `.SRCINFO`
+      files keep the AUR set submission-ready; `flake.nix` fixes.
+
 ## Post-v1 Ideas
 
-Exploration backlog — not committed, priority by demand.
+Exploration backlog — not committed, priority by demand. (The v1.4.0 wave
+cleared most of the former list; honest residuals are noted inline.)
 
-- **GNOME native window backend** — a Mutter / gnome-shell provider
-  behind `WindowProvider` (the KDE side shipped: `KdotoolWindow` drives
-  KWin via `kdotool`)
-- **Wayfire/river window backends** — no general window IPC exists today
-  (Wayfire's IPC is plugin-scoped; `riverctl` manages layout, not client
-  windows) — needs upstream capability or a protocol-level approach
+- ~~**GNOME native window backend**~~ — **shipped at v1.4.0** via the
+  Window Calls Shell extension (`GnomeShellWindow`, `gnome-shell`).
+  Residual: requires the extension installed — Mutter still exposes no
+  native window IPC, and `Eval` stays deliberately unused.
+- ~~**Wayfire/river window backends**~~ — **shipped at v1.4.0**:
+  Wayfire's `ipc`/`ipc-rules` socket turned out to be a real channel
+  (`wayfire-ipc`); river is partial — `riverctl` registers the rung and
+  `window_control` drives the focused view (`window:"focused"`,
+  `close`, delta `move`/`resize`), but river still has no window-list
+  IPC, so `get_windows`/`get_active_window` return `isError` results there
+  (`ProviderUnavailable`).
 - **GPU EP acceleration** — CUDA/OpenVINO/ROCm features are wired
   (`ort/load-dynamic` + `ORT_DYLIB_PATH`); remaining work is validated
-  EP-packaged ONNX Runtime builds in CI/packaging
-- **Streaming capture** — `screen_record` shipped the bounded version;
-  true continuous/live streaming for remote-control UX remains open
-- **Headless operation** — running under a nested or headless compositor for
-  CI and server-side automation
-- **Dynamic tool registration** — plugins shipped as manifest macros over
-  the fixed catalog; third-party tools with their own schemas remain open
+  EP-packaged ONNX Runtime builds in CI/packaging. The `oci.yml`
+  workflow (v1.4.0) now builds and publishes the image on tags, but it
+  does not yet exercise GPU EPs.
+- ~~**Streaming capture**~~ — **shipped at v1.4.0** as `screen_stream`
+  (rolling-window disk capture with polled `latest` frames). Residual:
+  true push-style streaming (RTP/WebRTC/live feed) for remote-control UX
+  remains open.
+- ~~**Headless operation**~~ — **shipped at v1.4.0**:
+  [docs/HEADLESS.md](docs/HEADLESS.md) + `SessionType::Headless`
+  detection (empty provider ladders, fail-closed) and documented
+  headless-compositor operation.
+- ~~**Dynamic tool registration**~~ — **shipped at v1.4.0**: manifest
+  `tool` sections register first-class `tools/list` entries routed
+  through `plugin_run`'s secured dispatch. Residual: still
+  schemas-over-manifests (no new *code*); a WASM/IPC plugin runtime
+  remains rejected (ADR 0009).
 
 ---
 

@@ -21,8 +21,9 @@ frozen per server release); the protocol version moves independently and is
 always the *highest mutually supported* version from the `initialize`
 handshake.
 
-**Current versions:** server `1.3.0` · tool surface `2.0`
-(39 tools) · protocol negotiated per MCP spec.
+**Current versions:** server `1.4.0` · tool surface `2.0`
+(40 static tools, plus plugin-exposed dynamic entries) · protocol
+negotiated per MCP spec.
 
 Tool-surface `2.0` (at server `1.1.0`): `find_element` and
 `wait_for_ui_element` changed response **structure** — the single-match
@@ -46,6 +47,15 @@ decision, not a wire-schema change, so `toolSurfaceVersion` remains
 `"2.0"`; new error codes `-32018 ReadOnlyMode` and `-32019
 NotInToolList` are additive.
 
+Server `1.4.0` is again purely additive MINOR against surface `2.0`:
+one new catalog tool (`screen_stream`, vision) and a new *mechanism* —
+manifest `tool` sections register plugin-exposed dynamic tools in
+`tools/list`. Dynamic entries are not catalog tools (no stable name
+guarantee beyond the manifest author's, no `tools/list_changed`
+notification — clients re-list after `plugin_reload`), and existing
+names, schemas, response shapes, and code/kind sets are unchanged, so
+`toolSurfaceVersion` remains `"2.0"`.
+
 ## Versioning Scheme
 
 **Format**: `MAJOR.MINOR.PATCH` (tool-surface version drops `PATCH` — schema
@@ -55,7 +65,8 @@ fixes ship as server PATCH releases without changing the surface identifier).
 only** (MAJOR semantics). Additive MINOR/PATCH waves — new tools,
 categories, or error codes — bump the *server* version while the surface
 identifier holds: `toolSurfaceVersion` stayed `"2.0"` across the
-`1.1.0` → `1.2.0` wave despite seven new tools.
+`1.1.0` → `1.2.0` wave despite seven new tools, and again across
+`1.3.0` → `1.4.0` (one new tool + dynamic plugin tools).
 
 - **MAJOR**: breaking changes to the tool surface (see matrix)
 - **MINOR**: new tools or backwards-compatible additions
@@ -186,7 +197,7 @@ publishes an extension block:
   "id": 0,
   "result": {
     "protocolVersion": "2025-06-18",
-    "serverInfo": { "name": "ultranix-mcp", "version": "1.3.0" },
+    "serverInfo": { "name": "ultranix-mcp", "version": "1.4.0" },
     "capabilities": {
       "tools": {},
       "extensions": {
@@ -219,10 +230,16 @@ Rules:
 - `features.spatialFocus` is `true` at v1.0.0 — `set_spatial_focus` installs a
   process-global rect that scopes `screenshot`/`find_text_on_screen`/
   `find_icon` (never persisted; see docs/TOOLS.md §Spatial Focus).
-- The server does not advertise `tools.listChanged`; dynamic tool-list updates
-  are not supported. The advertised surface changes only via startup-time
-  `--category` filters or the per-caller runtime policy (see
-  [Runtime Policy](#runtime-policy)).
+- The server does not advertise `tools.listChanged`; no notification is
+  pushed. The advertised surface changes via startup-time `--category`
+  filters, the per-caller runtime policy (see
+  [Runtime Policy](#runtime-policy)), and — since v1.4.0 —
+  plugin-exposed dynamic tools: manifest `tool` sections register or
+  remove `tools/list` entries as the manifest dir changes (the registry
+  rescans per request), so clients MUST re-list after `plugin_reload` or
+  a manifest change rather than expecting a notification. Dynamic entries
+  are sugar over `plugin_run` — they are not covered by the static
+  catalog's stability guarantees (a manifest rename *is* the rename).
 
 ## Version Detection
 
@@ -234,10 +251,10 @@ assert_eq!(info.server_info.name, "ultranix-mcp");
 
 ```bash
 # Binary
-ultranix-mcp --version        # ultranix-mcp 1.3.0
+ultranix-mcp --version        # ultranix-mcp 1.4.0
 
 # HTTP transport
-curl -s http://127.0.0.1:3010/health | jq .version   # "1.3.0"
+curl -s http://127.0.0.1:3010/health | jq .version   # "1.4.0"
 
 # Package metadata
 cargo info ultranix-mcp | head -1
@@ -290,7 +307,7 @@ All `tools/call` results carry server identity in `result._meta`:
 {
   "_meta": {
     "server": "ultranix-mcp",
-    "serverVersion": "1.3.0",
+    "serverVersion": "1.4.0",
     "toolSurfaceVersion": "2.0",
     "protocolVersion": "2025-06-18"
   }

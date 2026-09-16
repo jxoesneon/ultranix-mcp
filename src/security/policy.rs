@@ -140,11 +140,27 @@ impl Policy {
                 .chain(role.allow_tools.iter().flatten())
             {
                 if crate::tools::category_of(tool).is_none() {
-                    tracing::warn!(
-                        role = %role_name,
-                        tool = %tool,
-                        "policy references a tool name not in the catalog (typo?)"
-                    );
+                    // Plugin-exposed tool names are valid targets but live
+                    // outside the static catalog — name grammar
+                    // distinguishes a plausible plugin tool from a typo.
+                    let plausible_plugin_name =
+                        tool.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+                            && tool
+                                .bytes()
+                                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+                    if plausible_plugin_name {
+                        tracing::debug!(
+                            role = %role_name,
+                            tool = %tool,
+                            "policy references a non-catalog name — expected for plugin-exposed tools"
+                        );
+                    } else {
+                        tracing::warn!(
+                            role = %role_name,
+                            tool = %tool,
+                            "policy references a tool name not in the catalog (typo?)"
+                        );
+                    }
                 }
             }
         }

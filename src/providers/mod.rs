@@ -11,6 +11,8 @@ pub mod atspi;
 pub mod cdp_browser;
 pub mod clipboard;
 pub(crate) mod common;
+#[cfg(feature = "a11y")]
+pub mod gnome_window;
 pub mod grim_capture;
 pub mod hyprctl;
 pub mod kdotool_window;
@@ -23,9 +25,11 @@ pub mod overlay;
 pub mod portal_capture;
 #[cfg(feature = "a11y")]
 pub mod portal_input;
+pub mod river_window;
 pub mod sway_window;
 #[cfg(feature = "uinput")]
 pub mod uinput_input;
+pub mod wayfire_window;
 #[cfg(feature = "wayland")]
 pub mod wlr_capture;
 #[cfg(feature = "wayland")]

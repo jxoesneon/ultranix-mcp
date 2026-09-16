@@ -1,0 +1,37 @@
+pkgbase = ultranix-mcp
+	pkgdesc = Wayland-native, security-first MCP server for Linux desktop automation (Hyprland-first, with sway/KDE fallbacks and clipboard tools)
+	pkgver = 1.4.0
+	pkgrel = 1
+	url = https://github.com/jxoesneon/ultranix-mcp
+	install = ultranix-mcp.install
+	arch = x86_64
+	arch = aarch64
+	license = ISC
+	makedepends = cargo
+	makedepends = pkgconf
+	makedepends = wayland
+	makedepends = wayland-protocols
+	depends = libxkbcommon
+	depends = dbus
+	depends = libpipewire
+	optdepends = xdg-desktop-portal-hyprland: screen-capture consent path on Hyprland
+	optdepends = xdg-desktop-portal-wlr: portal backend for other wlroots compositors
+	optdepends = xdg-desktop-portal-gnome: portal backend under GNOME
+	optdepends = pipewire: PipeWire daemon for the portal RemoteDesktop capture stream (v1.1.0+ consumes the video fd when Screenshot is not advertised)
+	optdepends = wl-clipboard: Wayland clipboard tools (wl-copy/wl-paste) used by the clipboard backend
+	optdepends = at-spi2-core: semantic UI tree (a11y backend)
+	optdepends = onnxruntime: system ONNX Runtime for ORT_STRATEGY=system builds
+	optdepends = grim: whitelisted system_command capture helper (wlroots)
+	optdepends = slurp: whitelisted system_command region-picker (wlroots)
+	optdepends = xdotool: X11 input fallback + pointer position (X11 sessions only)
+	optdepends = scrot: X11 capture fallback (X11 sessions only)
+	optdepends = wmctrl: X11 window-management fallback (X11 sessions only)
+	optdepends = xclip: X11 clipboard tool used by the clipboard backend
+	optdepends = xsel: X11 clipboard clear helper used by the clipboard backend
+	optdepends = kdotool: KDE KWin window-management helper
+	optdepends = xorg-xrandr: X11 output-geometry enrichment for the capture backend (X11 sessions only)
+	optdepends = xorg-xprop: X11 _NET_WM_STATE enrichment for the window backend (X11 sessions only)
+	source = ultranix-mcp-1.4.0.tar.gz::https://github.com/jxoesneon/ultranix-mcp/archive/v1.4.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = ultranix-mcp

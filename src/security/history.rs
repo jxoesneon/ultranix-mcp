@@ -732,7 +732,11 @@ fn set_mode(_path: &Path, _mode: u32) -> anyhow::Result<()> {
 /// `"<redacted:N params>"` — a plugin wrapping `type_text` or
 /// `clipboard_set` would otherwise smuggle the same secret the
 /// step-level redaction hides into the macro record, past the
-/// `args_contain_redacted` replay guard. Everything else verbatim.
+/// `args_contain_redacted` replay guard. A tool name outside the
+/// static catalog is a plugin-exposed tool: its args are arbitrary
+/// caller params — the same channel `plugin_run.params` hides — so
+/// the whole object collapses to `"<redacted:N params>"`. Everything
+/// else verbatim.
 fn redact_args(tool: &str, mut args: Value) -> Value {
     let Some(obj) = args.as_object_mut() else {
         return args;
@@ -756,7 +760,14 @@ fn redact_args(tool: &str, mut args: Value) -> Value {
                 );
             }
         }
-        _ => {}
+        _ => {
+            if crate::tools::category_of(tool).is_none() && !obj.is_empty() {
+                let n = obj.len();
+                return serde_json::json!({
+                    "params": format!("<redacted:{n} params>")
+                });
+            }
+        }
     }
     args
 }
@@ -1483,6 +1494,33 @@ mod tests {
         let lossy = String::from_utf8_lossy(&bytes);
         assert!(!lossy.contains("secret-paste"));
         assert!(!lossy.contains("hunter2"));
+    }
+
+    #[test]
+    fn plugin_exposed_tool_args_are_redacted() {
+        let _env = env_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = HistoryStore::open(tmp.path()).unwrap();
+        // A tool name outside the static catalog is plugin-exposed: its
+        // args are arbitrary caller params — the same secret channel
+        // `plugin_run.params` hides — so the whole object collapses to
+        // a redaction marker (which also trips the replay guard).
+        let rec = store
+            .record(entry(
+                "deploy_notes",
+                json!({"password": "hunter2", "region": "us-east-1"}),
+            ))
+            .unwrap();
+        assert_eq!(rec.args_json, json!({"params": "<redacted:2 params>"}));
+        // Catalog tools keep verbatim args; an empty plugin-tool call
+        // has nothing to redact.
+        let rec = store.record(entry("deploy_notes", json!({}))).unwrap();
+        assert_eq!(rec.args_json, json!({}));
+        let rec = store.record(entry("sleep", json!({"ms": 10}))).unwrap();
+        assert_eq!(rec.args_json["ms"], json!(10));
+        // The secret never reaches disk.
+        let bytes = fs::read(store.path()).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("hunter2"));
     }
 
     #[test]

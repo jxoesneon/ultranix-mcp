@@ -57,7 +57,7 @@ observability** (Prometheus, SIEM-able logs), **AT-SPI semantic UI**
 
 | Server / approach | Wayland-native | Hyprland IPC | Security layers | Observability | AT-SPI semantic UI | Notes |
 | --- | :-: | :-: | :-: | :-: | :-: | --- |
-| **ultranix-mcp** (this) | ✅ wlr protocols + portal + uinput | ✅ `hyprctl` socket + `sway-ipc` (v1.2.0), window/workspace control | ✅ auth/bucket-limit/sanitize/arg-constrained whitelists/AES-256-GCM/audit/consent gate | ✅ Prometheus + audit JSONL | ✅ AT-SPI2 (Phase 2, incl. `invoke_element`) + ONNX vision fallback | Rust 2024, `rmcp`, 39 snake_case tools in 6 categories (v1.2.0: clipboard, plugin macros, `screen_record`), stdio + HTTP :3010 |
+| **ultranix-mcp** (this) | ✅ wlr protocols + portal + uinput | ✅ `hyprctl` + `sway-ipc` + `wayfire-ipc` + `gnome-shell` (Window Calls) + `kdotool` + `wmctrl`, window/workspace control (river is a focused-view-only rung — no list IPC) | ✅ auth/bucket-limit/sanitize/arg-constrained whitelists/AES-256-GCM/audit/consent gate | ✅ Prometheus + audit JSONL | ✅ AT-SPI2 (Phase 2, incl. `invoke_element`) + ONNX vision fallback | Rust 2024, `rmcp`, 40 snake_case tools in 6 categories (+ dynamic plugin-exposed tools), stdio + HTTP :3010 |
 | **ultramac-mcp** (macOS sibling) | n/a | n/a | ✅ `umcp_*`, rate limit, sanitize, AES-256-GCM, audit | ✅ Prometheus, Winston logs | ✅ macOS AX tree + OCR/icon-find | Proves the governance model; TypeScript/Bun |
 | **UltraWin-MCP** (Windows sibling) | n/a | n/a | ✅ `uwcp_*` keys, audit, encrypted history | ✅ metrics | ✅ UIA3 cached tree | Proves the Rust trait-provider architecture ultranix-mcp adopts |
 | **hypruse** (IlyasKhallouki/hypruse) | ✅ `zwlr_virtual_pointer` + `wtype` + `grim` | ✅ `hyprctl` IPC window ops | ❌ none — no auth, audit, rate limit, encryption | ❌ | ✅ AT-SPI via `busctl`, incl. `click_ui` element actions | **Direct incumbent on the Hyprland wedge** — PyPI-listed; already ships AT-SPI actions and cursor-position workarounds; Hyprland-only, no governance |
@@ -134,13 +134,16 @@ ladder architecture.
   experience could sour users vs the zero-prompt Hyprland path. Mitigate
   with clear startup probe logging, `/readyz` provider reporting, and token
   persistence (see `docs/PACKAGING.md` §5).
-- **Compositor coverage reality.** "Linux" is N compositors; v1.2.0 detects
-  Hyprland/sway/Wayfire/river/KDE/GNOME with the wlroots `wlr-*` rungs
-  shared across the family, `sway-ipc` window control on sway,
-  portal-routed capture/input on KDE/GNOME Wayland, and the
-  `scrot`/`xdotool`/`wmctrl` rungs on X11 and `kdotool` window control on
-  KDE — but honest gaps remain (no window IPC on Wayfire/river/
-  GNOME-Wayland). Still do not overclaim in launch messaging — non-Hyprland
+- **Compositor coverage reality.** "Linux" is N compositors; the session
+  detector resolves Hyprland/sway/Wayfire/river/KDE/GNOME with the wlroots
+  `wlr-*` rungs shared across the family, and every compositor now has its
+  window rung: `hyprctl`, `sway-ipc`, `wayfire-ipc` (`$WAYFIRE_SOCKET`),
+  `riverctl` (river — focused-view-only rung: no list IPC, so
+  `get_windows`/`get_active_window` return `isError` results while
+  `window_control` drives the focused view), `gnome-shell` (Window Calls
+  extension required), `kdotool` on KDE, and `wmctrl` on X11 —
+  portal-routed capture/input still covers KDE/GNOME Wayland. Still do
+  not overclaim in launch messaging — non-Hyprland
   paths are implemented + hermetically tested; only Hyprland/wlr has live
   smoke evidence.
 - **No community signal yet** — same pre-distribution state ultramac

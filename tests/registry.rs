@@ -1,4 +1,4 @@
-//! `tools/list` surface: exactly the frozen 39 tools, each name present
+//! `tools/list` surface: exactly the frozen 40 tools, each name present
 //! once, correct category-filter subsets, spec-shaped input schemas.
 
 mod common;
@@ -17,12 +17,12 @@ fn cats(categories: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn list_all_returns_exactly_39_tools() {
+fn list_all_returns_exactly_40_tools() {
     let tools = list_tools(None);
     assert_eq!(
         tools.len(),
-        39,
-        "expected exactly 39 tools, got: {:?}",
+        40,
+        "expected exactly 40 tools, got: {:?}",
         names(&tools)
     );
 }
@@ -40,7 +40,7 @@ fn every_frozen_name_present_exactly_once() {
         names(&tools)
     );
 
-    // All 39 frozen names are present.
+    // All 40 frozen names are present.
     for name in ALL_TOOL_NAMES {
         assert!(listed.contains(*name), "missing frozen tool {name}");
     }
@@ -97,7 +97,7 @@ fn category_filter_each_category() {
     let expected = [
         ("mouse", 7usize),
         ("keyboard", 2),
-        ("vision", 13),
+        ("vision", 14),
         ("automation", 4),
         ("admin", 10),
         ("clipboard", 3),
@@ -132,7 +132,7 @@ fn category_filter_mouse_keyboard_returns_9() {
 }
 
 #[test]
-fn category_filter_all_six_returns_39() {
+fn category_filter_all_six_returns_40() {
     let tools = list_tools(Some(&cats(&[
         "mouse",
         "keyboard",
@@ -141,7 +141,7 @@ fn category_filter_all_six_returns_39() {
         "admin",
         "clipboard",
     ])));
-    assert_eq!(tools.len(), 39, "got {:?}", names(&tools));
+    assert_eq!(tools.len(), 40, "got {:?}", names(&tools));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # Maintainer: jxoesneon <jxoesneon@users.noreply.github.com>
 pkgname=ultranix-mcp
-pkgver=1.3.0
+pkgver=1.4.0
 pkgrel=1
 pkgdesc="Wayland-native, security-first MCP server for Linux desktop automation (Hyprland-first, with sway/KDE fallbacks and clipboard tools)"
 arch=('x86_64' 'aarch64')
@@ -33,8 +33,9 @@ optdepends=(
 )
 install=ultranix-mcp.install
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
-# Placeholder — after tagging a release, regenerate in this directory with
-# `updpkgsums` (or `makepkg -g`) before pushing to the AUR.
+# Regenerate in this directory with `updpkgsums` (or `makepkg -g`) after
+# the v1.4.0 tag is pushed — the archive hash cannot exist before the tag
+# does. SKIP is intentional until then.
 sha256sums=('SKIP')
 
 prepare() {

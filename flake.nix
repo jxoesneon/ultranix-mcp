@@ -1,4 +1,7 @@
 {
+  # NOTE: sanity-reviewed for v1.3.0 (2026-09) but NOT built — no nix
+  # binary on the authoring machine. `nix flake check` / `nix build`
+  # before relying on it; cargoLock below makes dep bumps hash-free.
   description = "ultranix-mcp — Rust MCP server for Linux desktop automation (Wayland/Hyprland-first)";
 
   inputs = {
@@ -6,8 +9,11 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
+  # Linux-only outputs: pipewire/wayland/libxkbcommon/hyprland cannot
+  # build on darwin, so eachDefaultSystem would publish broken attrs
+  # (meta.platforms is already linux). Matches the AUR arch list.
   outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
@@ -27,6 +33,11 @@
 
           src = self;
 
+          # cargoLock vendored straight from Cargo.lock — no fixed
+          # cargoHash/vendorHash to go stale on dep bumps. No git
+          # dependencies exist, so no outputHashes are needed. If a git
+          # dep is ever added, it needs an entry in
+          # `cargoLock.outputHashes` — see nixpkgs buildRustPackage docs.
           cargoLock = {
             lockFile = ./Cargo.lock;
           };

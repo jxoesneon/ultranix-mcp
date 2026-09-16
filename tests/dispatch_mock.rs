@@ -1,5 +1,5 @@
 //! `tools/call` dispatch against `Providers::all_mocks()`: every one of the
-//! 39 tools accepts schema-valid arguments (deterministic success or an
+//! 40 tools accepts schema-valid arguments (deterministic success or an
 //! isError-free result) and rejects schema-invalid arguments with
 //! `-32602 InvalidParams`.
 
@@ -57,7 +57,7 @@ async fn all_tools_valid_args_succeed_with_mocks() {
         assert_success(&res, name);
     }
     // The flexible list must not drift from the catalog.
-    assert_eq!(ALL_TOOL_NAMES.len(), 39);
+    assert_eq!(ALL_TOOL_NAMES.len(), 40);
 }
 
 /// With a mock AT-SPI tree `invoke_element` finds no match: per spec a

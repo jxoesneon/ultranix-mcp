@@ -105,3 +105,10 @@ Current surface: **39 tools in 6 categories** — `--category` accepts
 naming-convention decisions above are unchanged (plugin names reuse the
 same `snake_case`/`category_verb` convention and are validated not to
 collide with catalog tool names).
+
+*(v1.4.0 addendum — ADR 0011: `screen_stream` joined `vision`, taking the
+catalog to **40 tools**; vision is now 14. Plugin manifests may also carry
+a `tool` section registering a dynamic `tools/list` entry — dynamic names
+use the tool grammar `^[a-z][a-z0-9_]{0,63}$`, are advertised verbatim,
+and must not collide with catalog or sibling plugin tool names; they are
+not catalog members and inherit `plugin_run`'s `admin` category.)*

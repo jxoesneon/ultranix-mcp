@@ -61,3 +61,5 @@ jobs:
         uses: softprops/action-gh-release@v2.2.1
         with:
           files: dist/*
+          # v1.5.0-rc.1-style tags create a prerelease, not a release.
+          prerelease: ${{ contains(github.ref_name, '-') }}

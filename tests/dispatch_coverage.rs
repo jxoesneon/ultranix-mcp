@@ -409,6 +409,40 @@ impl WindowProvider for DupWindows {
     }
 }
 
+/// Focused-view-only backend (river shape): cannot enumerate or
+/// identify windows, so `list_windows`/`active_window` bail, but
+/// `dispatch` on the `"focused"` selector works — exercised through
+/// `window_control`'s focused-view shortcut and relative-delta params.
+struct FocusedOnlyWindow {
+    calls: Mutex<Vec<(String, String, Value)>>,
+}
+
+#[async_trait]
+impl WindowProvider for FocusedOnlyWindow {
+    async fn list_windows(&self) -> anyhow::Result<Vec<WindowInfo>> {
+        anyhow::bail!("no window-list IPC")
+    }
+    async fn active_window(&self) -> anyhow::Result<Option<WindowInfo>> {
+        anyhow::bail!("cannot report the focused window")
+    }
+    async fn dispatch(&self, action: &str, window_id: &str, args: &Value) -> anyhow::Result<()> {
+        if window_id != "focused" {
+            anyhow::bail!("window id '{window_id}' is not addressable");
+        }
+        if !matches!(action, "close" | "move" | "resize") {
+            anyhow::bail!("unsupported dispatch action '{action}'");
+        }
+        self.calls
+            .lock()
+            .unwrap()
+            .push((action.to_string(), window_id.to_string(), args.clone()));
+        Ok(())
+    }
+    fn focused_view_selector(&self) -> Option<&'static str> {
+        Some("focused")
+    }
+}
+
 /// Every window call fails — `resolve_window` Backend arm.
 struct FailWindow;
 
@@ -1721,6 +1755,105 @@ async fn window_control_resolve_window_error_arms() {
     assert!(text_of(&res).contains("compositor ipc down"));
 }
 
+/// Focused-view-only backends (river): `"focused"` and the omitted
+/// selector bypass `list_windows`/`active_window` resolution, and
+/// move/resize accept `dx,dy`/`dw,dh` relative deltas.
+#[tokio::test]
+async fn window_control_focused_view_backend() {
+    let win = Arc::new(FocusedOnlyWindow {
+        calls: Mutex::new(Vec::new()),
+    });
+    let calls = win.clone();
+    let c = ctx(providers_with(move |p| p.window = Some(win.clone())));
+
+    // Explicit "focused" selector.
+    let res = secured(
+        &c,
+        "window_control",
+        args(json!({"action": "close", "window": "focused"})),
+    )
+    .await;
+    // `close` is consent-gated upstream; accept either the challenge or
+    // the dispatched result — what must NOT happen is a resolution error.
+    match res {
+        Ok(r) => assert_ne!(r.is_error, Some(true), "focused close: {r:?}"),
+        Err(e) => assert_eq!(e.code.0, CONSENT_REQUIRED, "focused close: {e:?}"),
+    }
+
+    // Omitted selector also means the focused view on such a backend.
+    let res = secured(
+        &c,
+        "window_control",
+        args(json!({"action": "move", "dx": 25, "dy": -10})),
+    )
+    .await;
+    assert_success(&res, "focused move with deltas");
+
+    // Deltas reach the provider verbatim.
+    {
+        let recorded = calls.calls.lock().unwrap();
+        assert!(
+            recorded
+                .iter()
+                .any(|(a, w, v)| a == "move" && w == "focused" && v["dx"] == 25 && v["dy"] == -10),
+            "expected move dispatch on focused with deltas, got {recorded:?}"
+        );
+    }
+
+    // Absolute args still pass through — the provider decides whether
+    // it can honour them (river bails honestly).
+    let res = secured(
+        &c,
+        "window_control",
+        args(json!({"action": "resize", "window": "focused", "dw": 40, "dh": 20})),
+    )
+    .await;
+    assert_success(&res, "focused resize with deltas");
+}
+
+/// Relative-delta params are rejected on list-capable backends and
+/// never leak into non-geometry actions.
+#[tokio::test]
+async fn window_control_delta_param_rules() {
+    let c = ctx(Providers::all_mocks());
+
+    // dx/dy on a normal (list-capable) backend → InvalidParams.
+    let res = secured(
+        &c,
+        "window_control",
+        args(json!({"action": "move", "dx": 5, "dy": 5})),
+    )
+    .await;
+    assert_error_code(&res, &[INVALID_PARAMS], "deltas on mock backend");
+
+    // Mixed absolute + relative → InvalidParams.
+    let res = secured(
+        &c,
+        "window_control",
+        args(json!({"action": "move", "x": 1, "y": 2, "dx": 5, "dy": 5})),
+    )
+    .await;
+    assert_error_code(&res, &[INVALID_PARAMS], "mixed absolute+relative");
+
+    // Partial delta pair → InvalidParams.
+    let res = secured(
+        &c,
+        "window_control",
+        args(json!({"action": "resize", "dw": 5})),
+    )
+    .await;
+    assert_error_code(&res, &[INVALID_PARAMS], "partial dw/dh pair");
+
+    // Deltas on a non-geometry action → InvalidParams.
+    let res = secured(
+        &c,
+        "window_control",
+        args(json!({"action": "focus", "dx": 1, "dy": 1})),
+    )
+    .await;
+    assert_error_code(&res, &[INVALID_PARAMS], "deltas on focus");
+}
+
 #[tokio::test]
 async fn get_windows_and_active_window() {
     let c = ctx(Providers::all_mocks());
@@ -2348,7 +2481,7 @@ async fn window_control_non_close_not_gated() {
 #[test]
 fn tool_registration_and_category_filter() {
     let all = ultranix_mcp::tools::list_tools(None);
-    assert_eq!(all.len(), 39);
+    assert_eq!(all.len(), 40);
     assert!(
         all.iter()
             .all(|t| t.input_schema.get("type").and_then(Value::as_str) == Some("object"))

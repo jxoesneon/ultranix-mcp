@@ -1,10 +1,11 @@
 # Testing Strategy
 
-> **Status:** Implemented — describes the test pyramid shipped with v1.2.0
+> **Status:** Implemented — describes the test pyramid as of v1.4.0
 > (Phases 0–5 complete, plus the v1.1.0 wave: X11 provider rungs, OCR cache,
 > Sentry, additional metrics — and the v1.2.0 wave: clipboard, plugin macros,
 > `screen_record`, sway IPC, per-backend features, history v2, AT-SPI scan
-> cache).
+> cache — and the v1.4.0 reach wave: Wayfire/river/GNOME window providers,
+> `screen_stream`, dynamic plugin tools).
 
 ultranix-mcp automates a live GUI session, which makes naive end-to-end testing
 host-dependent and flaky. The strategy therefore follows ultrawin's proven
@@ -71,7 +72,7 @@ fn handler_with(p: Providers) -> UltranixHandler { /* Option<Arc<dyn ..>> DI */ 
 
 **Coverage rules:**
 
-- **Every one of the 39 tools** has at least one happy-path unit test through
+- **Every one of the 40 tools** has at least one happy-path unit test through
   `tools/call` with all-mock providers (the ultrawin `test_tools_exhaustive`
   pattern — one test iterating the full catalog).
 - **Every tool** has a `None`-provider test asserting the structured
@@ -93,7 +94,7 @@ The MCP surface is a public contract (ADR 0006); it is pinned by fixtures.
 
 | Test | Mechanism | Assertion |
 | ---- | --------- | --------- |
-| `tools/list` full | drive `tools/list` via rmcp test client | byte-compares against `tests/golden/tools_list_all.json` — all 39 names, schemas, descriptions |
+| `tools/list` full | drive `tools/list` via rmcp test client | byte-compares against `tests/golden/tools_list_all.json` — all 40 names, schemas, descriptions |
 | `tools/list` filtered | start server with `--category=mouse,keyboard` | golden contains exactly the 9 expected tools; excluded categories absent |
 | `tools/call` result shape | mock providers | every result conforms to `CallToolResult` (`content[]` with `type: text`/`image`) |
 | `tools/call` unknown tool | `{"name": "nope"}` | typed `MethodNotFound`/`InvalidParams` error, matching golden |
@@ -239,7 +240,7 @@ Executed on the verified environment before tagging:
 - [ ] X11 session (or Xvfb): scrot/xdotool/wmctrl chain works end-to-end
 - [ ] Model cache: `find_icon` downloads once to `~/.ultranix-mcp/models/`; second boot reuses; digest mismatch re-fetches
 - [ ] Prometheus: all 10 shipped metrics present, correct types/labels; with `ULTRANIX_MCP_SENTRY_DSN` set, a forced error is captured by Sentry (a malformed DSN warns and disables)
-- [ ] `--category=vision` serves exactly the 13 vision tools; `--category` omitted serves all 39
+- [ ] `--category=vision` serves exactly the 14 vision tools; `--category` omitted serves all 40
 - [ ] Upgrade path: stop unit → replace binary → start; `history.json` and logs preserved under `~/.ultranix-mcp/`
 
 ## Phase-to-Test Mapping

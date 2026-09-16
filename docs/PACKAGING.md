@@ -1,6 +1,6 @@
 # ultranix-mcp — Packaging & Distribution Specification
 
-**Status:** Implemented (v1.2.0) — the packaging artifacts described here ship
+**Status:** Implemented (v1.4.0) — the packaging artifacts described here ship
 under `packaging/` plus `flake.nix` at the repo root; registry/AUR/crates.io
 submissions are pending (see
 [REGISTRY_SUBMISSION.md](REGISTRY_SUBMISSION.md)).
@@ -29,15 +29,17 @@ MCP client wiring.
 | AUR `ultranix-mcp-git` | builds `main` HEAD | bleeding-edge testers | PKGBUILD shipped; submission pending |
 | Nix flake | `github:jxoesneon/ultranix-mcp` | NixOS / nixpkgs users | `flake.nix` shipped at v1.2.0 — **unverified** (never evaluated; §4) |
 | GitHub Releases | `x86_64-unknown-linux-gnu` tarball + `.deb`-less raw binary | generic distros, CI | live via `release.yml` |
+| OCI image | `ghcr.io/jxoesneon/ultranix-mcp:<tag>` | headless tooling, CI smoke tests | shipped at v1.4.0 — root `Dockerfile` + `.github/workflows/oci.yml` publish on `v*` tags and `workflow_dispatch` |
 
-There is deliberately **no Docker image in the distribution matrix**:
+The OCI image exists for the **documented degraded container mode** only:
 desktop automation is inherently single-seat — the server must share the
-user's live Wayland session, seat, and session D-Bus. A **degraded container
-mode is documented** (`docs/ARCHITECTURE.md`, Deployment Architecture) for
-headless tooling and CI smoke tests only — it requires bind-mounting
-`$XDG_RUNTIME_DIR`, the session bus, and `/dev/uinput`, and yields
-portal/`None` providers with reduced tool coverage. That is a documented
-limitation, not a supported production topology. The Prometheus scrape
+user's live Wayland session, seat, and session D-Bus. The image requires
+bind-mounting `$XDG_RUNTIME_DIR`, the session bus, and `/dev/uinput`, and
+yields portal/`None` providers with reduced tool coverage — see
+`docs/ARCHITECTURE.md` (Deployment Architecture) and
+`docs/HEADLESS.md`. That is a documented
+limitation, not a supported production topology: the **native install is
+primary**. The Prometheus scrape
 config and HTTP transport exist for the *supervision* of a host-native
 process. (Contrast with ultramac's Dockerfile, which serves its HTTP tooling
 mode.)
@@ -147,6 +149,8 @@ optdepends=(
   'wmctrl: X11 window-management fallback (X11 sessions only)'
   'xorg-xrandr: X11 output-geometry enrichment for the capture backend (X11 sessions only)'
   'xorg-xprop: X11 _NET_WM_STATE enrichment for the window backend (X11 sessions only)'
+  'kdotool: window-management rung on KDE (Wayland + X11) — v1.2.0+'
+  'river: riverctl for the river window rung (focused-view window_control only — no list IPC) — v1.4.0+'
 )
 install=ultranix-mcp.install
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
@@ -186,13 +190,16 @@ must not silently `udevadm trigger` inside `.install`; prompt the user.
 
 ### 3.2 `ultranix-mcp-bin` — prebuilt binary
 
-- `source=("ultranix-mcp-${pkgver}-x86_64.tar.gz::…/releases/download/v${pkgver}/…"
-  "…sha256sums.txt")` plus detached `.sig` when signing lands.
-- `provides=('ultranix-mcp')`, `conflicts=('ultranix-mcp')`.
+- `source_x86_64=("ultranix-mcp-${pkgver}-x86_64-unknown-linux-gnu.tar.gz::…/releases/download/v${pkgver}/ultranix-mcp-${pkgver}-x86_64-unknown-linux-gnu.tar.gz")`;
+  `release.yml` also attaches a per-file `<asset>.tar.gz.sha256`
+  sidecar (not a combined `sha256sums.txt`) — plus detached `.sig`
+  when signing lands.
+- `provides=('ultranix-mcp')`, `conflicts=('ultranix-mcp' 'ultranix-mcp-git')`.
 - Same `depends`/`optdepends`; ships the same service unit and udev rule
   extracted from the release tarball.
-- `options=('!strip')` is NOT set — release artifacts are shipped unstripped
-  and the package may strip normally.
+- `options=('!strip')` is NOT set — release artifacts are already
+  stripped by `release.yml`, so there is nothing left for the package
+  to strip.
 
 ### 3.3 `ultranix-mcp-git` — VCS build
 
@@ -499,7 +506,7 @@ Run in order on a live Hyprland session:
 - [ ] `echo $WAYLAND_DISPLAY $XDG_CURRENT_DESKTOP` — non-empty; on Hyprland,
       `hyprctl version` responds and `HYPRLAND_INSTANCE_SIGNATURE` is set.
 - [ ] `ultranix-mcp --transport stdio` starts; an MCP `initialize` handshake
-      succeeds and `tools/list` returns all 39 tools (unfiltered run).
+      succeeds and `tools/list` returns all 40 tools (unfiltered run).
 - [ ] Startup probe logs (`RUST_LOG=info`) show provider resolution —
       `CaptureProvider=WlrCapture`, `InputProvider=WlrInput`,
       `WindowProvider=HyprctlWindow` on Hyprland (`sway-ipc` on sway);

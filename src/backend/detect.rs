@@ -27,8 +27,10 @@
 //! Compositor coverage (v1.2.0): the wlroots family — Hyprland, sway,
 //! Wayfire, river — routes to the `wlr-*` capture/input rungs and the
 //! layer-shell overlay; KDE and GNOME route to the portal rungs they
-//! actually implement. See [`plan_backends`] for the per-slot policy and
-//! the documented honest gaps (no Wayfire/river/GNOME window backend).
+//! actually implement. Since v1.4.0 every compositor also has a window
+//! rung — `wayfire-ipc` on Wayfire, focused-view-only `riverctl` on
+//! river, `gnome-shell` (Window Calls extension) on GNOME. See
+//! [`plan_backends`] for the per-slot policy.
 
 use std::sync::Arc;
 
@@ -235,6 +237,19 @@ pub enum WindowBackend {
     /// `"kdotool"`; drops out when the pin or KDE session marker is
     /// absent.
     Kdotool,
+    /// Wayfire `ipc` plugin socket (`$WAYFIRE_SOCKET`), length-prefixed
+    /// JSON. `providers::wayfire_window`, backend name `"wayfire-ipc"`.
+    WayfireIpc,
+    /// `riverctl` subprocess — river focused-view ops (no list IPC
+    /// exists). `providers::river_window`, backend name `"riverctl"`;
+    /// drops out when the pin or `XDG_CURRENT_DESKTOP=river` marker is
+    /// absent.
+    Riverctl,
+    /// GNOME Shell "Window Calls" extension over the session D-Bus
+    /// (`org.gnome.Shell.Extensions.Windows`). `providers::gnome_window`,
+    /// backend name `"gnome-shell"`; drops out when the extension is not
+    /// installed.
+    GnomeShell,
     /// `wmctrl` + `xdotool` — X11 EWMH window management.
     Wmctrl,
 }
@@ -304,17 +319,17 @@ pub struct DetectionPlan {
 ///   `Xdotool → UInput → Portal → None` on X11 (X11-native first —
 ///   uinput needs the udev rule).
 /// - window: `Hyprctl → None` on Hyprland; `SwayIpc → None` on sway;
-///   `Kdotool → None` on KDE Wayland; `Kdotool → Wmctrl → None` on KDE
-///   X11 (`kdotool` drives KWin on both transports and drops out when
-///   the pin or session marker is absent, but a Plasma X11 session
-///   always has EWMH `wmctrl` behind it); `Wmctrl → None` on other X11
-///   sessions. Wayfire and river get an
-///   honest empty ladder — neither exposes a general window-management
-///   IPC (Wayfire's IPC is plugin-scoped; river's `riverctl` manages
-///   layout, not client windows). GNOME is intentionally empty: its only
-///   window channel is `gnome-shell --eval` / the Eval D-Bus method,
-///   which is an arbitrary-JS primitive we do not use (unsafe-eval
-///   gate).
+///   `WayfireIpc → None` on Wayfire (`$WAYFIRE_SOCKET`, `ipc`/`ipc-rules`
+///   plugins — drops out when the socket is absent); `Riverctl → None`
+///   on river (focused-view-only rung: no list IPC — `get_windows`/
+///   `get_active_window` fail honestly, `window_control` reaches the
+///   focused view); `Kdotool → None` on KDE Wayland; `Kdotool → Wmctrl →
+///   None` on KDE X11 (`kdotool` drives KWin on both transports and drops
+///   out when the pin or session marker is absent, but a Plasma X11
+///   session always has EWMH `wmctrl` behind it); `GnomeShell → None` on
+///   GNOME Wayland and `GnomeShell → Wmctrl → None` on GNOME X11 (the
+///   Window Calls extension — `org.gnome.Shell.Eval` stays deliberately
+///   unused); `Wmctrl → None` on other X11 sessions.
 /// - overlay: `WlrLayerShell → None` on wlroots and unknown Wayland
 ///   (the layer-shell protocol has no X11 analogue and no KDE/GNOME
 ///   implementation — those sessions get an honest empty ladder).
@@ -362,8 +377,11 @@ pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
     let window = match session.kind {
         SessionKind::Hyprland => vec![WindowBackend::Hyprctl],
         SessionKind::Sway => vec![WindowBackend::SwayIpc],
-        // Honest none — see the policy comment above.
-        SessionKind::Wayfire | SessionKind::River => vec![],
+        // Wayfire's `ipc` plugin exposes `list-views` + view methods over
+        // `$WAYFIRE_SOCKET`; river gets focused-view ops via `riverctl`
+        // (no list/active IPC exists — those calls error honestly).
+        SessionKind::Wayfire => vec![WindowBackend::WayfireIpc],
+        SessionKind::River => vec![WindowBackend::Riverctl],
         SessionKind::Kde if session.is_wayland() => vec![WindowBackend::Kdotool],
         // Plasma X11: kdotool is still the KWin-native rung, but a
         // session without the pin/marker is not window-less — EWMH
@@ -371,10 +389,13 @@ pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
         SessionKind::Kde if session.is_x11() => {
             vec![WindowBackend::Kdotool, WindowBackend::Wmctrl]
         }
-        // GNOME-X11 and every other X11 session fall back to EWMH.
-        SessionKind::Gnome | SessionKind::Other if session.is_x11() => {
-            vec![WindowBackend::Wmctrl]
+        // GNOME: the "Window Calls" Shell extension is the only real
+        // window IPC; on X11 sessions EWMH stays the fallback rung.
+        SessionKind::Gnome if session.is_wayland() => vec![WindowBackend::GnomeShell],
+        SessionKind::Gnome if session.is_x11() => {
+            vec![WindowBackend::GnomeShell, WindowBackend::Wmctrl]
         }
+        SessionKind::Other if session.is_x11() => vec![WindowBackend::Wmctrl],
         SessionKind::Kde | SessionKind::Gnome | SessionKind::Other => vec![],
     };
 
@@ -577,7 +598,9 @@ fn detect_input(candidates: &[InputBackend]) -> Option<(Arc<dyn InputProvider>, 
 
 /// Walk the window ladder: `Hyprctl → None` on Hyprland, `SwayIpc →
 /// None` on sway, `Kdotool → None` on KDE Wayland (`Kdotool → Wmctrl →
-/// None` on KDE X11), `Wmctrl → None` on other X11 sessions.
+/// None` on KDE X11), `WayfireIpc → None` on Wayfire, `Riverctl → None`
+/// on river, `GnomeShell → None` on GNOME Wayland (`GnomeShell → Wmctrl
+/// → None` on GNOME X11), `Wmctrl → None` on other X11 sessions.
 fn detect_window(candidates: &[WindowBackend]) -> Option<(Arc<dyn WindowProvider>, &'static str)> {
     for &candidate in candidates {
         match candidate {
@@ -597,6 +620,25 @@ fn detect_window(candidates: &[WindowBackend]) -> Option<(Arc<dyn WindowProvider
                 if let Some(p) = crate::providers::kdotool_window::KdotoolWindow::new() {
                     tracing::info!(backend = "kdotool", "window provider registered");
                     return Some((Arc::new(p), "kdotool"));
+                }
+            }
+            WindowBackend::WayfireIpc => {
+                if let Some(p) = crate::providers::wayfire_window::WayfireWindow::new() {
+                    tracing::info!(backend = "wayfire-ipc", "window provider registered");
+                    return Some((Arc::new(p), "wayfire-ipc"));
+                }
+            }
+            WindowBackend::Riverctl => {
+                if let Some(p) = crate::providers::river_window::RiverWindow::new() {
+                    tracing::info!(backend = "riverctl", "window provider registered");
+                    return Some((Arc::new(p), "riverctl"));
+                }
+            }
+            WindowBackend::GnomeShell => {
+                #[cfg(feature = "a11y")]
+                if let Some(p) = crate::providers::gnome_window::GnomeShellWindow::new() {
+                    tracing::info!(backend = "gnome-shell", "window provider registered");
+                    return Some((Arc::new(p), "gnome-shell"));
                 }
             }
             WindowBackend::Wmctrl => {
@@ -844,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn wayfire_session_has_no_window_backend() {
+    fn wayfire_session_gets_ipc_window_rung() {
         for env in [
             fake_env(&[
                 ("XDG_SESSION_TYPE", "wayland"),
@@ -879,14 +921,15 @@ mod tests {
                     InputBackend::Portal,
                 ]
             );
-            // Honest gap: no general window IPC exists on Wayfire.
-            assert!(plan.window.is_empty());
+            // Wayfire's `ipc` plugin exposes `list-views` + view ops over
+            // `$WAYFIRE_SOCKET` — a real window rung.
+            assert_eq!(plan.window, vec![WindowBackend::WayfireIpc]);
             assert_eq!(plan.overlay, vec![OverlayBackend::WlrLayerShell]);
         }
     }
 
     #[test]
-    fn river_session_has_no_window_backend() {
+    fn river_session_gets_riverctl_window_rung() {
         let s = SessionInfo::from_env(fake_env(&[
             ("XDG_SESSION_TYPE", "wayland"),
             ("XDG_CURRENT_DESKTOP", "river"),
@@ -912,8 +955,9 @@ mod tests {
                 InputBackend::Portal,
             ]
         );
-        // riverctl manages layout, not client windows → honest none.
-        assert!(plan.window.is_empty());
+        // riverctl manages the *focused* view — a partial rung; list/
+        // active window calls error honestly at the provider.
+        assert_eq!(plan.window, vec![WindowBackend::Riverctl]);
         assert_eq!(plan.overlay, vec![OverlayBackend::WlrLayerShell]);
     }
 
@@ -981,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn gnome_session_routes_portal_only() {
+    fn gnome_session_routes_portal_and_shell_extension() {
         let s = SessionInfo::from_env(fake_env(&[
             ("XDG_SESSION_TYPE", "wayland"),
             ("XDG_CURRENT_DESKTOP", "GNOME"),
@@ -993,9 +1037,9 @@ mod tests {
         let plan = plan_backends(&s);
         assert_eq!(plan.capture, vec![CaptureBackend::Portal]);
         assert_eq!(plan.input, vec![InputBackend::Portal]);
-        // Intentional gap: gnome-shell Eval is an arbitrary-JS channel
-        // (unsafe-eval gate) — no window backend is registered.
-        assert!(plan.window.is_empty());
+        // The "Window Calls" Shell extension is the window rung —
+        // gnome-shell `Eval` stays deliberately unused (arbitrary-JS).
+        assert_eq!(plan.window, vec![WindowBackend::GnomeShell]);
         assert!(plan.overlay.is_empty());
     }
 

@@ -1,7 +1,7 @@
 # Security Policy
 
 **Project**: ultranix-mcp — Rust MCP server for Linux desktop automation (Wayland/Hyprland, CachyOS)
-**Status**: Implemented (v1.3.0) — this document describes the shipped security design. Where the implementation still lags this document (called out inline), the gap is tracked as a defect or roadmap item.
+**Status**: Implemented (v1.4.0) — this document describes the shipped security design. Where the implementation still lags this document (called out inline), the gap is tracked as a defect or roadmap item.
 
 ultranix-mcp grants AI agents the ability to see the screen and inject input on a
 live desktop session. That is an inherently high-privilege capability. This
@@ -128,7 +128,8 @@ arguments are constrained at the validator layer:
 - Every whitelisted binary is resolved to its **absolute path at startup
   and pinned** — a hijacked `PATH` cannot redirect execution. Provider-internal
   helpers (`xrandr`, `xprop`, `wl-copy`, `wl-paste`, `xclip`, `xsel`,
-  `kdotool` — the latter pinned for the KDE window rung) are
+  `kdotool` — pinned for the KDE window rung — and `riverctl` — pinned
+  for the river window rung, v1.4.0) are
   likewise pinned but have **no `validate_command` arm**:
   `system_command` cannot invoke them; only provider code spawns them,
   with scrubbed environments and bounded execution.
@@ -174,7 +175,16 @@ preference order:
 Screen capture uses **wlr-screencopy** where the compositor supports it, falling
 back to the Screenshot portal (with its consent UX). Compositor control goes
 through the **hyprctl IPC socket** (or **sway's `$SWAYSOCK`** on sway
-sessions, v1.2.0+) and **AT-SPI2** for the accessibility tree.
+sessions, v1.2.0+; **Wayfire's `$WAYFIRE_SOCKET`** `ipc`/`ipc-rules`
+plugins, the pinned **`riverctl`** subprocess on river — a
+focused-view-only rung: no window-list IPC exists, so
+`get_windows`/`get_active_window` return `isError` results while
+`window_control` drives the focused view (and `riverctl` stays
+unreachable from `system_command`) — and GNOME's **Window Calls**
+extension object on
+session D-Bus, all
+v1.4.0+; `org.gnome.Shell.Eval` is deliberately never used) and **AT-SPI2**
+for the accessibility tree.
 
 ### Storage
 
@@ -182,8 +192,9 @@ sessions, v1.2.0+) and **AT-SPI2** for the accessibility tree.
 | -------- | -------- | ---------- |
 | Action history | `~/.ultranix-mcp/history.json` | AES-256-GCM at rest (`ULTRANIX_MCP_HISTORY_SECRET` or per-install derived key); `UNXHIST2` framed append format since v1.2.0 — O(1) sealed appends, full rewrite only on FIFO eviction or v1→v2 migration |
 | Audit log | `~/.ultranix-mcp/logs/audit.jsonl` | JSONL, file mode `0600`, dir mode `0700`; `prev_hash` hash-chaining makes silent edits detectable; optional `ULTRANIX_MCP_AUDIT_SECRET` signs each line with HMAC-SHA256 — enable it on a fresh/rotated log, since verification of a file containing pre-secret unsigned lines fails on those lines |
-| Plugin manifests | `~/.ultranix-mcp/plugins/*.json` | Declarative tool-macros (no code); strict validation; state dir `0700`; fresh read-only scan per call |
+| Plugin manifests | `~/.ultranix-mcp/plugins/*.json` | Declarative tool-macros (no code); strict validation; state dir `0700`; fresh read-only scan per call. A `tool` section (v1.4.0) registers the plugin as a `tools/list` entry — calls route through `plugin_run`'s secured dispatch with dual policy (the tool's own name **and** `plugin_run` must be allowed) |
 | `screen_record` output | `~/.ultranix-mcp/captures/rec-*` (or `0700` `/tmp` dir fallback) | Server-owned `0700` dirs; ≤600 frames / ≤512 MiB per run; `manifest.json` audit |
+| `screen_stream` output | `~/.ultranix-mcp/captures/stream-*` | Server-owned `0700` dirs; rolling window ≤1800 frames / ≤512 MiB with oldest-first eviction; `manifest.json` on every exit path; one active stream server-wide; `replay_action`-refused |
 | API keys | Env `ULTRANIX_MCP_API_KEY` | Only SHA-256 hashes held in memory |
 | Screenshots | In-memory; tmp files only when required | `mktemp` + mode `0600` + explicit cleanup |
 | ONNX models | `~/.ultranix-mcp/models/` | SHA-256 checksum verified at download |
@@ -284,4 +295,4 @@ sessions, v1.2.0+) and **AT-SPI2** for the accessibility tree.
 
 ---
 
-**Last updated**: 2026 — Policy version 1.3.0
+**Last updated**: 2026 — Policy version 1.4.0

@@ -1,11 +1,11 @@
 # ultranix-mcp
 
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](Cargo.toml)
 [![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%28Wayland%20%2B%20Hyprland%29-lightgrey.svg)](https://hyprland.org/)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org/)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-rmcp-purple.svg)](https://github.com/modelcontextprotocol/rust-sdk)
-[![Status](https://img.shields.io/badge/status-1.3.0%20implemented-brightgreen.svg)](ROADMAP.md)
+[![Status](https://img.shields.io/badge/status-1.4.0%20implemented-brightgreen.svg)](ROADMAP.md)
 
 **ultranix-mcp is the enterprise-grade, secure Linux desktop-automation layer
 for AI agents.** It gives Model Context Protocol (MCP) clients — Claude
@@ -23,15 +23,17 @@ combine a cross-compositor fallback ladder, a full governance surface, and a
 tri-OS sibling contract — organisations can let agents control a Linux
 desktop without giving up control themselves.
 
-> **Status:** v1.3.0 implemented. Phases 0–5 of
+> **Status:** v1.4.0 implemented. Phases 0–5 of
 > [ROADMAP.md](ROADMAP.md) have shipped, plus the v1.1.0 wave (layer-shell
 > overlay, X11-native providers, PipeWire portal capture, opt-in Sentry,
 > OCR cache, additional metrics), the v1.2.0 breadth wave (clipboard
 > tools, plugin tool-macros, `screen_record`, sway/Wayfire/river/KDE/GNOME
-> session detection, per-backend cargo features, framed history v2), and
-> the v1.3.0 policy wave (runtime access-control policy with per-key
+> session detection, per-backend cargo features, framed history v2), the
+> v1.3.0 policy wave (runtime access-control policy with per-key
 > roles, `--readonly`/`--allow-tools`/`--deny-tools`, per-backend
-> invocation metrics, optional HMAC-signed audit lines) — see
+> invocation metrics, optional HMAC-signed audit lines), and the v1.4.0
+> reach wave (Wayfire/river/GNOME window rungs, live `screen_stream`
+> capture, plugin-exposed dynamic tools, OCI image + `-bin` package) — see
 > [CHANGELOG.md](CHANGELOG.md) for per-release notes. The verified target
 > environment is **CachyOS (Arch) + Hyprland on Wayland**, PipeWire,
 > `xdg-desktop-portal-hyprland`, and a live AT-SPI2 bus, on Rust 1.98.1.
@@ -56,7 +58,13 @@ desktop without giving up control themselves.
 - **🪟 Window Management** — list, focus, move, resize, close, and inspect
   windows through Hyprland's `hyprctl` IPC socket (`hyprctl -j` JSON:
   `clients`, `activewindow`, `dispatch`, `workspaces`), sway's own IPC
-  protocol on `$SWAYSOCK`, or `wmctrl` on X11 sessions.
+  protocol on `$SWAYSOCK`, Wayfire's `ipc`/`ipc-rules` plugins on
+  `$WAYFIRE_SOCKET`, the pinned `riverctl` subprocess on river
+  (focused-view-only rung — river has no window-list IPC, so
+  `get_windows`/`get_active_window` return `isError` results while
+  `window_control` drives the focused view), `kdotool` on KDE, the
+  "Window Calls" Shell extension on GNOME (when installed), or `wmctrl`
+  on X11 sessions.
 - **🔍 UI Inspection** — full accessibility-tree access over AT-SPI2
   (`atspi` crate): UI-tree dumps, focused-element queries, element search,
   and wait-for-element synchronization.
@@ -65,10 +73,17 @@ desktop without giving up control themselves.
   writes consent-gated; and declarative plugin tool-macros —
   `~/.ultranix-mcp/plugins/*.json` manifests of catalog-tool steps run via
   `plugin_list`/`plugin_run`/`plugin_reload`, each step re-entering the
-  secured dispatch path.
-- **🎥 Bounded Screen Recording** — `screen_record` captures a frame every
-  `interval_ms` for up to `duration_ms` into a fresh `rec-<ulid>` dir plus
-  a `manifest.json` (hard caps: 600 frames, 512 MiB).
+  secured dispatch path. A manifest `tool` section (v1.4.0) registers the
+  plugin as a first-class `tools/list` entry with a generated
+  `inputSchema`, dispatched through the same secured `plugin_run`
+  pipeline.
+- **🎥 Screen Recording & Live Capture** — `screen_record` captures a frame
+  every `interval_ms` for up to `duration_ms` into a fresh `rec-<ulid>`
+  dir plus a `manifest.json` (hard caps: 600 frames, 512 MiB);
+  `screen_stream` (v1.4.0) runs a continuous `start`/`status`/`latest`/
+  `stop` rolling-window capture under `stream-<ulid>` (≤1800 frames,
+  ≤512 MiB, oldest evicted) with `latest` polling the newest frame in
+  `screenshot`'s image shape.
 - **🛡️ Enterprise Security** — `uxcp_*` API-key auth on HTTP, 10 req/s token
   bucket, input sanitization, command/path whitelists, AES-256-GCM-encrypted
   action history, and JSONL audit logging. See [SECURITY.md](SECURITY.md).
@@ -117,10 +132,16 @@ GNOME, or Other — then binds each provider to the best available backend:
 
 Window management rides compositor IPC where it exists: `hyprctl` on
 Hyprland, sway's i3-flavoured IPC (`$SWAYSOCK`, shipped at v1.2.0) on
-sway, `kdotool` (KWin scripting — Wayland and X11 alike) on KDE, and
-`wmctrl` on other X11 sessions. Wayfire, river, and GNOME-Wayland expose
-no general window IPC we can use — the window tools honestly report
-`ProviderUnavailable` there.
+sway, Wayfire's `ipc`/`ipc-rules` plugins (`$WAYFIRE_SOCKET`, v1.4.0) on
+Wayfire, `riverctl` on river (v1.4.0, focused-view-only rung — river has
+no window-list IPC, so `get_windows`/`get_active_window` report
+`ProviderUnavailable` while `window_control` reaches the focused view via
+`window:"focused"` with `close` and relative-delta `move`/`resize`),
+`kdotool` (KWin
+scripting — Wayland and X11
+alike) on KDE, the "Window Calls" Shell extension over D-Bus on GNOME
+(v1.4.0, extension required — `org.gnome.Shell.Eval` is deliberately
+unused), and `wmctrl` on other X11 sessions.
 
 On X11 sessions the X11-native rungs shipped at v1.1.0 resolve instead:
 `scrot` capture, `xdotool` input (both still ahead of portal/uinput), and
@@ -146,7 +167,7 @@ graph TB
 
     subgraph "Core (rmcp + tokio)"
         SERVER[ultranix-mcp server]
-        TOOLS[39 tools · 6 categories]
+        TOOLS[40 tools · 6 categories]
     end
 
     subgraph "Providers — Option&lt;Arc&lt;dyn Trait&gt;&gt;"
@@ -165,6 +186,10 @@ graph TB
         PORTAL[XDG Desktop Portal<br/>zbus]
         HYPR[hyprctl IPC]
         SWAY[sway IPC · SWAYSOCK]
+        WF[Wayfire IPC · WAYFIRE_SOCKET]
+        RIV[riverctl · river focused-view rung]
+        GS[gnome-shell · Window Calls ext]
+        KDOT[kdotool · KDE]
         ATSPI[AT-SPI2 bus]
         ORT[ONNX Runtime — ort]
         CDP[CDP 127.0.0.1:9222]
@@ -188,6 +213,10 @@ graph TB
     INP --> WLR --> UIN --> PORTAL
     WIN --> HYPR
     WIN --> SWAY
+    WIN --> WF
+    WIN --> RIV
+    WIN --> GS
+    WIN --> KDOT
     UIA --> ATSPI
     VIS --> ORT
     BRW --> CDP
@@ -216,7 +245,7 @@ Default: all.
 | **Linux-native automation** (mouse/keyboard/windows) | ✅ Wayland-first | ✅ (Hyprland only) | — (macOS only) | ⚠️ X11 only | ⚠️ single-DE |
 | **Compositor-protocol input** (no root) | ✅ wlr virtual-pointer + virtual-keyboard | ✅ wlr protocols | n/a | — | partial (portal RemoteDesktop) |
 | **Graceful backend fallback** (native → uinput → portal) | ✅ | — (Hyprland-only, no uinput/portal rungs) | — | — | — |
-| **Window management via compositor IPC** | ✅ `hyprctl` | ✅ `hyprctl` | ✅ | partial (`wmctrl`) | partial (KWin scripts / Shell) |
+| **Window management via compositor IPC** | ✅ `hyprctl` · sway IPC · Wayfire IPC · `riverctl` · GNOME Window Calls · `kdotool` | ✅ `hyprctl` | ✅ | partial (`wmctrl`) | partial (KWin scripts / Shell) |
 | **Accessibility tree** | ✅ AT-SPI2 | ✅ AT-SPI via `busctl` (incl. `click_ui`) | ✅ macOS AX | — | partial |
 | **OCR + vision / icon finding** (local ONNX) | ✅ | partial | partial | — | — |
 | **Audit logging (JSONL)** | ✅ | — | — | — | — |
@@ -240,12 +269,20 @@ ultranix-mcp when governance, trust, and session portability matter.
 
 ### Option 1: AUR (packaging shipped, submission pending)
 
-Arch-family PKGBUILDs (`ultranix-mcp`, `ultranix-mcp-git`) ship in
+Arch-family PKGBUILDs (`ultranix-mcp`, `ultranix-mcp-git`, and the
+prebuilt-binary `ultranix-mcp-bin`) ship in
 [`packaging/`](packaging/) — AUR submission is tracked on
 [ROADMAP.md](ROADMAP.md#phase-5--portability--packaging). A
 `cargo install ultranix-mcp` path is supported once the crate is
 published; see [docs/PACKAGING.md](docs/PACKAGING.md) §2 for the
 build-time `ort` network-fetch caveat.
+
+### Option 1b: OCI image (v1.4.0)
+
+`ghcr.io/jxoesneon/ultranix-mcp` is published on every `v*` tag by
+`.github/workflows/oci.yml` — intended for headless/CI use (bind-mount
+`$XDG_RUNTIME_DIR`, the session bus, and `/dev/uinput` to reach real
+providers; see [docs/HEADLESS.md](docs/HEADLESS.md)).
 
 ### Option 2: Build from source
 
@@ -258,7 +295,10 @@ build-time `ort` network-fetch caveat.
   AT-SPI2 accessibility bus (UI inspection), Chromium/Chrome with
   `--remote-debugging-port=9222` (browser tools), `wl-clipboard`
   (`wl-copy`/`wl-paste` — clipboard tools on Wayland), `xclip` + `xsel`
-  (clipboard tools on X11/XWayland)
+  (clipboard tools on X11/XWayland), `kdotool` (window tools on KDE),
+  `riverctl` (river window rung — focused-view `window_control` only;
+  river has no list IPC), the GNOME
+  "Window Calls" Shell extension (window tools on GNOME)
 
 **Steps:**
 
@@ -443,7 +483,7 @@ catalog (full schemas, per-tool errors, and consent semantics).*
 `screenshot`, `screen_info`, `screen_highlight`, `color_at`,
 `set_spatial_focus`, `get_ui_tree`, `get_focused_element`, `find_element`,
 `find_text_on_screen`, `find_icon`, `wait_for_ui_element`, `invoke_element`,
-`screen_record`
+`screen_record`, `screen_stream`
 
 ### Automation (`--category=automation`)
 
@@ -474,7 +514,11 @@ detection with a sway window provider, per-backend cargo features, and the
 framed v2 action-history format, and the v1.3.0 wave added the runtime
 policy layer (TOML roles, per-key scoping, `--readonly` and tool
 allow/deny flags), per-backend invocation metrics, and optional
-HMAC-signed audit records — see [CHANGELOG.md](CHANGELOG.md) for release
+HMAC-signed audit records, and the v1.4.0 wave closed the window-provider
+coverage (Wayfire IPC, river `riverctl`, GNOME Window Calls), shipped
+live `screen_stream` rolling capture and plugin-exposed dynamic tools,
+and added the OCI image and `ultranix-mcp-bin` distribution artifacts —
+see [CHANGELOG.md](CHANGELOG.md) for release
 notes.
 
 ## 📚 Documentation

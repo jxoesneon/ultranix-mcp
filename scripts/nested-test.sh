@@ -7,7 +7,7 @@
 # `ultranix-mcp --transport stdio` bound to it, and drives the read-only
 # MCP flow over JSON-RPC:
 #
-#   initialize → tools/list (assert exactly 39 tools) → get_windows
+#   initialize → tools/list (assert exactly 40 tools) → get_windows
 #   → screen_info → screenshot (assert PNG magic bytes) → get_ui_tree
 #   → stdin EOF (shutdown; stdio MCP has no `shutdown` method — EOF is
 #   the spec'd teardown and rmcp exits 0 on it)
@@ -495,7 +495,7 @@ try:
     r = read_reply(2)
     tools = (r.get("result") or {}).get("tools") or []
     names = sorted(t.get("name") for t in tools)
-    step(len(tools) == 39, "tools/list", f"{len(tools)} tools")
+    step(len(tools) == 40, "tools/list", f"{len(tools)} tools")
     for needed in ("get_windows", "screen_info", "screenshot", "get_ui_tree"):
         step(needed in names, f"tools/list contains {needed}")
 

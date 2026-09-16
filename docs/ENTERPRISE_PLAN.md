@@ -6,11 +6,15 @@ drive a Linux desktop. Adapted from `ultramac/docs/ENTERPRISE_PLAN.md`; the
 primitives (audit JSONL, encrypted history, Prometheus, key auth) are shared
 across the Ultra\* family so operators see one control model on every OS.
 
-**Status: v1.3.0 shipped.** The core governance surface (key auth, consent
+**Status: v1.4.0 shipped.** The core governance surface (key auth, consent
 gate, audit JSONL + HMAC signing, AES-256-GCM history, rate limiting,
 Prometheus metrics, opt-in Sentry) is implemented; the v1.3.0 wave added the
 runtime access-control policy (`policy.toml` + `--readonly`/`--allow-tools`/
 `--deny-tools`), per-key role scoping, and the per-backend/build-info metrics.
+The v1.4.0 reach wave added reach (new window rungs, `screen_stream`, dynamic
+plugin tools, OCI/`-bin` distribution) without changing this governance
+surface — plugin-exposed tools are policy-checked under their own names and
+still require `plugin_run` to be allowed.
 Items still tagged *post-v1* below are the
 planned policy roadmap, not shipped features.
 
@@ -66,7 +70,7 @@ no external dependencies.
   bypasses the gate as an operator opt-out, announced at startup and in
   the audit log.
 - **Tool-category gating** — `--category=mouse,keyboard,vision,automation,admin,clipboard`
-  at process start defines the maximum capability surface across the 39
+  at process start defines the maximum capability surface across the 40
   snake_case tools; a client cannot enumerate tools outside the served set.
 
 ### 2.2 Audit trail — `~/.ultranix-mcp/logs/audit.jsonl`

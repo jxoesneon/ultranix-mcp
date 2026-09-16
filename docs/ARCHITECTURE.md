@@ -1,6 +1,6 @@
 # Architecture Overview
 
-> **Status:** Implemented (v1.3.0) — all six phases of the plan in
+> **Status:** Implemented (v1.4.0) — all six phases of the plan in
 > [Implementation Phases](#implementation-phases) have shipped, the
 > v1.1.0 wave landed the layer-shell `OverlayProvider`/`screen_highlight`,
 > the X11-native provider rungs (`scrot`/`xdotool`/`wmctrl`), PipeWire
@@ -21,7 +21,21 @@
 > the tool-call outcome vocabulary, the `ultranix_mcp_backend_calls_total`
 > and `ultranix_mcp_build_info` series (10 shipped in §7), and optional
 > per-line HMAC-SHA256 signing of `audit.jsonl` via
-> `ULTRANIX_MCP_AUDIT_SECRET` (ADR 0010).
+> `ULTRANIX_MCP_AUDIT_SECRET` (ADR 0010). The v1.4.0 reach wave (ADR 0011)
+> closed the remaining compositor window rungs — `wayfire-ipc`
+> (`$WAYFIRE_SOCKET`, `ipc`/`ipc-rules` plugins), `riverctl` (river,
+> focused-view-only rung: no window-list IPC exists, so
+> `get_windows`/`get_active_window` return `isError` results while
+> `window_control` drives the focused view), and
+> `gnome-shell`
+> (the Window Calls Shell extension on session D-Bus) — shipped
+> `screen_stream` (rolling-window live capture under `stream-<ulid>`,
+> 40 tools total), added dynamic plugin tool registration (manifest
+> `tool` sections → first-class `tools/list` entries routed through
+> secured `plugin_run` dispatch), and landed the distribution artifacts
+> (root `Dockerfile` + `oci.yml` publishing `ghcr.io/jxoesneon/
+> ultranix-mcp` on tags, `packaging/ultranix-mcp-bin/`, `.SRCINFO`
+> files, docs/HEADLESS.md).
 > Items that remain unimplemented are marked inline as **planned /
 > post-v1**.
 
@@ -63,13 +77,13 @@ graph TB
 
     subgraph "Core Server (rmcp)"
         RMCP[rmcp ServerHandler]
-        TOOLS[39 Automation Tools<br/>6 categories · --category filter]
+        TOOLS[40 Automation Tools<br/>6 categories · --category filter<br/>+ plugin-exposed dynamic tools]
     end
 
     subgraph "Tool Categories"
         MOUSE[mouse · 7 tools]
         KB[keyboard · 2 tools]
-        VISION[vision · 13 tools]
+        VISION[vision · 14 tools]
         AUTO[automation · 4 tools]
         ADMIN[admin · 10 tools]
         CLIP[clipboard · 3 tools]
@@ -247,6 +261,9 @@ graph LR
   v1.2.0 added `wl-copy`, `wl-paste`, `xclip`, `xsel`, and `kdotool` to the
   same provider-internal pin set (clipboard providers + the shipped
   `KdotoolWindow` KDE rung) — likewise unreachable through `system_command`.
+  v1.4.0 added `riverctl` to the same pin-only set for the river window
+  rung — pinned and spawned by `RiverWindow`, but with no
+  `validate_command` arm.
   Binaries are pinned to absolute paths
   resolved once at startup. `busctl`/`gdbus` are not permitted — D-Bus work
   is in-process via `zbus`.
@@ -273,7 +290,8 @@ graph LR
 
 ### 3. Tool Execution Layer
 
-**39 snake_case tools in 6 categories**, gated by `--category=` at startup to
+**40 snake_case tools in 6 categories** (plus plugin-exposed dynamic tools
+advertised at runtime), gated by `--category=` at startup to
 control token cost of `tools/list` for context-sensitive agents
 ([TOOLS.md](TOOLS.md) is the canonical tool catalog):
 
@@ -281,7 +299,7 @@ control token cost of `tools/list` for context-sensitive agents
 | -------- | ----- | ----------------- |
 | **mouse** (7) | `mouse_click`, `mouse_double_click`, `mouse_move`, `mouse_get_position`, `mouse_scroll`, `mouse_drag`, `mouse_button_control` | `InputProvider` |
 | **keyboard** (2) | `type_text`, `key_control` | `InputProvider` |
-| **vision** (13) | `screenshot`, `screen_info`, `screen_highlight`, `color_at`, `set_spatial_focus`, `get_ui_tree`, `get_focused_element`, `find_element`, `invoke_element`, `find_text_on_screen`, `find_icon`, `wait_for_ui_element`, `screen_record` | `CaptureProvider`, `UIAutomationProvider`, `VisionProvider` |
+| **vision** (14) | `screenshot`, `screen_info`, `screen_highlight`, `color_at`, `set_spatial_focus`, `get_ui_tree`, `get_focused_element`, `find_element`, `invoke_element`, `find_text_on_screen`, `find_icon`, `wait_for_ui_element`, `screen_record`, `screen_stream` | `CaptureProvider`, `UIAutomationProvider`, `VisionProvider` |
 | **automation** (4) | `sleep`, `mouse_move_path`, `system_command`, `web_query` | `InputProvider`, `BrowserProvider`, security layer |
 | **admin** (10) | `window_control`, `get_windows`, `get_active_window`, `metrics`, `get_action_history`, `replay_action`, `clear_action_history`, `plugin_list`, `plugin_run`, `plugin_reload` | `WindowProvider`, observability subsystem, plugin manifest store |
 | **clipboard** (3) | `clipboard_get`, `clipboard_set`, `clipboard_clear` | `ClipboardProvider` |
@@ -290,6 +308,15 @@ Every tool handler follows the same pipeline: schema validation → sanitization
 provider dispatch → structured `CallToolResult` → audit/history/metrics emission.
 A tool whose required provider is `None` returns a structured *capability
 unavailable* error — never a panic and never an opaque transport failure.
+
+Since v1.4.0 the catalog is not the whole listing: plugin manifests with a
+`tool` section register **plugin-exposed dynamic tools** — first-class
+`tools/list` entries with generated `inputSchema`s that dispatch through
+`plugin_run`'s secured pipeline (dual policy: the tool's own name *and*
+`plugin_run` must be allowed; `admin` category; per-step consent/audit/
+history/metrics). The registry rescans the manifest dir per request, so no
+`tools/list_changed` notification exists — clients re-list after
+`plugin_reload` (see TOOLS.md §Plugin-exposed tools).
 
 ### 4. Provider Abstraction Layer
 
@@ -301,7 +328,7 @@ async traits**, injected as `Option<Arc<dyn Trait>>` at server construction.
 | `CaptureProvider` | Frame capture, region capture, output geometry, bounded frame sequences (`screen_record`) | `WlrCapture` → `GrimCapture` → `PortalCapture`; `X11Capture` (`scrot` + `xdotool`/`xrandr` geometry) on X11 sessions |
 | `InputProvider` | Pointer motion/buttons/scroll, keyboard text & key events | `WlrInput` → `UinputInput` → `PortalInput`; `X11Input` (`xdotool`) first on X11 sessions |
 | `UIAutomationProvider` | UI tree, focused element, element lookup (multi-match via `find_elements`), AT-SPI action invocation (`invoke_element`); element queries reuse a 300 ms `TreeScan` cache (§6) | `AtspiUi` → `None` (vision-only fallback) |
-| `WindowProvider` | Window list/focus/move/resize, active window | `HyprctlWindow` (Hyprland), `SwayWindow` (`sway-ipc`, sway); `X11Window` (`wmctrl` + `xdotool` + `xprop`) on non-Hyprland X11; `KdotoolWindow` (`kdotool`, KDE — Wayland and X11) |
+| `WindowProvider` | Window list/focus/move/resize, active window | `HyprctlWindow` (Hyprland), `SwayWindow` (`sway-ipc`, sway), `WayfireWindow` (`wayfire-ipc`, Wayfire), `RiverWindow` (`riverctl`, river — focused-view-only rung: `window_control` reaches the focused view via `"focused"`/omitted selector), `GnomeShellWindow` (`gnome-shell`, GNOME Window Calls extension); `X11Window` (`wmctrl` + `xdotool` + `xprop`) on non-Hyprland X11; `KdotoolWindow` (`kdotool`, KDE — Wayland and X11) |
 | `VisionProvider` | OCR (`recognize_text`), zero-shot icon finding (`locate_icon`) | `OnnxVision` (ort: CPU EP; OpenVINO/CUDA/ROCm behind `vision-openvino`/`vision-cuda`/`vision-rocm` cargo features) |
 | `BrowserProvider` | DOM query/eval over CDP | `CdpBrowser` @ `127.0.0.1:9222` |
 | `OverlayProvider` | Translucent highlight overlay (`screen_highlight`) | `Overlay` (`zwlr_layer_shell_v1`, Wayland-only) → `None` on X11/headless |
@@ -321,7 +348,10 @@ by environment probing — `XDG_CURRENT_DESKTOP` plus compositor-specific variab
 `KDE_SESSION_VERSION`, `WAYLAND_DISPLAY`, `DISPLAY`, `XDG_SESSION_TYPE`)
 — and protocol-availability checks on the live Wayland connection.
 `SessionKind` resolves to `Hyprland`, `Sway`, `Wayfire`, `River`, `Kde`,
-`Gnome`, or `Other` (signature-first detection); the wlroots family
+`Gnome`, or `Other` (signature-first detection), and `SessionType` to
+`Wayland`, `X11`, or `Headless` (tty/ssh/container — no display vars; all
+provider ladders resolve to `None`, fail-closed — see
+[HEADLESS.md](HEADLESS.md)); the wlroots family
 (Hyprland/sway/Wayfire/river) shares the `wlr-*` rungs, while KDE and GNOME
 Wayland sessions route capture/input through the portal backends they
 actually implement (wlr probing can never succeed there) and keep honest
@@ -377,11 +407,11 @@ flowchart TD
 documents (including §4 above and TOOLS.md) summarize or reference it rather
 than restating it:
 
-| Provider | Chain (as shipped at v1.2.0) |
+| Provider | Chain (as shipped at v1.4.0) |
 | -------- | ----- |
 | Capture | Wayland: `wlr-screencopy-unstable-v1` (in-process) → `grim`/`slurp` → XDG Portal `Screenshot` (zbus; `RemoteDesktop`+PipeWire stream when only `RemoteDesktop` is advertised and the `pipewire` feature is enabled) → `None`. X11: `scrot` (`X11Capture`) → portal → `None` |
 | Input | Wayland: `zwlr_virtual_pointer_v1` + `virtual-keyboard-unstable-v1` (no root on Hyprland) → `/dev/uinput` + evdev → Portal `RemoteDesktop` → `None`. X11: `xdotool` (`X11Input`) → uinput → portal → `None` |
-| Window | Hyprland: `hyprctl` IPC socket → `None`. Sway: `sway-ipc` on `$SWAYSOCK` (`SwayWindow`) → `None`. KDE-Wayland: `kdotool` (`KdotoolWindow`, gated on the KDE session marker + pinned binary) → `None`. KDE-X11: `kdotool` → `wmctrl` (`X11Window`) → `None`. GNOME-Wayland, Wayfire, river: `None` (no general window IPC). Other X11: `wmctrl` + `xdotool`/`xprop` (`X11Window`) → `None` |
+| Window | Hyprland: `hyprctl` IPC socket → `None`. Sway: `sway-ipc` on `$SWAYSOCK` (`SwayWindow`) → `None`. Wayfire: `wayfire-ipc` on `$WAYFIRE_SOCKET` (`WayfireWindow`, `ipc`/`ipc-rules` plugins) → `None`. river: `riverctl` (`RiverWindow`, pinned subprocess — **focused-view-only rung**: no list IPC exists, so `get_windows`/`get_active_window` return `isError` results; `window_control` reaches the focused view via the `"focused"` selector / omitted selector and relative `dx,dy`/`dw,dh` deltas) → `None`. KDE-Wayland: `kdotool` (`KdotoolWindow`, gated on the KDE session marker + pinned binary) → `None`. KDE-X11: `kdotool` → `wmctrl` (`X11Window`) → `None`. GNOME-Wayland: `gnome-shell` (`GnomeShellWindow`, Window Calls extension on session D-Bus — drops out without it) → `None`. GNOME-X11: `gnome-shell` → `wmctrl` → `None`. Other X11: `wmctrl` + `xdotool`/`xprop` (`X11Window`) → `None` |
 | Overlay | `zwlr_layer_shell_v1` (`Overlay`, Wayland-only) → `None` |
 | UI Automation | AT-SPI2 via `atspi` crate → `None` |
 | Vision | `ort` ONNX: CPU EP → OpenVINO/CUDA/ROCm EPs behind `vision-openvino`/`vision-cuda`/`vision-rocm` features (`ort/load-dynamic` + `ORT_DYLIB_PATH`) → `None` |
@@ -412,6 +442,43 @@ closed command set (`focus`, `kill`, `move scratchpad`,
 `move absolute position`, `resize set|grow|shrink`; `exec` is unreachable).
 `minimize` honestly maps to the scratchpad and move/resize are
 floating-window ops (no-op on tiled nodes). Backend name `"sway-ipc"`.
+
+**Wayfire IPC (shipped at v1.4.0):** `WayfireWindow` speaks Wayfire's
+`ipc`/`ipc-rules` plugin protocol over `$WAYFIRE_SOCKET` — length-prefixed
+JSON (4-byte LE length + UTF-8 payload): `window-rules/list-views` for
+list/geometry, `window-rules/get-focused-view` for the active window,
+`view-info`/`focus-view`/`close-view`/`configure-view` for dispatch, and
+`wm-actions/set-minimized` for minimize (honest `error` reply on builds
+without `wm-actions`). Short-lived connection per request, bounded read —
+the `sway_window.rs` shape. Only `toplevel` views are listed; `floating`
+reports `None` (Wayfire has no floating class — `tiled-edges` is a snap
+bitmask). Backend name `"wayfire-ipc"`.
+
+**riverctl (shipped at v1.4.0, partial):** `RiverWindow` drives the
+pinned `riverctl` subprocess — river exposes **no window-list IPC**, so
+`list_windows`/`active_window` return `ProviderUnavailable` and
+`dispatch` accepts only the focused view (`window_id` `"focused"` or
+empty): `close`, relative `move <dir> <delta>` and `resize <axis>
+<delta>` (deltas clamped ±8192, floating-view ops — no-op on tiled
+focus). `focus`, `minimize`, and absolute geometry have no riverctl form
+and error honestly. At the tool surface, `window_control` reaches the
+focused view through `window:"focused"` or an omitted selector —
+`RiverWindow::focused_view_selector()` bypasses the list/active
+resolution that river cannot answer — and `move`/`resize` accept
+relative `dx,dy`/`dw,dh` params. `riverctl` is a provider-internal pin with no
+`validate_command` arm — `system_command` cannot invoke it. Backend name
+`"riverctl"`.
+
+**GNOME Window Calls (shipped at v1.4.0):** `GnomeShellWindow` talks to
+the community "Window Calls" GNOME Shell extension over session D-Bus
+(`zbus`) — `org.gnome.Shell` `/org/gnome/Shell/Extensions/Windows`
+(`List`, `Activate`, `Close`, `Minimize`, `Move`, `Resize`,
+`MoveResize`, `MoveToWorkspace`). Requires the extension installed and
+enabled (EGO 4724); without it the rung fails detection and GNOME keeps
+`ProviderUnavailable`. `org.gnome.Shell.Eval` is deliberately unused —
+it is an arbitrary-JS primitive and a security hazard.
+`floating`/`fullscreen` report `None` (not in the `List()` payload).
+Backend name `"gnome-shell"`; GNOME-X11 ladders try it before `wmctrl`.
 
 **Clipboard helpers (shipped at v1.2.0):** `WlClipboard` spawns the pinned
 `wl-copy`/`wl-paste` binaries (payload over stdin, never argv; bounded
@@ -746,7 +813,11 @@ it requires bind-mounting `$XDG_RUNTIME_DIR` (compositor socket), the session bu
 and `/dev/uinput`, plus matching UID. Even then, wlroots-native paths are
 unavailable — expect portal/`None` providers and reduced tool coverage. This is a
 documented limitation, not a supported production topology: desktop automation is
-inherently single-seat.
+inherently single-seat. Since v1.4.0 the root `Dockerfile` +
+`.github/workflows/oci.yml` publish `ghcr.io/jxoesneon/ultranix-mcp` on `v*`
+tags for this topology, and [HEADLESS.md](HEADLESS.md) documents the
+`SessionType::Headless` fail-closed behaviour versus running against a
+headless compositor (cage/weston) where the full ladders resolve.
 
 ## Scalability Considerations
 
@@ -785,6 +856,7 @@ xdg-desktop-portal-hyprland, AT-SPI2 live, Rust 1.98.1):
 | `find_element` | <500ms | AT-SPI2 | cached `TreeScan` (300 ms TTL) + match; returns up to 10 matches (`find_elements`) |
 | `wait_for_ui_element` | poll-bounded | AT-SPI2 | 250 ms polls share the cached scan per TTL window — no per-poll tree walk |
 | `screen_record` | duration-bounded | active `CaptureProvider` | ≤600 frames / ≤512 MiB; `rec-<ulid>` dir + `manifest.json` |
+| `screen_stream` | rolling-window | active `CaptureProvider` | `fps` 1–10; ≤1800 frames / ≤512 MiB rolling (oldest evicted); `stream-<ulid>` dir + `manifest.json`; one active stream server-wide |
 | `find_text_on_screen` (cached) | <1ms | OCR cache (10s TTL, blake3-keyed) | memoized `Detection`s; hit requires identical frame bytes |
 | `find_text_on_screen` (uncached) | **<2s** | ort CPU EP | OpenVINO/CUDA reduce further |
 | `find_icon` (OWL-ViT) | <2s | ort, EP-dependent | zero-shot, no retraining |
@@ -844,7 +916,7 @@ crate::metrics::record_call(tool_name, elapsed, "ok");
 
 | Phase | Scope | Exit criteria |
 | ----- | ----- | ------------- |
-| **0 — Scaffold + mocks** | Cargo workspace, rmcp server skeleton (stdio + streamable-HTTP `:3010` transports), provider traits + mock providers (7 traits at v1.0.0; 8 since the v1.2.0 `ClipboardProvider`), `tools/list`/`tools/call` golden | Server lists all tools with mocks (32 at v1.0.0; 39 since v1.2.0); CI green |
+| **0 — Scaffold + mocks** | Cargo workspace, rmcp server skeleton (stdio + streamable-HTTP `:3010` transports), provider traits + mock providers (7 traits at v1.0.0; 8 since the v1.2.0 `ClipboardProvider`), `tools/list`/`tools/call` golden | Server lists all tools with mocks (32 at v1.0.0; 39 at v1.2.0; 40 since v1.4.0); CI green |
 | **1 — Hyprland I/O + security scaffolding** | wlr-screencopy capture, virtual-pointer/keyboard input, hyprctl WindowProvider; input sanitization, arg-constrained exec, path whitelist, audit skeleton, consent gate | Screenshot <50ms, click <10ms on real Hyprland; consent challenge on `system_command` |
 | **2 — AT-SPI2** | `AtspiUi` provider: tree, focus, multi-match `find_element`, AT-SPI action invocation (`invoke_element`); `set_spatial_focus` shipped process-scoped; `screen_highlight` draws a real `zwlr_layer_shell_v1` overlay (the layer-shell `Overlay` backend landed at v1.1.0) | `get_ui_tree` <500ms on live session |
 | **3 — Vision + CDP** | ort OCR + OWL-ViT, model cache, `CdpBrowser`, blake3-keyed OCR/icon result cache (v1.1.0) | `find_text_on_screen` <2s; `web_query` on :9222 |
@@ -861,4 +933,4 @@ crate::metrics::record_call(tool_name, elapsed, "ok");
 - [AT-SPI2 / atspi crate](https://docs.rs/atspi)
 - [hyprctl IPC](https://wiki.hyprland.org/IPC/)
 - [ort — ONNX Runtime for Rust](https://docs.rs/ort)
-- ADRs: [0001](adr/0001-rust-and-rmcp.md) · [0002](adr/0002-wlr-native-input.md) · [0003](adr/0003-atspi2-accessibility.md) · [0004](adr/0004-backend-fallback-chain.md) · [0005](adr/0005-onnx-vision.md) · [0006](adr/0006-tool-naming-and-categories.md)
+- ADRs: [0001](adr/0001-rust-and-rmcp.md) · [0002](adr/0002-wlr-native-input.md) · [0003](adr/0003-atspi2-accessibility.md) · [0004](adr/0004-backend-fallback-chain.md) · [0005](adr/0005-onnx-vision.md) · [0006](adr/0006-tool-naming-and-categories.md) · [0007](adr/0007-clipboard-and-compositor-breadth.md) · [0008](adr/0008-history-v2-framed-append.md) · [0009](adr/0009-plugin-tools.md) · [0010](adr/0010-policy-controls.md) · [0011](adr/0011-reach-wave.md)

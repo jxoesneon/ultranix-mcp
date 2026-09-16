@@ -13,16 +13,14 @@ use super::{
 };
 use crate::providers::Providers;
 use crate::security::history::{ActionRecord, HistoryStore};
-use crate::traits::{WindowInfo, WindowProvider};
+use crate::traits::{Rect, WindowInfo, WindowProvider};
 
 /// `-32014 HistoryError` — encrypted history store fault (docs/TOOLS.md
 /// error taxonomy; not yet surfaced in `crate::error::codes`).
 const HISTORY_ERROR: i32 = -32014;
 
 /// History tools that can never be replayed (recursion + no-op guards,
-/// docs/TOOLS.md `replay_action`) — and, sharing the list, tools that
-/// are never *recorded* at all: replaying them is meaningless and
-/// recording them is noise.
+/// docs/TOOLS.md `replay_action`).
 pub(super) const NON_REPLAYABLE: &[&str] = &[
     "metrics",
     "get_action_history",
@@ -34,7 +32,41 @@ pub(super) const NON_REPLAYABLE: &[&str] = &[
     // leaves nothing to hide.
     "plugin_list",
     "plugin_reload",
+    // Lifecycle, not an action: replaying `screen_stream{start}` would
+    // spawn a background capture task — the record is kept (audit/
+    // history still apply) but replay is refused.
+    "screen_stream",
 ];
+
+/// Tools never *recorded* to action history at all — replaying them is
+/// meaningless and recording them is noise. `screen_stream` is NOT here:
+/// its lifecycle events (`start`/`stop`) are recorded, while the
+/// polling actions are filtered by [`is_unrecorded`] below.
+pub(super) const UNRECORDED: &[&str] = &[
+    "metrics",
+    "get_action_history",
+    "replay_action",
+    "clear_action_history",
+    "plugin_list",
+    "plugin_reload",
+];
+
+/// Whether a call is appended to action history. Whole-tool
+/// suppressions live in [`UNRECORDED`]; `screen_stream`'s polling
+/// actions (`status`/`latest`) are additionally suppressed — they are
+/// per-frame reads that would flood the bounded store — while `start`
+/// and `stop` are lifecycle events worth keeping (and refusing to
+/// replay via [`NON_REPLAYABLE`]).
+pub(super) fn is_unrecorded(name: &str, args: &Value) -> bool {
+    if UNRECORDED.contains(&name) {
+        return true;
+    }
+    name == "screen_stream"
+        && matches!(
+            args.get("action").and_then(Value::as_str),
+            Some("status") | Some("latest")
+        )
+}
 
 /// `-32014` with the `data.kind` discriminator — store faults (decrypt,
 /// key, or filesystem) the caller sees.
@@ -123,7 +155,9 @@ struct WindowControlParams {
     /// Window operation to apply
     action: WindowAction,
     /// Hyprland address ("0x…") or unique title/class substring;
-    /// omit for the active window
+    /// omit for the active window. On focused-view-only backends (river)
+    /// `"focused"` — or omitting the selector — addresses the focused
+    /// view directly.
     window: Option<String>,
     /// Target x (move only)
     x: Option<i32>,
@@ -133,6 +167,14 @@ struct WindowControlParams {
     w: Option<i32>,
     /// Target height (resize only)
     h: Option<i32>,
+    /// Relative x delta (move only; focused-view backends such as river)
+    dx: Option<i32>,
+    /// Relative y delta (move only; focused-view backends such as river)
+    dy: Option<i32>,
+    /// Relative width delta (resize only; focused-view backends such as river)
+    dw: Option<i32>,
+    /// Relative height delta (resize only; focused-view backends such as river)
+    dh: Option<i32>,
     /// Challenge token from a prior -32015 ConsentRequired response
     /// (close only)
     consent_token: Option<String>,
@@ -346,54 +388,104 @@ enum ResolveWindowError {
     },
 }
 
+/// Synthetic `WindowInfo` for focused-view-only backends (river): the
+/// compositor can act on the focused view but cannot report its
+/// title/class/geometry — the fields are deliberately marked rather
+/// than fabricated.
+fn focused_view_info() -> WindowInfo {
+    WindowInfo {
+        id: "focused".into(),
+        title: "(focused view)".into(),
+        class: String::new(),
+        workspace: -1,
+        rect: Rect {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        },
+        focused: true,
+        floating: None,
+        fullscreen: None,
+        pid: None,
+        monitor: None,
+    }
+}
+
 async fn window_control(
     args: &Map<String, Value>,
     providers: &Providers,
 ) -> Result<CallToolResult, ErrorData> {
     let p: WindowControlParams = parse_args("window_control", args)?;
-    // Per-action parameter rules (docs/TOOLS.md): move needs x,y; resize
-    // needs w,h; the other actions ignore geometry.
+    let deltas = [p.dx, p.dy, p.dw, p.dh].into_iter().flatten().count();
+    // Per-action parameter rules (docs/TOOLS.md): move needs x,y or
+    // dx,dy (relative deltas, focused-view backends); resize needs w,h
+    // or dw,dh; the other actions take no geometry at all.
     match p.action {
-        WindowAction::Move => {
-            if p.x.is_none() || p.y.is_none() {
-                return Err(invalid_params("window_control: move requires x and y"));
-            }
-        }
-        WindowAction::Resize => match (p.w, p.h) {
-            (Some(w), Some(h)) if w >= 1 && h >= 1 => {}
+        WindowAction::Move => match (p.x, p.y, p.dx, p.dy) {
+            (Some(_), Some(_), None, None) | (None, None, Some(_), Some(_)) => {}
             _ => {
                 return Err(invalid_params(
-                    "window_control: resize requires w and h (both >= 1)",
+                    "window_control: move requires x and y, or dx and dy",
                 ));
             }
         },
-        _ => {}
+        WindowAction::Resize => match (p.w, p.h, p.dw, p.dh) {
+            (Some(w), Some(h), None, None) if w >= 1 && h >= 1 => {}
+            (None, None, Some(_), Some(_)) => {}
+            _ => {
+                return Err(invalid_params(
+                    "window_control: resize requires w and h (both >= 1), or dw and dh",
+                ));
+            }
+        },
+        _ => {
+            if deltas > 0 {
+                return Err(invalid_params(
+                    "window_control: dx/dy/dw/dh apply only to move/resize",
+                ));
+            }
+        }
     }
     let window = window_provider(providers)?;
-    let target = match resolve_window(window, p.window.as_deref()).await {
-        Ok(w) => w,
-        Err(ResolveWindowError::Backend(e)) => return Ok(backend_error(e)),
-        Err(ResolveWindowError::NoActive) => {
-            return Ok(tool_error("window_control: no active window"));
-        }
-        Err(ResolveWindowError::NoMatch(sel)) => {
-            return Err(invalid_params(format!(
-                "window_control: no window matches '{sel}'"
-            )));
-        }
-        Err(ResolveWindowError::Ambiguous {
-            selector,
-            candidates,
-            count,
-        }) => {
-            return Err(invalid_params(format!(
-                "window_control: ambiguous window '{selector}' — {count} candidates: {}",
-                candidates.join(", ")
-            )));
-        }
+    if deltas > 0 && window.focused_view_selector().is_none() {
+        return Err(invalid_params(
+            "window_control: dx/dy/dw/dh relative deltas are only valid on focused-view backends (river)",
+        ));
+    }
+    // Focused-view-only backends (river) cannot enumerate or identify
+    // windows, so the literal `"focused"` selector — and, on such a
+    // backend, an omitted selector — address the focused view directly.
+    let target = match (window.focused_view_selector(), p.window.as_deref()) {
+        (Some(_), None) => focused_view_info(),
+        (Some(fid), Some(sel)) if sel == fid => focused_view_info(),
+        _ => match resolve_window(window, p.window.as_deref()).await {
+            Ok(w) => w,
+            Err(ResolveWindowError::Backend(e)) => return Ok(backend_error(e)),
+            Err(ResolveWindowError::NoActive) => {
+                return Ok(tool_error("window_control: no active window"));
+            }
+            Err(ResolveWindowError::NoMatch(sel)) => {
+                return Err(invalid_params(format!(
+                    "window_control: no window matches '{sel}'"
+                )));
+            }
+            Err(ResolveWindowError::Ambiguous {
+                selector,
+                candidates,
+                count,
+            }) => {
+                return Err(invalid_params(format!(
+                    "window_control: ambiguous window '{selector}' — {count} candidates: {}",
+                    candidates.join(", ")
+                )));
+            }
+        },
     };
     let dispatch_args = match p.action {
+        WindowAction::Move if p.dx.is_some() => json!({"dx": p.dx, "dy": p.dy}),
         WindowAction::Move => json!({"x": p.x, "y": p.y}),
+        WindowAction::Resize if p.dw.is_some() => json!({"dw": p.dw, "dh": p.dh}),
         WindowAction::Resize => json!({"w": p.w, "h": p.h}),
         _ => json!({}),
     };

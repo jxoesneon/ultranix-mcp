@@ -1,0 +1,16 @@
+# Build-context hygiene — keeps the context small and avoids gratuitous
+# layer-cache busts on doc/meta-only changes.
+.git/
+target/
+docs/
+packaging/
+scripts/
+.github/
+.ciel/
+*.md
+!README.md
+Dockerfile
+.dockerignore
+server.json
+flake.nix
+flake.lock

@@ -17,6 +17,14 @@
 //! (manifests are tiny; a live view beats cache invalidation), and
 //! `plugin_reload` exists to surface *what loaded* and *what was
 //! skipped*, not to flush state.
+//!
+//! [`dispatch_ctx`]'s catch-all arm additionally resolves *non-catalog*
+//! names against the live plugin-tool registry (manifest `tool`
+//! sections — [`crate::plugins::ToolRegistry`]): `deploy_notes{…}`
+//! routes into the same manifest executor as
+//! `plugin_run{name, params}` — never a bypass, since it sits inside
+//! `call_tool_secured`'s policy/consent/audit pipeline. Unresolved
+//! names return `None` and the caller reports `-32601` as before.
 
 use rmcp::model::{CallToolResult, ContentBlock, ErrorCode, ErrorData, Tool};
 use schemars::JsonSchema;
@@ -24,7 +32,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::{SecRef, invalid_params, json_result, parse_args, tool};
-use crate::error::codes::PLUGIN_ERROR;
+use crate::error::codes::{self, PLUGIN_ERROR};
 use crate::plugins::{self, ParamError, PluginManifest, PluginStore};
 use crate::providers::Providers;
 use crate::security::history::RESULT_SUMMARY_MAX;
@@ -112,12 +120,16 @@ async fn dispatch_ctx(
     providers: &Providers,
     secured: Option<Secured<'_>>,
 ) -> Option<Result<CallToolResult, ErrorData>> {
-    Some(match name {
-        "plugin_list" => plugin_list(args).await,
-        "plugin_run" => plugin_run(args, providers, secured).await,
-        "plugin_reload" => plugin_reload(args).await,
-        _ => return None,
-    })
+    match name {
+        "plugin_list" => Some(plugin_list(args).await),
+        "plugin_run" => Some(plugin_run(args, providers, secured).await),
+        "plugin_reload" => Some(plugin_reload(args).await),
+        // A name no catalog leg claimed may be a plugin-exposed tool
+        // (a manifest `tool` section — crate::plugins::ToolRegistry).
+        // `None` here falls through to `unknown_tool` (-32601) in the
+        // caller, keeping the catalog-miss error shape unchanged.
+        _ => run_exposed_tool(&ambient_store(), name, args, providers, secured).await,
+    }
 }
 
 /// The manifest dir for tool calls — the ambient state root
@@ -205,13 +217,18 @@ async fn plugin_run(
 }
 
 /// `plugin_list` entry shape: name, version, description, params
-/// schema, steps count.
+/// schema, steps count — plus the registered `tool` name when the
+/// manifest exposes itself in `tools/list` (`null` otherwise).
 fn plugin_json(p: &plugins::Plugin) -> Value {
     let m = &p.manifest;
     json!({
         "name": m.name,
         "version": m.version,
         "description": m.description,
+        "tool": m.tool.as_ref().map(|t| json!({
+            "name": t.name,
+            "description": t.description,
+        })),
         "params": m.params.iter().map(|(k, s)| (k.clone(), json!({
             "type": s.ty.as_str(),
             "required": s.required,
@@ -236,6 +253,23 @@ async fn run_by_name(
         .iter()
         .find(|p| p.manifest.name == name)
         .ok_or_else(|| invalid_params(format!("plugin_run: no plugin named {name:?}")))?;
+    if let Some(s) = secured {
+        // Symmetric deny: `deny_tools` naming the exposed tool
+        // (`deploy_notes`) *or* the manifest name (`deploy-notes`) —
+        // either address `plugin_list` shows must bite a
+        // `plugin_run{name: "deploy-notes"}` call. Same manifest,
+        // either spelling.
+        let role = s.security.policy.resolve(s.key_id);
+        let denied_by_manifest = role.deny_tools.contains(&plugin.manifest.name);
+        let denied_by_tool = plugin
+            .manifest
+            .tool
+            .as_ref()
+            .is_some_and(|t| role.deny_tools.contains(&t.name));
+        if denied_by_manifest || denied_by_tool {
+            return Err(plugin_run_denied(&plugin.manifest.name, role));
+        }
+    }
     run_manifest(&plugin.manifest, params, providers, secured).await
 }
 
@@ -304,6 +338,114 @@ async fn run_manifest(
         "steps_run": results.len(),
         "results": results,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// Plugin-exposed tools (`tool` manifest sections)
+// ---------------------------------------------------------------------------
+
+/// Dispatch arm for non-catalog names: resolve `name` against the live
+/// plugin-tool registry (a manifest `tool` section) and run the owning
+/// manifest — identical to `plugin_run{name: <plugin>, params: args}`
+/// but addressed by the advertised tool name. `None` when no plugin
+/// registers `name`: the caller's `unknown_tool` (-32601) then
+/// reports the catalog miss unchanged.
+///
+/// This is the tail of `dispatch`/`dispatch_secured`, so an exposed
+/// call passes through *the same* secured pipeline as a catalog tool —
+/// `call_tool_secured` already policy-checked the tool's own name and
+/// will audit/metric/history it under that name. What remains here is
+/// the plugin-specific conjuncts a catalog miss cannot express: the
+/// tool lives in `plugin_run`'s category (`admin`) and requires the
+/// caller's role to allow `plugin_run`.
+async fn run_exposed_tool(
+    store: &PluginStore,
+    name: &str,
+    args: &Map<String, Value>,
+    providers: &Providers,
+    secured: Option<Secured<'_>>,
+) -> Option<Result<CallToolResult, ErrorData>> {
+    let scan = match scan_blocking(store).await {
+        Ok(s) => s,
+        Err(e) => return Some(Err(e)),
+    };
+    let plugin = scan
+        .plugins
+        .iter()
+        .find(|p| p.manifest.tool.as_ref().is_some_and(|t| t.name == name))?;
+    if let Some(s) = secured {
+        // Plugin tools are uncatalogued, so `call_tool_secured`'s
+        // category gate cannot classify them — they inherit the gate
+        // of the plugin machinery itself (`plugin_run` → `admin`). A
+        // server filtered to `mouse`-only must not expose them.
+        if let Some(err) = category_disabled(name, s.security.categories.as_deref()) {
+            return Some(Err(err));
+        }
+        // Implicit rule: a plugin tool is allowed iff `plugin_run` is
+        // allowed AND the tool name passes the role's allow/deny (the
+        // name half already ran in `call_tool_secured`; an allowlist
+        // role that does not list the tool never reaches dispatch).
+        let role = s.security.policy.resolve(s.key_id);
+        // Symmetric deny: `deny_tools` naming the *plugin* (`deploy-
+        // notes`) must bite its exposed tool (`deploy_notes`) too —
+        // the manifest is reachable under either name.
+        if !s.security.policy.is_tool_allowed(role, "plugin_run")
+            || role.deny_tools.contains(&plugin.manifest.name)
+        {
+            return Some(Err(plugin_run_denied(name, role)));
+        }
+    }
+    // The call's argument object *is* the manifest's `params` map —
+    // the advertised inputSchema and `bind_params` describe the same
+    // declared set.
+    Some(run_manifest(&plugin.manifest, args.clone(), providers, secured).await)
+}
+
+/// `-32601 MethodNotFound` for a plugin-exposed tool when the server's
+/// category set excludes `plugin_run`'s category (`admin`). Same wire
+/// shape as `super::category_gate`, which cannot produce it itself —
+/// plugin tool names are uncatalogued, so that gate returns `None`
+/// for them.
+fn category_disabled(name: &str, categories: Option<&[String]>) -> Option<ErrorData> {
+    let cats = categories?;
+    let cat = crate::tools::category_of("plugin_run").unwrap_or("admin");
+    if cats.iter().any(|c| c == cat) {
+        return None;
+    }
+    Some(ErrorData::new(
+        ErrorCode::METHOD_NOT_FOUND,
+        format!("tool disabled by category filter: {name}"),
+        Some(json!({
+            "kind": "CategoryDisabled",
+            "category": cat,
+            "tool": name,
+        })),
+    ))
+}
+
+/// Denial for the `plugin_run` conjunct of an exposed-tool call —
+/// mirrors `super::policy_denied`'s wire shape (private there, so
+/// reconstructed here): `denial_reason` distinguishes a readonly role
+/// from an allow/deny-list rejection, and the message names the
+/// *called* tool.
+fn plugin_run_denied(name: &str, role: &crate::security::policy::Role) -> ErrorData {
+    let reason = if role.readonly
+        && !crate::security::policy::readonly_allowlist().contains(&"plugin_run")
+    {
+        "readonly_mode"
+    } else {
+        "not_in_tool_list"
+    };
+    let (code, kind) = if reason == "readonly_mode" {
+        (codes::READ_ONLY_MODE, "ReadOnlyMode")
+    } else {
+        (codes::NOT_IN_TOOL_LIST, "NotInToolList")
+    };
+    ErrorData::new(
+        ErrorCode(code),
+        format!("{name} denied: {reason} (plugin tools require plugin_run)"),
+        Some(json!({"kind": kind, "denial_reason": reason})),
+    )
 }
 
 /// A step's `Err(e)` re-wrapped with plugin/step context. The inner
@@ -803,5 +945,299 @@ mod tests {
         let missing = PluginStore::at(tmp.path().join("nope"));
         missing.scan();
         assert!(!missing.dir().exists());
+    }
+
+    // --- plugin-exposed tools (`tool` manifest sections) --------------------
+
+    const EXPOSED_PLUGIN: &str = r#"{
+        "name": "deploy-notes",
+        "version": "1.0.0",
+        "tool": {
+            "name": "deploy_notes",
+            "description": "Deploy the notes bundle",
+            "params": {"ms": {"type": "number", "required": true}}
+        },
+        "steps": [
+            {"tool": "sleep", "args": {"ms": "${ms}"}},
+            {"tool": "metrics"}
+        ]
+    }"#;
+
+    #[tokio::test]
+    async fn exposed_tool_executes_manifest_steps() {
+        // deploy_notes{ms} == plugin_run{name: "deploy-notes", params: {ms}}.
+        let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
+        let res = run_exposed_tool(
+            &store,
+            "deploy_notes",
+            &args(json!({"ms": 0})),
+            &Providers::empty(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let body: Value = serde_json::from_str(&text_of(&res)).unwrap();
+        assert_eq!(body["plugin"], "deploy-notes");
+        assert_eq!(body["steps_run"], 2);
+        assert_eq!(body["results"][0]["tool"], "sleep");
+    }
+
+    #[tokio::test]
+    async fn exposed_tool_bind_errors_are_invalid_params() {
+        let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
+        // Missing required param.
+        let err = run_exposed_tool(
+            &store,
+            "deploy_notes",
+            &Map::new(),
+            &Providers::empty(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(err.code.0, INVALID_PARAMS);
+        // Undeclared param — strict, same as plugin_run.
+        let err = run_exposed_tool(
+            &store,
+            "deploy_notes",
+            &args(json!({"ms": 0, "evil": true})),
+            &Providers::empty(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(err.code.0, INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn unregistered_tool_name_falls_through() {
+        // `None` → the caller reports -32601 unknown tool, unchanged.
+        let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
+        assert!(
+            run_exposed_tool(&store, "nope", &Map::new(), &Providers::empty(), None)
+                .await
+                .is_none()
+        );
+        // …and a name that could never be a legal tool name too.
+        assert!(
+            run_exposed_tool(&store, "no-such", &Map::new(), &Providers::empty(), None)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn exposed_tool_requires_plugin_run_allowed() {
+        // The implicit conjunct: a role that denies `plugin_run` cannot
+        // call plugin tools even when the tool's own name passes.
+        let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
+        let sec_tmp = tempfile::tempdir().unwrap();
+        let mut sec = SecurityContext::new(sec_tmp.path(), false, false).unwrap();
+        let mut p = crate::security::policy::Policy::default();
+        p.default_role.deny_tools.insert("plugin_run".to_string());
+        sec.set_policy(p);
+        let err = run_exposed_tool(
+            &store,
+            "deploy_notes",
+            &args(json!({"ms": 0})),
+            &Providers::empty(),
+            Some(secured_in(&sec)),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(err.code.0, codes::NOT_IN_TOOL_LIST);
+    }
+
+    #[tokio::test]
+    async fn exposed_tool_inherits_plugin_run_category_gate() {
+        // Plugin tools live in `admin` — a `mouse`-only server must
+        // not dispatch them (MethodNotFound + CategoryDisabled).
+        let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
+        let sec_tmp = tempfile::tempdir().unwrap();
+        let mut sec = SecurityContext::new(sec_tmp.path(), false, false).unwrap();
+        sec.categories = Some(vec!["mouse".to_string()]);
+        let err = run_exposed_tool(
+            &store,
+            "deploy_notes",
+            &args(json!({"ms": 0})),
+            &Providers::empty(),
+            Some(secured_in(&sec)),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::METHOD_NOT_FOUND);
+        assert_eq!(err.data.unwrap()["kind"], "CategoryDisabled");
+    }
+
+    #[tokio::test]
+    async fn secured_dispatch_routes_exposed_tool_by_name() {
+        // End-to-end through call_tool_secured: the ambient store is
+        // the registry — pin ULTRANIX_MCP_STATE_DIR to this test's
+        // root. The env is process-wide, so keep the window tight and
+        // restore it; scans are read-only, so a parallel test's ambient
+        // read is at worst a listing of this dir.
+        let state = tempfile::tempdir().unwrap();
+        let dir = state.path().join("plugins");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("d.json"), EXPOSED_PLUGIN).unwrap();
+        let prev = std::env::var_os("ULTRANIX_MCP_STATE_DIR");
+        unsafe { std::env::set_var("ULTRANIX_MCP_STATE_DIR", state.path()) };
+        let sec_tmp = tempfile::tempdir().unwrap();
+        let sec = SecurityContext::new(sec_tmp.path(), false, false).unwrap();
+        let res = crate::tools::call_tool_secured(
+            "deploy_notes",
+            args(json!({"ms": 0})),
+            &Providers::empty(),
+            &sec,
+            SESSION,
+            None,
+        )
+        .await;
+        match prev {
+            Some(v) => unsafe { std::env::set_var("ULTRANIX_MCP_STATE_DIR", v) },
+            None => unsafe { std::env::remove_var("ULTRANIX_MCP_STATE_DIR") },
+        }
+        let body: Value = serde_json::from_str(&text_of(&res.unwrap())).unwrap();
+        assert_eq!(body["plugin"], "deploy-notes");
+        // Audited under the *tool* name; steps under their own.
+        let audit = fs::read_to_string(sec_tmp.path().join("logs/audit.jsonl")).unwrap();
+        assert!(audit.contains("\"tool\":\"deploy_notes\""), "{audit}");
+        assert!(audit.contains("\"tool\":\"sleep\""), "{audit}");
+    }
+
+    #[tokio::test]
+    async fn policy_denylist_denies_exposed_tool_name() {
+        // `deny_tools: ["deploy_notes"]` bites in call_tool_secured's
+        // primary policy check — before dispatch, so no manifest is
+        // needed.
+        let sec_tmp = tempfile::tempdir().unwrap();
+        let mut sec = SecurityContext::new(sec_tmp.path(), false, false).unwrap();
+        let mut p = crate::security::policy::Policy::default();
+        p.default_role.deny_tools.insert("deploy_notes".to_string());
+        sec.set_policy(p);
+        let err = crate::tools::call_tool_secured(
+            "deploy_notes",
+            Map::new(),
+            &Providers::empty(),
+            &sec,
+            SESSION,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code.0, codes::NOT_IN_TOOL_LIST);
+        let audit = fs::read_to_string(sec_tmp.path().join("logs/audit.jsonl")).unwrap();
+        assert!(audit.contains("\"tool\":\"deploy_notes\""), "{audit}");
+        assert!(audit.contains("\"denied\""), "{audit}");
+    }
+
+    #[tokio::test]
+    async fn allowlist_role_denies_unlisted_exposed_tool() {
+        // `allow_tools` without the plugin tool's name → denied by the
+        // primary check, consistent with `Role::allows` semantics.
+        let sec_tmp = tempfile::tempdir().unwrap();
+        let mut sec = SecurityContext::new(sec_tmp.path(), false, false).unwrap();
+        let mut p = crate::security::policy::Policy::default();
+        p.default_role.allow_tools = Some(
+            ["plugin_run".to_string(), "metrics".to_string()]
+                .into_iter()
+                .collect(),
+        );
+        sec.set_policy(p);
+        let err = crate::tools::call_tool_secured(
+            "deploy_notes",
+            Map::new(),
+            &Providers::empty(),
+            &sec,
+            SESSION,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code.0, codes::NOT_IN_TOOL_LIST);
+    }
+
+    #[tokio::test]
+    async fn plugin_list_surfaces_exposed_tool_name() {
+        let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
+        let res = plugin_list_in(&store, &Map::new()).await.unwrap();
+        let body: Value = serde_json::from_str(&text_of(&res)).unwrap();
+        assert_eq!(body[0]["tool"]["name"], "deploy_notes");
+        assert_eq!(body[0]["tool"]["description"], "Deploy the notes bundle");
+    }
+
+    #[tokio::test]
+    async fn denylist_plugin_name_denies_exposed_tool() {
+        // Symmetric deny: `deny_tools: ["deploy-notes"]` (the plugin
+        // name) must bite the exposed `deploy_notes` tool — the
+        // manifest is reachable under either name.
+        let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
+        let sec_tmp = tempfile::tempdir().unwrap();
+        let mut sec = SecurityContext::new(sec_tmp.path(), false, false).unwrap();
+        let mut p = crate::security::policy::Policy::default();
+        p.default_role.deny_tools.insert("deploy-notes".to_string());
+        sec.set_policy(p);
+        let err = run_exposed_tool(
+            &store,
+            "deploy_notes",
+            &args(json!({"ms": 0})),
+            &Providers::empty(),
+            Some(secured_in(&sec)),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(err.code.0, codes::NOT_IN_TOOL_LIST);
+    }
+
+    #[tokio::test]
+    async fn denylist_exposed_name_denies_plugin_run() {
+        // The other direction: `deny_tools: ["deploy_notes"]` blocks
+        // the tool AND `plugin_run{name: "deploy-notes"}` — otherwise
+        // the name-addressed path would bypass the tool deny.
+        let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
+        let sec_tmp = tempfile::tempdir().unwrap();
+        let mut sec = SecurityContext::new(sec_tmp.path(), false, false).unwrap();
+        let mut p = crate::security::policy::Policy::default();
+        p.default_role.deny_tools.insert("deploy_notes".to_string());
+        sec.set_policy(p);
+        let err = run_by_name(
+            &store,
+            "deploy-notes",
+            args(json!({"ms": 0})),
+            &Providers::empty(),
+            Some(secured_in(&sec)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code.0, codes::NOT_IN_TOOL_LIST);
+    }
+
+    #[tokio::test]
+    async fn denylist_manifest_name_denies_plugin_run() {
+        // Full symmetry: `deny_tools: ["deploy-notes"]` — the name
+        // `plugin_list` shows — must bite the name-addressed
+        // `plugin_run` call too, not only the exposed `deploy_notes`.
+        let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
+        let sec_tmp = tempfile::tempdir().unwrap();
+        let mut sec = SecurityContext::new(sec_tmp.path(), false, false).unwrap();
+        let mut p = crate::security::policy::Policy::default();
+        p.default_role.deny_tools.insert("deploy-notes".to_string());
+        sec.set_policy(p);
+        let err = run_by_name(
+            &store,
+            "deploy-notes",
+            args(json!({"ms": 0})),
+            &Providers::empty(),
+            Some(secured_in(&sec)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code.0, codes::NOT_IN_TOOL_LIST);
     }
 }

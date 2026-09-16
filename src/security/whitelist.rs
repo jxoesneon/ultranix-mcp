@@ -22,12 +22,13 @@ use crate::security::sanitize::{SanitizeError, sanitize_arg};
 
 /// Binaries that may ever be spawned by `system_command`.
 /// Pin set — includes provider-internal helpers (`xrandr`, `xprop`,
-/// `wl-copy`, `wl-paste`, `xclip`, `xsel`, `kdotool`) that are
-/// resolved-and-spawned by X11/clipboard/compositor providers but have
-/// no `validate_command` arm, so `system_command` cannot invoke them.
+/// `wl-copy`, `wl-paste`, `xclip`, `xsel`, `kdotool`, `riverctl`) that
+/// are resolved-and-spawned by X11/clipboard/compositor providers but
+/// have no `validate_command` arm, so `system_command` cannot invoke
+/// them.
 pub const WHITELIST: &[&str] = &[
     "grim", "slurp", "hyprctl", "scrot", "xdotool", "wmctrl", "xrandr", "xprop", "wl-copy",
-    "wl-paste", "xclip", "xsel", "kdotool",
+    "wl-paste", "xclip", "xsel", "kdotool", "riverctl",
 ];
 
 /// Schema-level cap on argv length (docs/TOOLS.md `system_command.args.maxItems`).
@@ -845,13 +846,14 @@ mod tests {
 
     #[test]
     fn clipboard_helpers_are_pin_only_never_invocable() {
-        // `wl-copy`/`wl-paste`/`xclip`/`xsel` are WHITELIST members —
-        // the clipboard providers pin+spawn them internally — but none
-        // has a `validate_command` arm (same contract as `xrandr`/
-        // `xprop`/`kdotool`), so `system_command` must reject every one
-        // as NotWhitelisted even though the pins resolve.
+        // `wl-copy`/`wl-paste`/`xclip`/`xsel`/`riverctl` are WHITELIST
+        // members — the clipboard/river providers pin+spawn them
+        // internally — but none has a `validate_command` arm (same
+        // contract as `xrandr`/`xprop`/`kdotool`), so `system_command`
+        // must reject every one as NotWhitelisted even though the pins
+        // resolve.
         let pins = pins_all(Path::new("/pinned"));
-        for cmd in ["wl-copy", "wl-paste", "xclip", "xsel"] {
+        for cmd in ["wl-copy", "wl-paste", "xclip", "xsel", "riverctl"] {
             assert!(WHITELIST.contains(&cmd), "{cmd} must be a member");
             assert!(pins.is_available(cmd), "{cmd} must resolve a pin");
             let err = pins.validate_command(cmd, &s(&[]), true, None).unwrap_err();

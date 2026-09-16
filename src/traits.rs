@@ -142,6 +142,14 @@ pub trait WindowProvider: Send + Sync {
     async fn active_window(&self) -> Result<Option<WindowInfo>>;
     /// Backend-native window op: `focus|move|resize|minimize|close`.
     async fn dispatch(&self, action: &str, window_id: &str, args: &Value) -> Result<()>;
+    /// Selector token that addresses the *focused view* directly,
+    /// bypassing `list_windows`/`active_window` resolution — for
+    /// compositors (river) that can act on the focused view but cannot
+    /// enumerate or identify it. `None` (default) means selectors always
+    /// resolve through the window list.
+    fn focused_view_selector(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// OCR + icon detection (ONNX Runtime).

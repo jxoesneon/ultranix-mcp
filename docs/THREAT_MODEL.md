@@ -1,11 +1,14 @@
 # Threat Model — ultranix-mcp
 
-**Version**: 1.3.0 — **Status**: Implemented (describes the shipped v1.3.0
+**Version**: 1.4.0 — **Status**: Implemented (describes the shipped v1.4.0
 system; mitigations marked *post-v1* are roadmap)
 **Scope**: ultranix-mcp as deployed on its target environment — a single-user
 Wayland/Hyprland desktop on CachyOS (v1.2.0 detection additionally covers
 sway/Wayfire/river/KDE/GNOME sessions; v1.3.0 adds the runtime policy
-layer), consumed by a local or SSH-tunneled MCP client.
+layer; v1.4.0 adds the Wayfire `wayfire-ipc`, river `riverctl`, and GNOME
+`gnome-shell` Window Calls window rungs, `screen_stream` rolling capture,
+and plugin-exposed dynamic tools), consumed by a local or SSH-tunneled MCP
+client.
 
 This is the security design document of record. It names the attackers we
 design against, maps STRIDE threats onto every component, dissects the
@@ -47,6 +50,7 @@ importantly — says plainly what we do **not** protect against.
                 │  history.json (AES-256-GCM, UNXHIST2 frames)   │
                 │  logs/audit.jsonl · plugins/*.json             │
                 │  captures/rec-* (bounded screen_record output) │
+                │  captures/stream-* (rolling screen_stream out) │
                 └────────────────────────────────────────────────┘
 ```
 
@@ -145,7 +149,7 @@ not arbitrate whether a legitimate client's *intent* is good.
 | STRIDE | Threat | Mitigation | Residual |
 | ------ | ------ | ---------- | -------- |
 | Info. disclosure | **AT-SPI2 a11y tree is readable by ANY process on the session bus** — window titles, text fields, sometimes values | None available at our layer; it is the designed bus trust model. Documented loudly, §4.3 | **High, inherited** |
-| Info. disclosure | hyprctl IPC socket readable/abused by session peers (same class: sway's `$SWAYSOCK` since v1.2.0) | Socket lives in `$XDG_RUNTIME_DIR` (0700); we don't weaken it | Medium |
+| Info. disclosure | hyprctl IPC socket readable/abused by session peers (same class: sway's `$SWAYSOCK` since v1.2.0; Wayfire's `$WAYFIRE_SOCKET` and GNOME's Window Calls D-Bus object since v1.4.0) | Socket lives in `$XDG_RUNTIME_DIR` (0700); we don't weaken it. `riverctl` reaches the same class through a pinned subprocess, not a socket. GNOME's rung deliberately avoids `org.gnome.Shell.Eval` (arbitrary JS); the Window Calls extension exposes a fixed window verb set | Medium |
 | Spoofing | **CDP `127.0.0.1:9222`** — any local process can connect and fully control the browser profile | Loopback-only bind; documented as *the browser's own* exposure, not ours | Medium–High if user enables it, §4.7 |
 
 ### 3.8 Storage
@@ -239,7 +243,13 @@ Permissions are session-user-only by default, but: containers/flatpaks with
 `$XDG_RUNTIME_DIR` bind-mounted, or sloppy socket sharing, widen that.
 sway's `$SWAYSOCK` (v1.2.0 `SwayWindow`) is the same exposure class — a
 session-scoped, user-owned command socket; the same "never forward into
-sandboxes" guidance applies.
+sandboxes" guidance applies. v1.4.0 adds two more members of the class:
+Wayfire's `$WAYFIRE_SOCKET` (`wayfire-ipc` — a command socket in
+`$XDG_RUNTIME_DIR`) and GNOME's Window Calls D-Bus object (`gnome-shell` —
+session-bus exposure; it deliberately does **not** use
+`org.gnome.Shell.Eval`, the arbitrary-JS primitive). `riverctl` differs in
+shape but not class: a pinned provider-internal subprocess rather than a
+socket (§4.13).
 
 **Mitigations.**
 
@@ -463,6 +473,16 @@ primitive:
   environment and bounded execution; `kdotool` dispatches are built from
   a closed action set (`kwinscript` arbitrary-JS is unreachable) and
   window ids are shape-validated before reuse.
+- **`riverctl`** (v1.4.0) — same pin-only posture for the river window
+  rung (`RiverWindow`): startup-pinned absolute path, scrubbed env,
+  bounded wait, **no `validate_command` arm**. `RiverWindow`'s dispatch
+  layer maps to a closed verb set (`close`, relative
+  `move <dir> <delta>`, `resize <axis> <delta>`); the rest of riverctl's
+  surface (`spawn`, `send-layout-command`, etc.) is unreachable. At the
+  tool surface, `window_control` reaches the focused view via
+  `window:"focused"`/an omitted selector and the relative `dx,dy`/`dw,dh`
+  params; `get_windows`/`get_active_window` still report unavailable
+  (no list IPC).
 - **PATH hijacking** — if whitelist members were invoked by bare name, a
   writable directory earlier in `PATH` (or a modified environment) could
   substitute a trojaned `hyprctl`. **All whitelisted binaries are resolved
@@ -477,7 +497,7 @@ destructive, but real (§6 R-2).
 ### 4.14 Runtime policy layer (v1.3.0) — least-privilege enforcement
 
 **Risk.** Bearer-key auth (TB-1) is binary: any valid `uxcp_*` key reaches
-the full 39-tool catalog. A scoped-down key for a read-only observer, or a
+the full 40-tool catalog. A scoped-down key for a read-only observer, or a
 "no input tools" profile for an untrusted agent, was previously
 impossible — every caller was as powerful as every other.
 
@@ -524,6 +544,68 @@ impossible — every caller was as powerful as every other.
   `allow_tools` entry *opts a mutating tool back in* — the union is
   documented and deliberate, but an operator who expects `readonly` to be
   a hard ceiling will be surprised. Deny lists are the hard ceiling.
+
+### 4.15 `screen_stream` rolling capture (v1.4.0)
+
+**Risk.** Like `screen_record` (§4.10) but continuous: a background task
+writes PNG frames to disk for as long as the caller keeps it running — an
+attacker-injected `start` could fill the disk or keep exfiltrating frames
+through `latest`.
+
+**Mitigations.**
+
+- Output is a fresh server-owned `stream-<ulid>` `0700` dir under the
+  captures root — never a caller-chosen path; `manifest.json` is written
+  on every exit path (`stopped`/`capture_error`/`io_error`).
+- The window is **rolling and double-capped**: `max_frames` ≤1800 and
+  `buffered_bytes <= max_bytes <= 512 MiB` hold unconditionally — oldest
+  frames are evicted (`dropped_frames`), a frame larger than the whole
+  budget is dropped unwritten. Disk fill is bounded by construction.
+- One active stream **server-wide** (process-global registry shared by
+  stdio and HTTP) — a second `start` is an `isError`, so a caller cannot
+  multiply capture tasks.
+- Not consent-gated — same posture as `screen_record`: nothing
+  caller-chosen is written and reads (`latest`) are audited like
+  `screenshot`. `screen_stream` is in `NON_REPLAYABLE`: replaying a
+  recorded `start` would spawn a background capture, so `replay_action`
+  refuses it.
+
+**Residual.** Low–Medium: an authorized/injected client can hold a live
+capture open and poll frames — the same exfiltration class as a
+`screenshot` loop (R-2, R-10), just more convenient; rate limiting and
+audit cadence apply.
+
+### 4.16 Plugin-exposed dynamic tools (v1.4.0)
+
+**Risk.** A manifest `tool` section registers a plugin as a first-class
+`tools/list` entry under its own name — an attacker who can write
+`plugins/*.json` (§4.9, R-14) could advertise an innocuous-looking tool
+name that agents call directly, laundering the macro behind a
+catalog-looking entry.
+
+**Mitigations.**
+
+- **No new code-execution surface**: an exposed call is exactly
+  `plugin_run{name, params}` through `call_tool_secured` — declarative
+  JSON steps, `plugin_*`/`replay_action` recursion still rejected,
+  per-step consent/audit/history/metrics unchanged.
+- **Dual policy gate**: the exposed tool's *own name* must pass the
+  caller's role allow/deny **and** the role must allow `plugin_run`; a
+  `readonly` role denies them (`-32018`), an allowlist that omits the
+  name denies `-32019`, and a role denying `plugin_run` never sees them.
+  They inherit `plugin_run`'s `admin` category for `--category`
+  filtering.
+- Names must clear the tool grammar `^[a-z][a-z0-9_]{0,63}$` and cannot
+  collide with the catalog or a sibling plugin's claim — no
+  shadowing/spoofing of real tools; losing claims surface in
+  `plugin_reload` diagnostics.
+- History records only `plugin=<name> steps=<n>` — the same redaction as
+  `plugin_run` — and the write precondition is the same-UID state-dir
+  access already covered by R-14.
+
+**Residual.** Medium — same class as R-14: the *name* is new attack
+surface (a convincing tool name invites calls), but every mitigation
+that bounds `plugin_run` bounds the exposed alias identically.
 
 ---
 
@@ -604,6 +686,7 @@ bottom line.**
 | **R-14** | Same-UID attacker writes a hostile `plugins/*.json` manifest chaining semantically-powerful tools under one innocuous name | Medium | Requires the same-UID state-dir access that already reaches `history.json`; manifests are data (no code exec), `plugin_*` recursion is rejected, and every step re-enters consent/audit — but a *valid* macro can still chain real tools | Keep `~/.ultranix-mcp/` `0700` (default); review `plugin_reload` diagnostics; per-step consent stays on (`--allow-destructive` off unattended) |
 | **R-15** | `clipboard_get` exfiltrates clipboard-held secrets to an authorized/injected client | Medium | Ambient same-session readability of the clipboard — reads are audited, not gated (consistent with `screenshot`); writes/clears are consent-gated | Treat clipboard contents as sensitive; audit `clipboard_get` frequency; scope client keys |
 | **R-16** | Same-UID attacker rewrites `policy.toml` to widen a restricted key's role — or a key-fingerprint collision aliases roles | Medium | Policy is startup-loaded, same-UID config like `plugins/*.json`; the 8-hex `key_id` space (~32 bits) collides under ~77k configured keys | `0600`/`0400` the policy file, monitor it with file-integrity tooling, restart to apply changes; prefer deny-lists as the hard ceiling; keep configured key counts small |
+| **R-17** | Same-UID attacker publishes a `plugins/*.json` with a `tool` section whose innocent-looking name lures agents into calling the macro directly (v1.4.0) | Medium | Same precondition and bounds as R-14 — the exposed name is policy-gateable like any tool (deny it or `plugin_run` to block the whole class), adds no code-exec surface, and every step still re-enters consent/audit | Review `plugin_reload` diagnostics for unexpected `tool` claims; deny-list suspicious exposed names; keep `~/.ultranix-mcp/` `0700` |
 
 ### Explicitly out of scope
 
@@ -622,8 +705,8 @@ The following MUST hold in implementation and are candidates for CI tests:
    subcommands (`hyprctl dispatch exec`/`exec-once`, general D-Bus
    invocation) are denied, and every binary runs via its startup-pinned
    absolute path. Provider-internal pins (`xrandr`, `xprop`,
-   `wl-copy`, `wl-paste`, `xclip`, `xsel`, `kdotool`, and the other
-   helper binaries) are likewise startup-pinned but have no
+   `wl-copy`, `wl-paste`, `xclip`, `xsel`, `kdotool`, `riverctl`, and the
+   other helper binaries) are likewise startup-pinned but have no
    `validate_command` arm — `system_command` cannot invoke them; only
    provider code spawns them. Honest carve-out: on X11-fallback sessions
    `xdotool`
@@ -657,10 +740,16 @@ The following MUST hold in implementation and are candidates for CI tests:
    declarative JSON (no code execution), `plugin_*` steps are rejected at
    validation, and every step re-enters dispatch — a destructive step
    challenges for its own `consent_token` independently of any consent
-   granted to the `plugin_run` call itself.
+   granted to the `plugin_run` call itself. The same holds for
+   plugin-exposed tools (v1.4.0): calling one is `plugin_run` under a
+   different name, and policy must pass for *both* the tool's own name
+   and `plugin_run`.
 10. `screen_record` writes only beneath a fresh server-owned `rec-<ulid>`
     `0700` dir (captures root or `/tmp` fallback) and never exceeds
-    600 frames or 512 MiB of output.
+    600 frames or 512 MiB of output. `screen_stream` writes only beneath
+    a fresh `stream-<ulid>` `0700` dir, never exceeds 1800 live frames or
+    its `max_bytes` (≤512 MiB) rolling budget, permits only one active
+    stream server-wide, and is refused by `replay_action`.
 11. Every `audit.jsonl` record carries `args_hash` (never raw args) and a
     `prev_hash` equal to the hash of the preceding record.
 12. Every `tools/call` — including plugin steps and `replay_action`

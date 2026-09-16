@@ -16,7 +16,7 @@ const HISTORY_ERROR: i32 = -32014;
 const COMMAND_NOT_WHITELISTED: i32 = -32003;
 const INVALID_PARAMS: i32 = -32602;
 
-/// The 29 provider-backed tools must each return -32010 when their backend
+/// The 30 provider-backed tools must each return -32010 when their backend
 /// slot is `None`.
 #[tokio::test]
 async fn provider_backed_tools_return_provider_unavailable() {
@@ -27,12 +27,19 @@ async fn provider_backed_tools_return_provider_unavailable() {
             continue;
         }
         covered += 1;
-        let res = call(name, valid_args(name), &providers).await;
+        // `screen_stream` lifecycle actions `status`/`stop` read server
+        // state only; `start` is the action that resolves the capture slot.
+        let a = if *name == "screen_stream" {
+            args(json!({"action": "start"}))
+        } else {
+            valid_args(name)
+        };
+        let res = call(name, a, &providers).await;
         assert_error_code(&res, &[PROVIDER_UNAVAILABLE], name);
     }
     assert_eq!(
-        covered, 29,
-        "catalog drift: expected 29 provider-backed tools"
+        covered, 30,
+        "catalog drift: expected 30 provider-backed tools"
     );
 }
 

@@ -2,12 +2,16 @@
 
 Complete API specification for every tool exposed by **ultranix-mcp**, the
 Rust MCP server for Linux desktop automation. This document describes the
-shipped v1.2.0 tool surface — unchanged at v1.3.0, which added only
-runtime controls around it: the `policy.toml` access-control policy with
-per-key role scoping, the `--readonly`/`--allow-tools`/`--deny-tools`
-flags, `-32018`/`-32019` policy denials, per-backend/build-info metrics,
-and optional audit-log HMAC (see [Maturity Phases](#maturity-phases) and
-[ADR 0010](adr/0010-policy-controls.md)).
+shipped **v1.4.0 tool surface — 40 tools in 6 categories**: v1.2.0 grew the
+catalog to 39, v1.3.0 left it unchanged while adding runtime controls
+around it (the `policy.toml` access-control policy with per-key role
+scoping, the `--readonly`/`--allow-tools`/`--deny-tools` flags,
+`-32018`/`-32019` policy denials, per-backend/build-info metrics, and
+optional audit-log HMAC — see [Maturity Phases](#maturity-phases) and
+[ADR 0010](adr/0010-policy-controls.md)), and v1.4.0 added `screen_stream`
+(live rolling-window capture) plus **plugin-exposed dynamic tools** —
+manifest `tool` sections that register first-class entries in `tools/list`
+(see [Plugin Manifests](#plugin-manifests)).
 
 - **Server**: `ultranix-mcp` (Rust 2024, tokio, `rmcp` SDK)
 - **Transports**: stdio and streamable HTTP on `:3010` (canonical JSON-RPC
@@ -30,7 +34,8 @@ and optional audit-log HMAC (see [Maturity Phases](#maturity-phases) and
 - **State directory**: `~/.ultranix-mcp/` — AES-256-GCM action history
   (`history.json`, `UNXHIST2` framed append format since v1.2.0), JSONL
   audit log (`audit.jsonl`), config, plugin manifests (`plugins/*.json`),
-  `screen_record` output (`captures/rec-*`).
+  `screen_record`/`screen_stream` output (`captures/rec-*`,
+  `captures/stream-*`).
 
 ---
 
@@ -73,7 +78,7 @@ canonical normative fallback-chain table lives in
 | `OverlayProvider` | Highlight overlays | `wlr-layer-shell` (`zwlr_layer_shell_v1`, `overlay` layer) | — (returns `ProviderUnavailable` when the compositor lacks layer-shell) |
 | `InputProvider` | Pointer and keyboard injection | `wlr-virtual-pointer` + `virtual-keyboard` (zwlr_virtual_pointer_manager_v1 / virtual-keyboard-unstable-v1) | `/dev/uinput` → XDG Portal `RemoteDesktop`. On X11 sessions `xdotool` (`X11Input`, backend name `"xdotool"`) is tried first, then uinput → portal |
 | `UIAutomationProvider` | Accessibility tree, element search, AT-SPI action invocation | AT-SPI2 via the `atspi` crate over D-Bus | — (returns `ProviderUnavailable` when the AT-SPI bus is absent) |
-| `WindowProvider` | Window enumeration and control | `hyprctl` IPC (`hyprctl -j`) over `$XDG_RUNTIME_DIR/hypr/` sockets | sway IPC over `$SWAYSOCK` (`SwayWindow`, backend name `"sway-ipc"`) on sway sessions; `kdotool` subprocess (`KdotoolWindow`, backend name `"kdotool"`) on KDE sessions (Wayland and X11 — it drives KWin on both); `wmctrl` + `xdotool`/`xprop` (`X11Window`, backend name `"wmctrl"`) on other X11 sessions — and as the KDE-X11 fallback rung behind `kdotool`; `None` elsewhere |
+| `WindowProvider` | Window enumeration and control | `hyprctl` IPC (`hyprctl -j`) over `$XDG_RUNTIME_DIR/hypr/` sockets | sway IPC over `$SWAYSOCK` (`SwayWindow`, backend name `"sway-ipc"`) on sway sessions; wayfire `ipc`/`ipc-rules` socket over `$WAYFIRE_SOCKET` (`WayfireWindow`, backend name `"wayfire-ipc"`, v1.4.0) on Wayfire sessions; `riverctl` subprocess (`RiverWindow`, backend name `"riverctl"`, v1.4.0) on river sessions — **focused-view-only rung**: river has no window-list IPC and `riverctl` cannot report the focused view's identity, so `get_windows`/`get_active_window` return an `isError` result; `window_control` reaches the focused view via `window:"focused"` or an omitted selector — `close`, and `move`/`resize` through the relative `dx,dy`/`dw,dh` deltas (absolute `x,y`/`w,h` and `focus`/`minimize` error honestly — river has no absolute form); GNOME "Window Calls" extension over D-Bus (`GnomeShellWindow`, backend name `"gnome-shell"`, v1.4.0) on GNOME sessions — requires the extension installed (`org.gnome.Shell.Extensions.Windows`); `kdotool` subprocess (`KdotoolWindow`, backend name `"kdotool"`) on KDE sessions (Wayland and X11 — it drives KWin on both); `wmctrl` + `xdotool`/`xprop` (`X11Window`, backend name `"wmctrl"`) on other X11 sessions — and as the GNOME-X11/KDE-X11 fallback rung behind `gnome-shell`/`kdotool`; `None` elsewhere |
 | `VisionProvider` | OCR and open-vocabulary detection | ONNX Runtime (`ort`): text OCR model + OWL-ViT | — (tools fail closed with `ProviderUnavailable`) |
 | `BrowserProvider` | DOM queries | Chrome DevTools Protocol at `127.0.0.1:9222` | — (requires the browser launched with `--remote-debugging-port=9222`) |
 | `ClipboardProvider` | Clipboard read/write | `wl-copy`/`wl-paste` (`wl-clipboard`, backend name `"wl-clipboard"`) on Wayland | `xclip` (+ `xsel` for clear; backend name `"xclip"`) on X11 and as the XWayland rung on Wayland |
@@ -107,6 +112,7 @@ canonical normative fallback-chain table lives in
 | `find_icon` | vision | VisionProvider + CaptureProvider | 3 |
 | `wait_for_ui_element` | vision | UIAutomationProvider | 2 |
 | `screen_record` | vision | CaptureProvider | 6 |
+| `screen_stream` | vision | CaptureProvider | 7 |
 | `sleep` | automation | Server core | 1 |
 | `mouse_move_path` | automation | InputProvider | 1 |
 | `system_command` | automation | Server core (arg-constrained exec, consent-gated) | 1 |
@@ -125,8 +131,10 @@ canonical normative fallback-chain table lives in
 | `clipboard_set` | clipboard | ClipboardProvider (consent-gated) | 6 |
 | `clipboard_clear` | clipboard | ClipboardProvider (consent-gated) | 6 |
 
-**Total: 39 tools** (mouse 7 · keyboard 2 · vision 13 · automation 4 ·
-admin 10 · clipboard 3).
+**Total: 40 tools** (mouse 7 · keyboard 2 · vision 14 · automation 4 ·
+admin 10 · clipboard 3). Plugin-exposed dynamic tools (manifest `tool`
+sections, v1.4.0) are **not** counted here — they join `tools/list` at
+runtime; see [Plugin Manifests](#plugin-manifests).
 
 ---
 
@@ -187,7 +195,7 @@ match rather than reporting it, a query with no AT-SPI match is an error
 | Content type | Shape | Used by |
 | --- | --- | --- |
 | `text` | `{ "type": "text", "text": "<string>" }` — either a human-readable sentence or a JSON document (documented per tool; JSON payloads are always parseable with `JSON.parse`/`serde_json`) | all tools |
-| `image` | `{ "type": "image", "data": "<base64>", "mimeType": "image/png" }` | `screenshot` |
+| `image` | `{ "type": "image", "data": "<base64>", "mimeType": "image/png" }` | `screenshot`, `screen_stream` (`action: "latest"`) |
 
 Tools that return JSON text content always place it in a **single** `text`
 item; clients should parse `content[0].text` as JSON when the tool's "Returns"
@@ -1242,8 +1250,9 @@ not an error).
 ### `screen_record`
 
 Record a bounded burst of screen captures: one PNG frame every
-`interval_ms` for up to `duration_ms`. This is the honest bounded version
-of "streaming capture", not a live stream — frames are written to a fresh
+`interval_ms` for up to `duration_ms`. This is the bounded version of
+capture — for a caller-driven live feed see
+[`screen_stream`](#screen_stream) (v1.4.0). Frames are written to a fresh
 `rec-<ulid>` directory (mode `0700`) under the captures root
 (`~/.ultranix-mcp/captures/` preferred, `/tmp` fallback) together with a
 `manifest.json`, and the directory is **kept** after the call returns.
@@ -1350,6 +1359,164 @@ outputs), `ProviderUnavailable` (no capture backend), `InternalError`
 (recording-dir creation failure). Backend capture faults mid-run surface
 as `isError` results with the partial manifest still on disk.
 
+### `screen_stream`
+
+Continuous live screen capture with a `start` / `status` / `latest` /
+`stop` lifecycle — the live counterpart to `screen_record`'s bounded
+burst. `start` spawns a background task on the server's
+tokio runtime that captures one PNG frame per `fps` interval into a fresh
+`stream-<ulid>` directory (mode `0700`) under the captures root
+(`~/.ultranix-mcp/captures/` preferred, `/tmp` fallback), keeping a
+bounded **rolling window** on disk: when `max_frames` or `max_bytes` would
+be crossed the *oldest* frames are evicted and counted as
+`dropped_frames`. `latest` returns the newest frame as image content so
+clients can poll; `stop` cancels and joins the task and returns final
+stats. This is a rolling-window disk capture, **not** an RTP/streaming
+protocol — frames are pulled per `latest` call.
+
+Shipped at v1.4.0. Works on any backend that can capture frames — same
+`CaptureProvider` coverage as `screen_record` — and `start` returns
+`-32010 ProviderUnavailable` where none resolved.
+
+**inputSchema**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["start", "status", "latest", "stop"],
+      "description": "Lifecycle action"
+    },
+    "fps": {
+      "type": "integer", "default": 2, "minimum": 1, "maximum": 10,
+      "description": "Capture rate in frames/second; start only"
+    },
+    "max_frames": {
+      "type": "integer", "default": 600, "minimum": 1, "maximum": 1800,
+      "description": "Rolling window size in frames; start only"
+    },
+    "max_bytes": {
+      "type": "integer", "default": 536870912, "minimum": 1, "maximum": 536870912,
+      "description": "Rolling window byte budget (default and ceiling 512 MiB); start only"
+    }
+  },
+  "required": ["action"],
+  "additionalProperties": false
+}
+```
+
+Behaviour contract:
+
+- **Single stream server-wide.** The registry is process-global — HTTP
+  and stdio callers share it. A second `start` while a task is alive is an
+  `isError` result naming the active `stream_id`; a *dead* task
+  (`stop_reason` `capture_error`/`io_error`) does not block a fresh
+  `start` — its finished handle is displaced and its dir + manifest stay
+  on disk.
+- **Rolling eviction.** Eviction runs before each write: oldest frames
+  are removed while the window is at `max_frames` or the byte budget would
+  overflow; a frame larger than the whole `max_bytes` budget is dropped
+  unwritten, so `buffered_bytes <= max_bytes` holds unconditionally.
+  On-disk frames are `frame_NNNNN.png` (sequence-numbered).
+- **`manifest.json` is written by the task on every exit path** — `stop`,
+  `capture_error`, `io_error` — so a stream that died on its own is still
+  self-describing on disk. The manifest records `tool`/`schema`/
+  `stream: true`, the call `args`, `backend` (resolved capture backend
+  name), `dir`, `fps`/`interval_ms`/`max_frames`/`max_bytes`,
+  `started_at`/`finished_at`/`elapsed_ms`, the extant `frames[]` list
+  (`file`, `bytes`, `width`, `height`, `t_ms`), `buffered_*`,
+  `frames_written`/`bytes_written`, `dropped_frames`, `stop_reason`
+  (`stopped` | `capture_error` | `io_error`), and `error` when a failure
+  occurred.
+- **Ticking.** The first frame lands as soon as the backend produces one;
+  missed ticks delay rather than burst (a slow backend never triggers a
+  catch-up storm), and `stop` is checked before every tick.
+- **Retention.** The `stream-<ulid>` dir is **kept** after the stream
+  ends, matching `screen_record` — there is no auto-prune; the operator
+  removes stream dirs. Disk use while running is bounded by
+  `max_frames`/`max_bytes`.
+- **Not consent-gated** — same posture as `screen_record`: pixels are
+  read and written only into a fresh server-owned `0700` directory;
+  nothing caller-chosen is written or destroyed.
+- **Not replayable** — `screen_stream` is in `NON_REPLAYABLE`: replaying
+  a recorded `start` would spawn a background capture task, so
+  `replay_action` refuses it (`InvalidParams`). Lifecycle calls
+  (`start`/`stop`) are still recorded to audit/history; the polling
+  actions (`status`/`latest`) are suppressed from history — they are
+  per-frame reads that would flood the bounded store.
+- **No shutdown drain.** There is no server-level cancel hook — dropping
+  the runtime aborts the task; frames already on disk survive (the
+  manifest may be absent on a hard kill).
+- `fps`/`max_frames`/`max_bytes` are accepted on every action but only
+  meaningful on `start` — `status`/`latest`/`stop` ignore them.
+
+**Returns** — per action:
+
+- `start`: `text` containing JSON —
+
+  ```json
+  {
+    "stream_id": "01J9XKQV0R6T4H2Y8ZQ3N0AB12",
+    "dir": "stream-01J9XKQV0R6T4H2Y8ZQ3N0AB12",
+    "fps": 2,
+    "interval_ms": 500,
+    "max_frames": 600,
+    "max_bytes": 536870912,
+    "started_at": "2026-09-16T08:00:00Z"
+  }
+  ```
+
+  (`dir` is the basename only — the full path never crosses the wire.)
+
+- `status`: `text` containing JSON — `{"active": false}` when no stream
+  exists (ever ran); otherwise:
+
+  ```json
+  {
+    "active": true,
+    "stream_id": "01J9XKQV0R6T4H2Y8ZQ3N0AB12",
+    "dir": "stream-01J9XKQV0R6T4H2Y8ZQ3N0AB12",
+    "fps": 2,
+    "started_at": "2026-09-16T08:00:00Z",
+    "frames_written": 41,
+    "bytes_written": 1889280,
+    "buffered_frames": 41,
+    "buffered_bytes": 1889280,
+    "dropped_frames": 0,
+    "latest_frame": "frame_00041.png",
+    "last_error": null,
+    "stop_reason": null,
+    "finished_at": null
+  }
+  ```
+
+- `latest`: two content items — `text` (`"Latest frame frame_00041.png
+  (1920x1080 PNG) of stream <id>"`) then `image` (`image/png`, base64) —
+  the same wire shape as `screenshot`, so clients can poll frames.
+- `stop`: `text` containing JSON — `{"stopped": true, "aborted": …,
+  "stream_id": …, "dir": …, "fps": …, "started_at": …, "finished_at": …,
+  "frames_written": …, "bytes_written": …, "buffered_frames": …,
+  "buffered_bytes": …, "dropped_frames": …, "latest_frame": …,
+  "stop_reason": …, "last_error": …, "manifest": "manifest.json"}`.
+  `aborted` is `true` when the task did not exit within the 15 s join
+  budget and was killed (stats are best-effort then; the manifest is
+  still written by the task's drop guard with `stop_reason`
+  `"terminated"`/`"panic"`). A dead-but-unreaped stream still reports
+  its final stats (the task already wrote its own manifest).
+
+**Errors**
+
+|| Condition | Code / result |
+|| --- | --- |
+|| Missing `action`, unknown action, `fps`/`max_frames`/`max_bytes` out of range, unknown fields | `-32602 InvalidParams` |
+|| No capture backend | `-32010 ProviderUnavailable` (`start` only) |
+|| Stream-dir creation/rename failure | `-32603 InternalError` |
+|| `start` while a stream is alive | `isError` result naming the active `stream_id` |
+|| `latest`/`stop` with no stream, `latest` before the first frame | `isError` result |
+|| Mid-stream capture/io fault | stream ends (`stop_reason` `capture_error`/`io_error`); `status`/`stop` report `last_error`, manifest still written |
+
 ---
 
 ## Automation Tools
@@ -1451,7 +1618,9 @@ Execution rules:
 **provider-internal only** — they have no per-binary validation arm, so
 `system_command` cannot invoke them (`CommandNotWhitelisted`). They exist to
 give the X11 providers display geometry (`xrandr`) and `_NET_WM_STATE`
-reads (`xprop`).
+reads (`xprop`). The same pin-only posture covers `wl-copy`, `wl-paste`,
+`xclip`, `xsel`, `kdotool` (v1.2.0 clipboard + KDE window rungs) and
+`riverctl` (v1.4.0 river window rung).
 
 `busctl` and `gdbus` are **not** in the command set: D-Bus interactions
 (portals, AT-SPI2) are performed in-process via `zbus`/`atspi`, never
@@ -1559,12 +1728,24 @@ or control bytes).
 
 ## Admin & Observability Tools
 
-Window tools use `WindowProvider` (`hyprctl` IPC; `wmctrl` + `xdotool` on
-non-Hyprland X11 sessions); history/metrics tools are server core, Phase 4.
+Window tools use `WindowProvider` — `hyprctl` IPC on Hyprland, `sway-ipc`
+on sway, `wayfire-ipc` on Wayfire, `riverctl` on river (**focused-view-only
+rung**: river has no window-list IPC and `riverctl` cannot report the
+focused view's identity — the provider slot exists, so
+`get_windows`/`get_active_window` return an `isError` result from the
+backend rather than `-32010`; `window_control` addresses the focused view via
+`window:"focused"` or an omitted selector — `close`, and `move`/`resize`
+through the relative `dx,dy`/`dw,dh` deltas), `kdotool`
+on KDE, `gnome-shell` on GNOME (**requires the "Window Calls" Shell
+extension** — `org.gnome.Shell.Extensions.Windows`; without it the rung
+drops out and GNOME reports `ProviderUnavailable`), `wmctrl` + `xdotool`
+on other X11 sessions; history/metrics tools are server core, Phase 4.
 
 ### `window_control`
 
-Focus, move, resize, minimise, or close a window via hyprctl dispatchers.
+Focus, move, resize, minimise, or close a window via the resolved window
+backend (hyprctl dispatchers on Hyprland; the per-session rungs listed in
+[Provider Backends](#provider-backends) elsewhere).
 
 **inputSchema**
 
@@ -1578,12 +1759,16 @@ Focus, move, resize, minimise, or close a window via hyprctl dispatchers.
     },
     "window": {
       "type": "string",
-      "description": "Hyprland address (\"0x…\") or unique title/class substring; omit for the active window"
+      "description": "Backend window id (Hyprland \"0x…\" address, sway con_id, Wayfire view id, GNOME window id, X11 window id) or unique title/class substring; omit for the active/focused window. On focused-view-only backends (river) \"focused\" — or an omitted selector — addresses the focused view directly"
     },
     "x": { "type": "integer", "description": "Target x (move only)" },
     "y": { "type": "integer", "description": "Target y (move only)" },
     "w": { "type": "integer", "minimum": 1, "description": "Target width (resize only)" },
     "h": { "type": "integer", "minimum": 1, "description": "Target height (resize only)" },
+    "dx": { "type": "integer", "description": "Relative x delta (move only; focused-view backends such as river)" },
+    "dy": { "type": "integer", "description": "Relative y delta (move only; focused-view backends such as river)" },
+    "dw": { "type": "integer", "description": "Relative width delta (resize only; focused-view backends such as river)" },
+    "dh": { "type": "integer", "description": "Relative height delta (resize only; focused-view backends such as river)" },
     "consent_token": {
       "type": "string",
       "description": "Challenge token from a prior -32015 ConsentRequired response (close only)"
@@ -1599,12 +1784,26 @@ Per-action parameter rules (violations → `InvalidParams`):
 | `action` | Requires | Ignores |
 | --- | --- | --- |
 | `focus` | — | `x`, `y`, `w`, `h` |
-| `move` | `x`, `y` | `w`, `h` |
-| `resize` | `w`, `h` | `x`, `y` |
+| `move` | `x`, `y` *or* `dx`, `dy` | `w`, `h`, `dw`, `dh` |
+| `resize` | `w`, `h` *or* `dw`, `dh` | `x`, `y`, `dx`, `dy` |
 | `minimize`, `close` | — | all geometry |
 
+`dx`/`dy`/`dw`/`dh` are **relative deltas for focused-view-only backends**
+(river, v1.4.0): they are rejected with `InvalidParams` on any
+list-capable backend, mixing absolute and relative pairs is rejected,
+and deltas on non-geometry actions are rejected. On river they dispatch
+`riverctl move <dir> <delta>` / `resize <axis> <delta>` against the
+focused view.
+
 `minimize` maps to Hyprland `movetoworkspacesilent special:…`; `close` maps
-to `closewindow`. Ambiguous `window` substrings (>1 match) fail with
+to `closewindow`. Other backends map honestly: sway `minimize` → scratchpad,
+Wayfire `minimize` → `wm-actions/set-minimized`, river has no minimize
+state (error). On river, `window:"focused"` (or an omitted selector — the
+focused view *is* the only addressable target) reaches dispatch directly:
+`close` → `riverctl close`, `move`/`resize` → the delta forms above.
+Absolute `x,y`/`w,h`, `focus` (the focused view is implicit), and
+`minimize` (no such river state) all error honestly at the provider.
+Ambiguous `window` substrings (>1 match) fail with
 `InvalidParams` listing the candidate addresses.
 
 `close` is a destructive action: it is consent-gated per
@@ -1619,8 +1818,9 @@ retry, the token is rejected and a fresh challenge is issued. `focus`,
 **Returns**: `text` — `"<action> applied to <address> (\"<title>\")"`.
 
 **Errors**: `InvalidParams`, `ConsentRequired` (`action:"close"` without a
-valid token), `ProviderUnavailable` (hyprctl socket absent →
-not a Hyprland session), `InternalError` (dispatcher rejected).
+valid token), `ProviderUnavailable` (no window backend resolved for the
+session — e.g. GNOME without the Window Calls extension),
+`InternalError` (dispatcher rejected).
 
 ### `get_windows`
 
@@ -1785,7 +1985,10 @@ consent granted for the original recorded call is never inherited.
 
 Non-replayable tools are refused with `InvalidParams`: `metrics`,
 `get_action_history`, `replay_action`, `clear_action_history` (recursion and
-no-op guards).
+no-op guards), `plugin_list`, `plugin_reload` (read-only catalog/rescan
+operations — nothing to replay), and `screen_stream` (a `start` replay
+would spawn a background capture task — the record is kept, replay is
+refused).
 
 **Returns**: `text` containing JSON —
 `{"replayed": "<tool>", "id": "<ulid>", "result": <original result content>}`.
@@ -1904,6 +2107,10 @@ Execution semantics:
   recursion.
 - `plugin_run` calls are themselves recorded in action history and are
   replayable like any non-meta tool.
+- A manifest `tool` section (v1.4.0) makes the plugin callable by its own
+  `tools/list` name — that call *is* `plugin_run` through the same secured
+  path with an extra policy check on the exposed name; see
+  [Plugin-exposed tools](#plugin-exposed-tools-v140).
 
 **Returns**: `text` containing JSON:
 
@@ -2079,7 +2286,10 @@ placeholders in string arguments. The `plugin_*` tools (above) list, run,
 and diagnose them. Scanning is strictly read-only — no directory is
 created and no file is written — and happens fresh on every `plugin_*`
 call. Duplicate `name`s across files resolve to the first file in lexical
-filename order; later duplicates are skipped.
+filename order; later duplicates are skipped. Since v1.4.0 a manifest may
+also carry a `tool` section that registers the plugin as a first-class
+`tools/list` entry — see
+[Plugin-exposed tools](#plugin-exposed-tools-v140) below.
 
 **Manifest shape**
 
@@ -2122,6 +2332,11 @@ filename order; later duplicates are skipped.
   into plugin execution.
 - Every `${ref}` inside a step's string args must reference a declared
   param.
+- `tool` (optional; `expose_as_tool` alias accepted, v1.4.0) declares a
+  `tools/list` registration — `name` `^[a-z][a-z0-9_]{0,63}$`,
+  `description` ≤256 chars, `params` in the same shape as top-level
+  `params` (merged; a name declared in both is an authoring error). Full
+  rules below.
 
 **Template rules** (`${…}` in `args` string values, at any depth):
 
@@ -2136,6 +2351,81 @@ filename order; later duplicates are skipped.
 - Supplied params not declared by the manifest are **rejected** (strict —
   mirrors `deny_unknown_fields` across the tool surface).
 
+### Plugin-exposed tools (v1.4.0)
+
+A manifest may add an optional `tool` section (`expose_as_tool` is an
+accepted alias spelling) that registers the plugin as a **first-class
+entry in `tools/list`** — a dynamic tool alongside the static catalog:
+
+```json
+{
+  "name": "deploy-notes",
+  "version": "1.0.0",
+  "tool": {
+    "name": "deploy_notes",
+    "description": "Deploy the notes bundle",
+    "params": { "env": { "type": "string", "required": true, "description": "target env" } }
+  },
+  "steps": [
+    { "tool": "type_text", "args": { "text": "${env}" } }
+  ]
+}
+```
+
+Validation and shape:
+
+- `tool.name` uses the tool grammar `^[a-z][a-z0-9_]{0,63}$` and is
+  advertised **verbatim** — no `plugin_` prefix. It must not collide with
+  a catalog tool name (the grammar reaches every catalog name, so the
+  existing collision check keeps them disjoint); two manifests claiming
+  the same tool name resolve to the first loaded, and the later manifest
+  is skipped with a `plugin_reload` diagnostic.
+- `tool.description` is a human-readable string capped at **256 chars**.
+- `tool.params` declares *additional* params in the same shape as
+  top-level `params` (`type` `string` | `number` | `boolean`,
+  `required`, optional `description`); they merge into the manifest's
+  param set, so `${ref}` resolution and `plugin_run` binding treat them
+  identically. A param declared in **both** `params` and `tool.params` is
+  an authoring error (the bindable set can never diverge from the
+  advertised schema).
+- The advertised `inputSchema` is generated from the merged param set:
+  `type: "object"`, one property per param (`type` + optional
+  `description`), a `required` array (omitted when empty), and
+  `additionalProperties: false` — the same shape the static catalog's
+  schemars-generated schemas produce.
+
+Dispatch semantics — an exposed tool is *sugar over `plugin_run`*, never a
+bypass:
+
+- Calling `deploy_notes{env: "prod"}` is exactly
+  `plugin_run{name: "deploy-notes", params: {env: "prod"}}` through the
+  same secured pipeline: `call_tool_secured` policy-checks the tool's
+  **own name** and audits/metrics/history under it; the call's argument
+  object *is* the manifest `params` map; every step then re-enters the
+  full dispatch — per-step consent re-challenge, audit, history, metrics,
+  `-32017 PluginStepError` on a step `isError`, and `-32015` pass-through
+  on a destructive step.
+- **Dual policy gate**: a plugin-exposed tool is advertised and callable
+  iff the caller's role allows `plugin_run` **and** the tool's own name
+  passes the role's allow/deny. A `readonly` role denies them
+  (`-32018 ReadOnlyMode`); an allowlist role that does not name the tool
+  denies `-32019 NotInToolList`; a role that denies `plugin_run` sees none
+  of them. Denials carry `denial_reason` like catalog denials.
+- **Category**: plugin tools are uncatalogued — they inherit
+  `plugin_run`'s category (`admin`). A `--category` filter that excludes
+  `admin` removes them from `tools/list` and gates calls with `-32601`
+  `CategoryDisabled`, same wire shape as catalog tools.
+- **No `tools/list_changed` notification** — the server does not
+  advertise that capability. The registry rescans the manifest dir on
+  every `tools/list`/`tools/call` (the always-fresh model `plugin_list`
+  already uses), so dropping in a manifest registers its tool on the next
+  request and `plugin_reload` needs no cache flush — but clients must
+  re-list themselves after `plugin_reload` or a manifest change; nothing
+  is pushed.
+- History summaries treat an exposed tool like `plugin_run`: step payloads
+  are never persisted — only `plugin=<name> steps=<n>` is recorded (the
+  check is on the result shape, not the dispatch name).
+
 ---
 
 ## Maturity Phases
@@ -2149,13 +2439,17 @@ filename order; later duplicates are skipped.
 | 4 — Enterprise | HTTP auth surface (`uxcp_*` enforcement on `:3010`, fail-closed bind), rate limiting, AES-256-GCM history, replay, metrics; opt-in Sentry via `ULTRANIX_MCP_SENTRY_DSN` (wired at v1.1.0) | `metrics`, `get_action_history`, `replay_action`, `clear_action_history` |
 | 5 — Portability | Non-Hyprland backends (KDE/GNOME via portal+uinput; X11 via `scrot`/`xdotool`/`wmctrl` — shipped at v1.1.0; portal RemoteDesktop→PipeWire capture — v1.1.0) | no new tools — widens where existing ones work |
 | 6 — v1.2.0 breadth wave | Clipboard providers (wl-clipboard/xclip), plugin tool-macros (`<state>/plugins/*.json`), bounded recording, compositor breadth (sway IPC window provider; KDE/GNOME portal routing; `kdotool` window provider on KDE), per-backend cargo features | `screen_record`; `plugin_list`, `plugin_run`, `plugin_reload`; `clipboard_get`, `clipboard_set`, `clipboard_clear` |
+| 7 — v1.4.0 reach wave | Wayfire (`wayfire-ipc`), river (`riverctl`, focused-view-only rung — `window_control` on `"focused"`/`close` + relative deltas), and GNOME Window Calls (`gnome-shell`) window providers; live rolling-window capture; plugin-exposed dynamic tools (manifest `tool` sections); OCI/-bin distribution | `screen_stream`; plugin-exposed tools join `tools/list` dynamically (not catalogued); `window_control` gains `dx,dy`/`dw,dh` delta params |
 
 Tools advertised in `tools/list` always reflect the *currently available*
 providers: a Phase-2 tool on a system without an AT-SPI bus is still listed
 (it is part of the stable surface) but returns `ProviderUnavailable` when
 called. Deployment-time `--category` filters (see
 [API_VERSIONING.md](API_VERSIONING.md#category-filters)) remove tools from the
-listing entirely.
+listing entirely. Since v1.4.0, plugin manifests with a `tool` section can
+add entries to the listing at runtime — the server emits no
+`tools/list_changed` notification, so clients should re-list after
+`plugin_reload` (see [Plugin-exposed tools](#plugin-exposed-tools-v140)).
 
 A second, finer-grained filter was added at v1.3.0: the runtime
 access-control policy (`docs/adr/0010-policy-controls.md`). The server can
