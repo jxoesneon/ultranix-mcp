@@ -80,19 +80,27 @@
 //! handling, options, response mapping, cropping, pixel conversion);
 //! the `#[ignore]`d live test only exercises the name-ownership probe.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
+#[cfg(feature = "pipewire")]
 use std::os::fd::OwnedFd;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+#[cfg(feature = "pipewire")]
+use std::cell::RefCell;
+#[cfg(feature = "pipewire")]
+use std::rc::Rc;
+#[cfg(feature = "pipewire")]
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use atspi::zbus::{self, zvariant};
 use futures_util::StreamExt;
+#[cfg(feature = "pipewire")]
 use pipewire::spa;
+#[cfg(feature = "pipewire")]
 use pipewire::spa::param::video::VideoFormat;
 use serde_json::{Value as JsonValue, json};
 use zvariant::{OwnedObjectPath, OwnedValue, Value};
@@ -114,20 +122,25 @@ pub(crate) const REQUEST_IFACE: &str = "org.freedesktop.portal.Request";
 const SCREENSHOT_IFACE: &str = "org.freedesktop.portal.Screenshot";
 /// `org.freedesktop.portal.RemoteDesktop` interface on
 /// [`PORTAL_DESKTOP_PATH`] — PipeWire frame source when Screenshot is
-/// absent.
+/// absent. Ungated: the portal probe reports it regardless of the
+/// `pipewire` feature.
 const REMOTE_DESKTOP_IFACE: &str = "org.freedesktop.portal.RemoteDesktop";
 /// `org.freedesktop.portal.Session` interface, implemented by the
 /// session object returned from `CreateSession` — used for `Close`.
+#[cfg(feature = "pipewire")]
 const SESSION_IFACE: &str = "org.freedesktop.portal.Session";
 
 /// `SelectSources` `types` bitmask: monitor(1) only.
+#[cfg(feature = "pipewire")]
 const SOURCE_MONITOR: u32 = 1;
 /// `cursor_mode`: hidden(1) — the captured stream composites no cursor.
+#[cfg(feature = "pipewire")]
 const CURSOR_HIDDEN: u32 = 1;
 
 /// Budget for the whole PipeWire grab: `connect_fd` + format
 /// negotiation + first video buffer, iterated on the PipeWire main loop
 /// in ≤50ms slices.
+#[cfg(feature = "pipewire")]
 const PIPEWIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Probe budget: a session bus that cannot answer `NameHasOwner` within
@@ -265,7 +278,11 @@ fn portal_capture_caps() -> Option<PortalCaps> {
                 match xml {
                     Some(xml) => {
                         let caps = caps_from_introspection(&xml);
-                        (caps.screenshot || caps.remote_desktop).then_some(caps)
+                        // RemoteDesktop is only a capture source when the
+                        // `pipewire` feature is compiled in — without it
+                        // a RemoteDesktop-only portal yields no provider.
+                        (caps.screenshot || (cfg!(feature = "pipewire") && caps.remote_desktop))
+                            .then_some(caps)
                     }
                     // Introspection unavailable — assume the historical
                     // Screenshot-only surface rather than probing out.
@@ -493,6 +510,7 @@ impl PortalCapture {
     /// one frame, then `Close`d — no `persist_mode`/`restore_token` is
     /// ever sent, so every capture re-consents through `Start`
     /// (identical policy to `portal_input`).
+    #[cfg(feature = "pipewire")]
     async fn pipewire_screenshot(&self) -> Result<(Vec<u8>, u32, u32)> {
         let conn = self.conn().await?;
         let proxy = portal_proxy(conn, REMOTE_DESKTOP_IFACE).await?;
@@ -558,8 +576,17 @@ impl PortalCapture {
         outcome
     }
 
+    /// `pipewire` feature off: RemoteDesktop is still introspected, but
+    /// the stream cannot be consumed — error honestly rather than
+    /// pretend the capture path exists.
+    #[cfg(not(feature = "pipewire"))]
+    async fn pipewire_screenshot(&self) -> Result<(Vec<u8>, u32, u32)> {
+        bail!("portal Screenshot unavailable and the `pipewire` cargo feature is compiled out")
+    }
+
     /// `org.freedesktop.portal.Session.Close()` — best-effort; the
     /// session object also disappears when our connection drops.
+    #[cfg(feature = "pipewire")]
     async fn close_session(&self, conn: &zbus::Connection, path: &OwnedObjectPath) {
         let r = async {
             let proxy = portal_call(zbus::Proxy::new(
@@ -600,6 +627,7 @@ fn screenshot_options(token: &str) -> Options {
 /// `CreateSession` options: request + session handle tokens only. No
 /// `persist_mode`/`restore_token` — every `Start` re-consents (module
 /// docs; THREAT_MODEL.md §4.2).
+#[cfg(feature = "pipewire")]
 fn create_session_options(handle_token: String, session_token: String) -> Options {
     let mut o = Options::new();
     o.insert("handle_token", Value::new(handle_token));
@@ -608,6 +636,7 @@ fn create_session_options(handle_token: String, session_token: String) -> Option
 }
 
 /// `SelectSources` options: a single monitor source, hidden cursor.
+#[cfg(feature = "pipewire")]
 fn select_sources_options(handle_token: String) -> Options {
     let mut o = Options::new();
     o.insert("handle_token", Value::new(handle_token));
@@ -618,6 +647,7 @@ fn select_sources_options(handle_token: String) -> Options {
 }
 
 /// `Start` options: handle token only.
+#[cfg(feature = "pipewire")]
 fn start_options(handle_token: String) -> Options {
     let mut o = Options::new();
     o.insert("handle_token", Value::new(handle_token));
@@ -626,6 +656,7 @@ fn start_options(handle_token: String) -> Options {
 
 /// `session_handle` from a `CreateSession` response: spec type `s`, but
 /// accept `o` too (some backends return an object path variant).
+#[cfg(feature = "pipewire")]
 fn session_path_from(results: &HashMap<String, OwnedValue>) -> Result<OwnedObjectPath> {
     if let Ok(s) = get_string(results, "session_handle") {
         return OwnedObjectPath::try_from(s).context("session_handle is not an object path");
@@ -640,6 +671,7 @@ fn session_path_from(results: &HashMap<String, OwnedValue>) -> Result<OwnedObjec
 /// PipeWire node ids out of the `aa{sv}` `streams` result of `Start`
 /// (capture needs only the node id; geometry comes from format
 /// negotiation on the stream itself).
+#[cfg(feature = "pipewire")]
 fn stream_node_ids(results: &HashMap<String, OwnedValue>) -> Vec<u32> {
     results
         .get("streams")
@@ -659,6 +691,7 @@ fn stream_node_ids(results: &HashMap<String, OwnedValue>) -> Vec<u32> {
 /// The 32-bit RGB buffer layouts this consumer offers the stream. Any
 /// other negotiated format is an explicit error — never silently wrong
 /// pixels.
+#[cfg(feature = "pipewire")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PixelLayout {
     /// B,G,R,X — swap B/R, alpha forced opaque (X is padding).
@@ -671,6 +704,7 @@ enum PixelLayout {
     Rgba,
 }
 
+#[cfg(feature = "pipewire")]
 impl PixelLayout {
     /// Whether the first and third bytes must swap to reach RGBA.
     fn swap_rb(self) -> bool {
@@ -683,6 +717,7 @@ impl PixelLayout {
 }
 
 /// Map a negotiated `SPA_VIDEO_FORMAT_*` onto a supported layout.
+#[cfg(feature = "pipewire")]
 fn pixel_layout(fmt: VideoFormat) -> Option<PixelLayout> {
     if fmt == VideoFormat::BGRx {
         Some(PixelLayout::Bgrx)
@@ -700,6 +735,7 @@ fn pixel_layout(fmt: VideoFormat) -> Option<PixelLayout> {
 /// Convert one strided 4-byte-per-pixel plane to tightly packed RGBA.
 /// `src` is already offset to the chunk start; `stride` is the chunk's
 /// row stride (0 treated as tightly packed, negative rejected).
+#[cfg(feature = "pipewire")]
 fn convert_frame(
     src: &[u8],
     width: u32,
@@ -747,6 +783,7 @@ fn convert_frame(
 }
 
 /// Tightly packed RGBA → PNG bytes (the [`Frame`] payload).
+#[cfg(feature = "pipewire")]
 fn encode_frame(width: u32, height: u32, rgba: Vec<u8>) -> Result<(Vec<u8>, u32, u32)> {
     let img = image::RgbaImage::from_raw(width, height, rgba)
         .context("pipewire frame size does not match negotiated dimensions")?;
@@ -759,6 +796,7 @@ fn encode_frame(width: u32, height: u32, rgba: Vec<u8>) -> Result<(Vec<u8>, u32,
 
 /// Shared state between the stream listener callbacks (which run inside
 /// `Loop::iterate`) and the loop driver below.
+#[cfg(feature = "pipewire")]
 #[derive(Default)]
 struct PwState {
     /// Negotiated layout + dimensions, set by the `Format` param.
@@ -774,6 +812,7 @@ struct PwState {
 /// Connect to the portal-granted PipeWire fd, negotiate a raw RGB video
 /// format, and copy out the first `MemFd`/`MemPtr` buffer. Blocking;
 /// bounded by [`PIPEWIRE_TIMEOUT`].
+#[cfg(feature = "pipewire")]
 fn pipewire_frame(fd: OwnedFd, node_id: u32) -> Result<(Vec<u8>, u32, u32)> {
     use pipewire::context::ContextBox;
     use pipewire::keys::{MEDIA_CATEGORY, MEDIA_ROLE, MEDIA_TYPE};
@@ -1453,6 +1492,7 @@ mod tests {
     // ---- RemoteDesktop session helpers ---------------------------------
 
     #[test]
+    #[cfg(feature = "pipewire")]
     fn remote_desktop_options_carry_no_persist_keys() {
         let o = create_session_options("h".into(), "s".into());
         assert!(matches!(o["handle_token"], Value::Str(_)));
@@ -1473,6 +1513,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "pipewire")]
     fn session_path_from_s_and_o() {
         let mut r: HashMap<String, OwnedValue> = HashMap::new();
         r.insert(
@@ -1503,6 +1544,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "pipewire")]
     fn stream_node_ids_reads_aa_sv() {
         let mut s: HashMap<String, OwnedValue> = HashMap::new();
         s.insert("node_id".into(), owned(55u32));
@@ -1530,6 +1572,7 @@ mod tests {
     // ---- PipeWire pixel conversion --------------------------------------
 
     #[test]
+    #[cfg(feature = "pipewire")]
     fn pixel_layout_accepts_only_the_four_rgb32_formats() {
         assert_eq!(pixel_layout(VideoFormat::BGRx), Some(PixelLayout::Bgrx));
         assert_eq!(pixel_layout(VideoFormat::BGRA), Some(PixelLayout::Bgra));
@@ -1541,6 +1584,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "pipewire")]
     fn convert_frame_bgra_swaps_rb_and_keeps_alpha() {
         // 2x1 BGRA: [B,G,R,A] pixels (10,20,30,40) and (50,60,70,80).
         let src = [10, 20, 30, 40, 50, 60, 70, 80];
@@ -1549,6 +1593,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "pipewire")]
     fn convert_frame_bgrx_forces_opaque_alpha() {
         let src = [10, 20, 30, 0];
         let out = convert_frame(&src, 1, 1, 4, PixelLayout::Bgrx).unwrap();
@@ -1556,6 +1601,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "pipewire")]
     fn convert_frame_rgba_passthrough_and_rgbx_alpha() {
         let src = [1, 2, 3, 4];
         assert_eq!(
@@ -1569,6 +1615,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "pipewire")]
     fn convert_frame_honors_padded_stride() {
         // 2x2 BGRA with stride 12 (4 bytes padding per row).
         let src = [
@@ -1589,6 +1636,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "pipewire")]
     fn convert_frame_rejects_bad_geometry() {
         let src = [0u8; 64];
         assert!(convert_frame(&src, 0, 1, 4, PixelLayout::Rgba).is_err());
@@ -1602,6 +1650,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "pipewire")]
     fn encode_frame_produces_decodable_png() {
         let rgba = vec![7u8, 8, 9, 255, 10, 11, 12, 255];
         let (png, w, h) = encode_frame(2, 1, rgba).unwrap();
@@ -1636,6 +1685,7 @@ mod tests {
     /// Full RemoteDesktop + PipeWire capture against a live desktop.
     /// `Start` raises the consent dialog — a human must answer.
     #[tokio::test]
+    #[cfg(feature = "pipewire")]
     #[ignore = "raises a GUI consent dialog; set ULTRANIX_MCP_LIVE_TESTS=1"]
     async fn live_pipewire_capture() {
         if std::env::var("ULTRANIX_MCP_LIVE_TESTS").ok().as_deref() != Some("1") {

@@ -5,6 +5,161 @@ All notable changes to ultranix-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-09-15
+
+The breadth wave: the remaining post-v1 backlog items with a real
+implementation path — clipboard tools, plugin tool-macros, bounded screen
+recording, wider compositor detection, the per-backend cargo-feature
+split, and the framed history format — landed together. Tool surface grows
+from 32 to **39 tools in 6 categories** (additive MINOR changes; no
+schema or response shape changed).
+
+### Added
+
+- **Clipboard category (3 tools)** — `clipboard_get`, `clipboard_set`,
+  `clipboard_clear` over a new `ClipboardProvider` trait
+  (`src/traits.rs`, `src/providers/clipboard.rs`, `src/tools/clipboard.rs`).
+  `WlClipboard` drives `wl-copy`/`wl-paste` on Wayland (requires
+  `WAYLAND_DISPLAY` + both helpers pinned at startup); `XclipClipboard`
+  drives `xclip` (+ `xsel` for `clear`) on X11 and serves as the XWayland
+  rung on Wayland (requires `DISPLAY`). Reads are text-first — binary
+  MIME payloads never cross the provider boundary; `mime: "list"`
+  enumerates offered types; `text/*` and the X11 text atoms
+  (`UTF8_STRING`, `STRING`, `TEXT`, `COMPOUND_TEXT`) are accepted.
+  `clipboard_set` is capped at 1 MiB; writes feed the payload over stdin,
+  never argv. `clipboard_set`/`clipboard_clear` joined the destructive
+  consent class (`-32015 ConsentRequired`); `clipboard_get` is ungated.
+  Backend names: `"wl-clipboard"`, `"xclip"`.
+- **Plugin tool-macros (3 admin tools)** — `plugin_list`, `plugin_run`,
+  `plugin_reload` over declarative manifests in
+  `<state-root>/plugins/*.json` (`src/plugins.rs`,
+  `src/tools/plugin.rs`). A plugin is a macro, not code: an ordered list
+  of catalog-tool calls with `${param}` templating (`$$` escapes a
+  literal `$`; an exact-`${name}` arg substitutes the typed value).
+  Manifest validation: `name` `^[a-z][a-z0-9-]{0,63}$` and no catalog
+  collision; semver-ish `version`; typed params
+  (`string`/`number`/`boolean`, ≤64); 1–32 steps; `step.tool` must be a
+  real catalog tool — `plugin_*` steps are rejected so plugins cannot
+  compose into unbounded recursion. `plugin_run` binds params strictly
+  (undeclared keys rejected) and re-enters the secured dispatch path per
+  step — consent re-challenge, audit, history, and metrics apply per
+  step; a step's `-32015` passes through annotated with
+  `plugin`/`step`/`step_tool`. New error code `-32017 PluginStepError`
+  for step-level `isError` results. Scanning is fresh on every call;
+  `plugin_reload` surfaces loaded-vs-skipped diagnostics.
+- **`screen_record` (vision)** — bounded screen recording
+  (`src/tools/record.rs`): one PNG frame per `interval_ms`
+  (default 250, 50–5000) for up to `duration_ms` (100–30000), optional
+  `region`/`display` scoping mirroring `screenshot`. Hard caps: 600
+  frames and 512 MiB written — the frame that would cross the byte cap is
+  dropped and the run ends `truncated: true`. Frames plus a
+  `manifest.json` (schema 1: backend name, args, per-frame
+  file/bytes/geometry/timestamp, `stop_reason`) land in a fresh
+  `rec-<ulid>` `0700` dir under the captures root (`/tmp` fallback) and
+  are kept after the call. Runs to its bound — no mid-record
+  cancellation; not consent-gated (nothing caller-chosen is written).
+- **`SwayWindow` provider** — `WindowProvider` over sway's i3-flavoured
+  IPC on `$SWAYSOCK` (`src/providers/sway_window.rs`): `GET_TREE` for
+  list/active/geometry, `RUN_COMMAND` scoped to `[con_id=N]` criteria
+  with a closed command set (`focus`, `kill`, `move scratchpad`,
+  `move absolute position`, `resize set|grow|shrink` — `exec` is
+  unreachable). `minimize` honestly maps to the scratchpad; move/resize
+  are floating-window ops (no-op on tiled nodes). Backend name
+  `"sway-ipc"`.
+- **`KdotoolWindow` provider** — `WindowProvider` over the `kdotool` CLI
+  (`src/providers/kdotool_window.rs`), the KDE rung of the window ladder
+  on Wayland *and* X11 Plasma sessions (it drives KWin through its
+  scripting API either way). `search ""` lists every managed window; a
+  single chained spawn per window gathers title/class/geometry/pid/
+  desktop, best-effort like `x11_window`'s enrichment. Window ids are
+  KWin `internalId`s (`{uuid}`, never XIDs) and are shape-validated
+  before reuse. Dispatch is a closed set (`windowactivate`,
+  `windowmove`/`--relative`, `windowsize`, `windowminimize`,
+  `windowclose`) — `kwinscript`'s arbitrary-JS primitive is unreachable.
+  `floating`/`fullscreen`/`monitor` report `None` (no kdotool readout);
+  `onAllDesktops` windows report `workspace = -1`. Constructs only on a
+  KDE session marker + the pinned binary. Backend name `"kdotool"`.
+- **Compositor breadth** — `SessionKind` now resolves `Hyprland`, `Sway`,
+  `Wayfire`, `River`, `Kde`, `Gnome`, `Other`
+  (`src/backend/detect.rs`), detected signature-first:
+  `HYPRLAND_INSTANCE_SIGNATURE` → `SWAYSOCK`/`sway` →
+  `WAYFIRE_SOCKET`/`Wayfire` → `river` → `KDE_SESSION_VERSION`/`KDE`/
+  `Plasma` → `GNOME`. The wlroots family (Hyprland/sway/Wayfire/river)
+  keeps the `wlr-*` capture/input/overlay rungs; KDE and GNOME Wayland
+  route to the portal backends they actually implement (wlr probing can
+  never succeed there); X11 keeps `Scrot`/`Xdotool`/`Wmctrl`. Window
+  ladders: `Hyprctl` (Hyprland), `SwayIpc` (sway), `Kdotool` (KDE —
+  `KdotoolWindow`, driving KWin on Wayland and X11 alike; falls through
+  when the session marker or pinned binary is absent), `Wmctrl`
+  (GNOME/Other X11). Wayfire, river, and GNOME-Wayland honestly get an
+  empty window ladder.
+- **Per-backend Cargo features** — `default = ["wayland", "uinput",
+  "a11y", "pipewire", "vision", "browser", "sentry"]`; each feature gates
+  its provider modules, so `--no-default-features` builds a lean core
+  (mock + subprocess providers) that compiles clean with the gated
+  backends honestly unregistered (`ProviderUnavailable`, not build
+  failure). `vision-rocm` joins `vision-cuda`/`vision-openvino` on the EP
+  ladder (all imply `ort/load-dynamic`; `ORT_DYLIB_PATH` required).
+- **Nix flake** — `flake.nix` at the repo root: `packages.default` via
+  `rustPlatform.buildRustPackage` (pkg-config + clang native inputs,
+  pipewire/wayland/libxkbcommon build inputs, `LIBCLANG_PATH` +
+  `ORT_LIB_LOCATION` pinned for the sandboxed build), `devShells.default`
+  with the Rust toolchain + session helpers, `apps.default`.
+  **Unverified** — nix is not in the maintainer toolchain; the flake was
+  written by review and has not been evaluated. Contributions welcome.
+- **History format v2** — `history.json` is now a framed append log
+  (`src/security/history.rs`): 8-byte `UNXHIST2` magic + one
+  AES-256-GCM-sealed frame per record, so `record()` appends in O(1)
+  instead of rewriting the whole blob. Full rewrites happen only for
+  FIFO-cap eviction and the automatic v1→v2 migration (v1 files are
+  detected by the absent magic, read normally, and rewritten on next
+  append). Encryption, redaction, and cap semantics are unchanged.
+- **AT-SPI element-scan cache** — `find_element`/`find_elements`/
+  `invoke_element`/`wait_for_ui_element` now evaluate their query against
+  a cached whole-desktop `TreeScan` (300 ms TTL measured from scan
+  completion) instead of re-walking the D-Bus tree per call —
+  `wait_for_ui_element`'s 250 ms polls share one scan per TTL window
+  rather than rescanning every poll. Staleness is bounded by TTL + one
+  poll (~550 ms + scan time); `path:/i/j` index queries bypass the cache
+  (direct navigation is cheaper and stays exact).
+- **`wl-copy`, `wl-paste`, `xclip`, `xsel`, `kdotool`** joined the
+  startup pin set as provider-internal helpers — like `xrandr`/`xprop`
+  they have no `validate_command` arm, so `system_command` still cannot
+  invoke them.
+
+### Changed
+
+- Sentry wiring is feature-gated (`sentry` cargo feature) — building
+  without it compiles out the DSN parsing, the `sentry-tracing` layer,
+  and the panic guard entirely.
+- Portal capture probes honour the `pipewire` feature: a RemoteDesktop-
+  only portal no longer counts as a capture source when the feature is
+  compiled out.
+
+### Notes on verification
+
+- Clipboard, sway IPC, plugin, and `screen_record` paths are implemented
+  and covered by hermetic tests (mock providers, fake IPC responders,
+  tempdir stores); live-session smoke evidence remains Hyprland/wlr-only
+  from earlier waves.
+- `toolSurfaceVersion` still reports `"2.0"` — the wave is purely
+  additive (new tools, new category, new error code); no existing name,
+  schema, or response shape changed.
+
+### Still deferred (honest notes)
+
+- GNOME window management: no provider module exists (gnome-shell's only
+  window channel is an arbitrary-JS primitive we do not use) — window
+  tools report `ProviderUnavailable` on GNOME. KDE is covered:
+  `KdotoolWindow` drives KWin via the pinned `kdotool` helper on Wayland
+  and X11 alike.
+- Wayfire/river window management and GNOME-Wayland window/overlay rungs:
+  no usable compositor IPC — intentionally empty ladders.
+- Live streaming capture: `screen_record` is the bounded version; true
+  continuous streaming remains open.
+- Dynamic third-party tool registration: plugins are manifest macros over
+  the existing catalog, not new tool schemas.
+
 ## [1.1.0] — 2026-09-15
 
 The post-v1 backlog wave: every item the v1.0.0 docs flagged as "planned /
@@ -272,6 +427,10 @@ drift before tagging.
 
 ## Version History
 
+- **1.2.0**: Breadth wave — clipboard category, plugin tool-macros,
+  `screen_record`, sway/Wayfire/river/KDE/GNOME detection + sway window
+  provider, per-backend cargo features (incl. `vision-rocm`), Nix flake
+  (unverified), history v2 framed appends, AT-SPI scan cache. 39 tools.
 - **1.1.0**: Post-v1 wave — layer-shell overlay, X11-native providers,
   PipeWire portal capture, Sentry, OCR cache, 4 new metrics.
 - **1.0.0**: First stable release — all six delivery phases

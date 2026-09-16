@@ -1,5 +1,5 @@
 //! `tools/call` dispatch against `Providers::all_mocks()`: every one of the
-//! 32 tools accepts schema-valid arguments (deterministic success or an
+//! 39 tools accepts schema-valid arguments (deterministic success or an
 //! isError-free result) and rejects schema-invalid arguments with
 //! `-32602 InvalidParams`.
 
@@ -23,10 +23,20 @@ const COMMAND_NOT_WHITELISTED: i32 = -32003;
 /// not-found-by-design must succeed outright with all-mock providers.
 #[tokio::test]
 async fn all_tools_valid_args_succeed_with_mocks() {
+    // `screen_record` writes a real `rec-<ulid>` dir under the ambient
+    // captures root — the `#[cfg(test)]` TEST_RECORDING_BASE seam does
+    // not exist in the lib build integration tests link. Redirect the
+    // state root into a tempdir for the whole loop (serialized via
+    // env_lock: the environment is process-global).
+    let _env = common::env_lock().await;
+    let state_tmp = tempfile::tempdir().unwrap();
+    let _state = common::ScopedStateDir::set(state_tmp.path());
     let providers = Providers::all_mocks();
     // invoke_element (mock tree has no match → -32016 is legal),
     // system_command / replay_action / clear_action_history (consent gate),
-    // get_action_history (history store may not exist yet), and
+    // get_action_history (history store may not exist yet),
+    // plugin_run (the fixture names a plugin that does not exist →
+    // InvalidParams is legal), and
     // screen_highlight (MockOverlay no-ops; the -32010 path is covered
     // in dispatch_coverage) are
     // exercised by dedicated tests below / in dispatch_coverage.
@@ -36,6 +46,7 @@ async fn all_tools_valid_args_succeed_with_mocks() {
         "replay_action",
         "clear_action_history",
         "get_action_history",
+        "plugin_run",
         "screen_highlight",
     ];
     for (name, _cat) in TOOLS {
@@ -46,7 +57,7 @@ async fn all_tools_valid_args_succeed_with_mocks() {
         assert_success(&res, name);
     }
     // The flexible list must not drift from the catalog.
-    assert_eq!(ALL_TOOL_NAMES.len(), 32);
+    assert_eq!(ALL_TOOL_NAMES.len(), 39);
 }
 
 /// With a mock AT-SPI tree `invoke_element` finds no match: per spec a
@@ -264,6 +275,12 @@ async fn unknown_tool_name_is_method_not_found() {
 /// answer everywhere.)
 #[tokio::test]
 async fn valid_calls_never_report_provider_unavailable() {
+    // Same screen_record hermeticity seam as
+    // `all_tools_valid_args_succeed_with_mocks` — this loop dispatches
+    // it too.
+    let _env = common::env_lock().await;
+    let state_tmp = tempfile::tempdir().unwrap();
+    let _state = common::ScopedStateDir::set(state_tmp.path());
     let providers = Providers::all_mocks();
     for (name, _cat) in TOOLS {
         if *name == "screen_highlight" {

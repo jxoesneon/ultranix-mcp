@@ -237,7 +237,7 @@ const ACTIVE: &str = r#"{
 fn unique_his() -> String {
     static SEQ: AtomicUsize = AtomicUsize::new(0);
     format!(
-        "ultranix-hermetic-{}-{}",
+        "ultranix_hermetic_{}_{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     )

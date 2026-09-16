@@ -27,6 +27,21 @@
 //! back to a bounded whole-desktop scan. Stateless, works without event
 //! registration; bounded by [`MAX_SEARCH_NODES`].
 //!
+//! ## Element-scan cache
+//!
+//! `find_element` / `find_elements` / `invoke_element` do not walk the
+//! D-Bus tree per call: [`AtspiUi::tree_scan`] serializes the whole
+//! search space (apps in search order, preorder, [`MAX_SEARCH_NODES`]
+//! budget) into a plain-data [`TreeScan`] and caches it for
+//! [`SCAN_CACHE_TTL`]. Each call evaluates its own `Query` predicate
+//! against the snapshot — different queries inside the TTL window share
+//! one walk. The snapshot stores names/roles/states/bounds/object-paths
+//! (never live proxies), so a stale entry degrades to a bounded-stale
+//! answer rather than a dead `ObjectRef`; `wait_for_ui_element`'s
+//! 250 ms polls observe real changes within at most TTL + one poll
+//! (~550 ms + scan time). `path:/i/j` index queries bypass the cache —
+//! direct navigation is cheaper than a scan and stays exact.
+//!
 //! ## Safety
 //!
 //! `invoke_element` issues a real `org.a11y.atspi.Action::DoAction` call —
@@ -36,7 +51,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
@@ -44,8 +60,9 @@ use atspi::proxy::accessible::AccessibleProxy;
 use atspi::proxy::action::ActionProxy;
 use atspi::proxy::application::ApplicationProxy;
 use atspi::proxy::component::ComponentProxy;
-use atspi::zbus::{self, names::BusName, proxy::CacheProperties};
-use atspi::{AccessibilityConnection, CoordType, ObjectRefOwned, Role, State};
+use atspi::zbus::zvariant::ObjectPath;
+use atspi::zbus::{self, names::BusName, names::UniqueName, proxy::CacheProperties};
+use atspi::{AccessibilityConnection, CoordType, ObjectRef, ObjectRefOwned, Role, State};
 use futures_util::future::join_all;
 use serde_json::{Map, Value, json};
 
@@ -67,6 +84,18 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// failed call (`None`/`Err`/defaulted field), so a timeout is just one
 /// more failure shape.
 const DBUS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Freshness window of the element-scan cache behind `find_element` /
+/// `find_elements` / `invoke_element` — see [`AtspiUi::scan_cache`].
+/// Sized just over one `wait_for_ui_element` poll interval (250 ms,
+/// measured from scan completion): the poll immediately after a scan
+/// reuses it, the next one rescans — so a sustained wait performs one
+/// full-tree walk per ~two polls instead of one per poll, and any
+/// caller arriving more than one poll cycle out still gets a fresh
+/// walk. Worst-case lag before `wait_for_ui_element` observes a real
+/// UI change is bounded by TTL + one poll interval (~550 ms plus one
+/// scan duration) — the documented bounded-staleness contract.
+const SCAN_CACHE_TTL: Duration = Duration::from_millis(300);
 
 /// Run a D-Bus future under [`DBUS_TIMEOUT`]; elapsed surfaces as an
 /// error. Covers `zbus::Error`- and `AtspiError`-returning calls alike.
@@ -94,6 +123,20 @@ where
 /// dropped); the real connection is established on first use.
 pub struct AtspiUi {
     conn: tokio::sync::OnceCell<AccessibilityConnection>,
+    /// Bounded-staleness element-scan cache: `(completion time, scan)`
+    /// of the last successful full-tree walk behind
+    /// [`Self::find_match`]/[`Self::find_matches`]. The cached unit is
+    /// the *scan*, not the query — every `Query` predicate is evaluated
+    /// against the stored snapshot per call, so different queries
+    /// inside [`SCAN_CACHE_TTL`] share one D-Bus walk. Entries are pure
+    /// data (names/roles/states/bounds/object-paths — never live
+    /// proxies), so a stale entry can mis-report for at most one TTL
+    /// but can never poison a poll with a dead `ObjectRef`. A `std`
+    /// mutex suffices: the guard is never held across `.await`, and
+    /// concurrent misses may simply scan twice (same result, wasted
+    /// work — preferable to serializing all element queries on one
+    /// in-flight walk).
+    scan_cache: Mutex<Option<(Instant, Arc<TreeScan>)>>,
 }
 
 /// Parsed `find_element`/`invoke_element` query — see module docs.
@@ -182,6 +225,145 @@ impl Node {
     }
 }
 
+/// Query-independent snapshot of an element search: the desktop's
+/// application trees in *search order* (active-window owner first, as
+/// [`AtspiUi::ordered_apps`] arranges), each serialized preorder below
+/// its root, bounded by [`MAX_SEARCH_NODES`] during the walk. This is
+/// the cacheable unit — the raw scan every `Query` kind evaluates
+/// against — so any mix of queries inside [`SCAN_CACHE_TTL`] shares
+/// the one walk it cost.
+#[derive(Debug, Default)]
+struct TreeScan {
+    apps: Vec<ScannedNode>,
+}
+
+impl TreeScan {
+    /// Preorder DFS across the app trees in search order; first node
+    /// satisfying `query` wins — identical traversal to the retired
+    /// live-walk `search_node`.
+    fn first_match(&self, query: &Query) -> Option<&ScannedNode> {
+        // Stack-based preorder: apps pushed back-to-front so index 0
+        // pops first; each node's children likewise.
+        let mut stack: Vec<&ScannedNode> = self.apps.iter().rev().collect();
+        while let Some(node) = stack.pop() {
+            if node.matches(query) {
+                return Some(node);
+            }
+            stack.extend(node.children.iter().rev());
+        }
+        None
+    }
+
+    /// Preorder matches, up to `limit` — identical output order to the
+    /// retired live-walk `search_node_all`.
+    fn matches(&self, query: &Query, limit: usize) -> Vec<&ScannedNode> {
+        let mut out = Vec::new();
+        let mut stack: Vec<&ScannedNode> = self.apps.iter().rev().collect();
+        while let Some(node) = stack.pop() {
+            if out.len() >= limit {
+                break;
+            }
+            if node.matches(query) {
+                out.push(node);
+            }
+            stack.extend(node.children.iter().rev());
+        }
+        out
+    }
+}
+
+/// One accessible node as plain serializable data — the cached form of
+/// what the D-Bus walk harvested. Carries every field a `Query` kind
+/// can evaluate (name/role/description/object-path) plus the fields
+/// `ElementMatch` reports (states/bounds) and the `(bus name, object
+/// path)` identity needed to rebuild an `ObjectRefOwned` for live
+/// follow-up calls (`get_extents`, `do_action`) — so nothing in the
+/// cache is a proxy that can die underneath a caller.
+#[derive(Debug, Clone, Default)]
+struct ScannedNode {
+    name: String,
+    /// `None` when `get_role` failed at scan time — role-bearing
+    /// queries then miss this node exactly like the live walk's
+    /// `unwrap_or(false)`; `"unknown"` stays an output-only default.
+    role: Option<String>,
+    description: String,
+    states: Vec<String>,
+    bounds: Option<Rect>,
+    /// Unique bus name owning the accessible (e.g. `:1.42`); empty when
+    /// the proxy yielded no ref — such nodes can still match attribute
+    /// queries but resolve to "not found" downstream, mirroring the
+    /// live walk's `object_ref` failure path.
+    bus_name: String,
+    /// D-Bus object path of the accessible — also the value `path:`
+    /// (non-numeric) queries match against.
+    object_path: String,
+    children: Vec<ScannedNode>,
+}
+
+impl ScannedNode {
+    /// Does this node's scanned metadata satisfy `query`? Predicate
+    /// identical to the retired live-fetch `AtspiUi::node_matches`.
+    fn matches(&self, query: &Query) -> bool {
+        attrs_match(
+            query,
+            &self.name,
+            &self.description,
+            self.role.as_deref(),
+            &self.object_path,
+        )
+    }
+
+    /// Output shape of a `find_elements` hit — the same `Node` the live
+    /// walk produced via `node_meta` (children/truncated stay unset:
+    /// matches were always serialized leaf-shaped).
+    fn to_node(&self) -> Node {
+        Node {
+            name: self.name.clone(),
+            role: self.role.clone().unwrap_or_else(|| "unknown".into()),
+            description: self.description.clone(),
+            states: self.states.clone(),
+            bounds: self.bounds,
+            children: Vec::new(),
+            truncated: false,
+        }
+    }
+}
+
+/// Does node metadata satisfy `query`? Pure predicate over the
+/// serialized fields — the scan-cache evaluator and the unit-test
+/// shim `query_matches` share this so the matching contract is
+/// verified without a live bus. `role: None` reproduces the live
+/// walk's failed-`get_role` miss (its `unwrap_or(false)`).
+fn attrs_match(
+    query: &Query,
+    name: &str,
+    description: &str,
+    role: Option<&str>,
+    object_path: &str,
+) -> bool {
+    match query {
+        Query::Any(v) => {
+            contains_ci(name, v)
+                || contains_ci(description, v)
+                || role.is_some_and(|r| norm(r).contains(&norm(v)))
+        }
+        Query::Role(v) => role.is_some_and(|r| norm(r).contains(&norm(v))),
+        Query::Name(v) => contains_ci(name, v),
+        Query::Description(v) => contains_ci(description, v),
+        Query::ObjectPath(v) => object_path_matches(object_path, v),
+        Query::IndexPath(_) => false,
+    }
+}
+
+/// Cache-freshness predicate: a scan completed at `taken` is reusable
+/// until `now` reaches [`SCAN_CACHE_TTL`]. Pure — the unit tests drive
+/// hit/miss/expiry without a bus. `saturating_duration_since` maps a
+/// timestamp in `now`'s future to age zero (fresh) rather than
+/// panicking — still bounded, expiring once real time catches up.
+fn scan_fresh(taken: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(taken) < SCAN_CACHE_TTL
+}
+
 type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 fn bounds_json(b: Rect) -> Value {
@@ -265,20 +447,12 @@ fn parse_path_query(value: &str) -> Result<Query> {
     Ok(Query::ObjectPath(value.into()))
 }
 
-/// Does a node with these attributes satisfy `query`? Pure predicate
-/// mirroring `AtspiUi::node_matches` — exercised by the unit tests so the
-/// matching contract is verified without a live bus.
+/// Does a node with these attributes satisfy `query`? Test shim over
+/// [`attrs_match`] — exercised by the unit tests so the matching
+/// contract is verified without a live bus.
 #[cfg(test)]
 fn query_matches(query: &Query, name: &str, description: &str, role: &str) -> bool {
-    match query {
-        Query::Any(v) => {
-            contains_ci(name, v) || contains_ci(description, v) || norm(role).contains(&norm(v))
-        }
-        Query::Role(v) => norm(role).contains(&norm(v)),
-        Query::Name(v) => contains_ci(name, v),
-        Query::Description(v) => contains_ci(description, v),
-        Query::ObjectPath(_) | Query::IndexPath(_) => false,
-    }
+    attrs_match(query, name, description, Some(role), "")
 }
 
 /// Resolve the requested `action` name to a `DoAction` index over the
@@ -352,6 +526,7 @@ impl AtspiUi {
         .flatten()
         .map(|()| Self {
             conn: tokio::sync::OnceCell::new(),
+            scan_cache: Mutex::new(None),
         })
     }
 
@@ -604,66 +779,133 @@ impl AtspiUi {
         Ok(apps)
     }
 
-    /// Does `acc` satisfy `query`? Fetches only the fields the query kind
-    /// needs (a `role:` query costs one D-Bus call, not three).
-    async fn node_matches(&self, acc: &AccessibleProxy<'_>, query: &Query) -> bool {
-        match query {
-            Query::Role(v) => dbus(acc.get_role())
-                .await
-                .map(|r| norm(&role_kebab(r)).contains(&norm(v)))
-                .unwrap_or(false),
-            Query::Name(v) => dbus(acc.name())
-                .await
-                .map(|n| contains_ci(&n, v))
-                .unwrap_or(false),
-            Query::Description(v) => dbus(acc.description())
-                .await
-                .map(|d| contains_ci(&d, v))
-                .unwrap_or(false),
-            Query::ObjectPath(v) => object_path_matches(acc.inner().path().as_str(), v),
-            Query::IndexPath(_) => false,
-            Query::Any(v) => {
-                let name = dbus(acc.name()).await.unwrap_or_default();
-                if contains_ci(&name, v) {
-                    return true;
-                }
-                let desc = dbus(acc.description()).await.unwrap_or_default();
-                if contains_ci(&desc, v) {
-                    return true;
-                }
-                dbus(acc.get_role())
-                    .await
-                    .map(|r| norm(&role_kebab(r)).contains(&norm(v)))
-                    .unwrap_or(false)
-            }
+    // ---- element-scan cache --------------------------------------------
+
+    /// The cached scan if it is still within [`SCAN_CACHE_TTL`].
+    /// Expired/absent entries yield `None` — the caller walks the bus.
+    fn cached_scan(&self) -> Option<Arc<TreeScan>> {
+        let guard = self.scan_cache.lock().expect("scan cache poisoned");
+        match guard.as_ref() {
+            Some((taken, scan)) if scan_fresh(*taken, Instant::now()) => Some(scan.clone()),
+            _ => None,
         }
     }
 
-    /// Preorder DFS over `acc`'s subtree; returns the first match's
-    /// `ObjectRefOwned` (name + path, enough to rebuild any proxy).
-    fn search_node<'a>(
+    /// The element scan behind `find_match`/`find_matches`: reuse the
+    /// cached snapshot while fresh, else walk the live tree and cache
+    /// the result keyed on *nothing* — the scan is the unit, so the
+    /// next [`SCAN_CACHE_TTL`]-window of queries of any shape shares
+    /// it. Only successful walks populate the cache: a failed scan is
+    /// retried on the next call rather than caching an empty/error
+    /// state.
+    async fn tree_scan(&self) -> Result<Arc<TreeScan>> {
+        if let Some(scan) = self.cached_scan() {
+            return Ok(scan);
+        }
+        let scan = Arc::new(self.scan_fresh().await?);
+        *self.scan_cache.lock().expect("scan cache poisoned") =
+            Some((Instant::now(), scan.clone()));
+        Ok(scan)
+    }
+
+    /// Live half of [`Self::tree_scan`]: applications in search order,
+    /// each serialized preorder under one shared [`MAX_SEARCH_NODES`]
+    /// budget — the same node set (and truncation point) the retired
+    /// per-query live walk visited.
+    async fn scan_fresh(&self) -> Result<TreeScan> {
+        let mut budget = Budget::new(MAX_SEARCH_NODES);
+        let mut apps = Vec::new();
+        for app_ref in self.ordered_apps().await? {
+            let Some(app) = self.accessible_at(&app_ref).await else {
+                continue;
+            };
+            match self.scan_node(&app, &mut budget).await {
+                Some(node) => apps.push(node),
+                None => break,
+            }
+            if budget.visited >= budget.limit {
+                break;
+            }
+        }
+        Ok(TreeScan { apps })
+    }
+
+    /// Preorder DFS over `acc`'s subtree harvesting one [`ScannedNode`]
+    /// per accessible; `None` once the node budget is exhausted.
+    fn scan_node<'a>(
         &'a self,
         acc: &'a AccessibleProxy<'a>,
-        query: &'a Query,
         budget: &'a mut Budget,
-    ) -> BoxFut<'a, Option<ObjectRefOwned>> {
+    ) -> BoxFut<'a, Option<ScannedNode>> {
         Box::pin(async move {
             if !budget.take() {
                 return None;
             }
-            if self.node_matches(acc, query).await {
-                return Self::object_ref(acc);
-            }
+            let mut node = self.scanned_meta(acc).await;
             for child in self.children_of(acc).await {
                 if budget.visited >= budget.limit {
                     break;
                 }
-                if let Some(hit) = self.search_node(&child, query, budget).await {
-                    return Some(hit);
+                match self.scan_node(&child, budget).await {
+                    Some(n) => node.children.push(n),
+                    None => break,
                 }
             }
-            None
+            Some(node)
         })
+    }
+
+    /// Scan-time metadata harvest: `node_meta`'s fetch kept faithful —
+    /// except `role`, which stays `Option` so a failed `get_role`
+    /// reproduces the live matcher's miss — plus the node's
+    /// `(bus name, object path)` identity for later ref rebuilds.
+    async fn scanned_meta(&self, acc: &AccessibleProxy<'_>) -> ScannedNode {
+        let obj = Self::object_ref(acc);
+        let bounds_fut = async {
+            match obj {
+                Some(ref o) => self.extents_at(o).await,
+                None => None,
+            }
+        };
+        let (bounds, name, role, description, states) = tokio::join!(
+            bounds_fut,
+            dbus(acc.name()),
+            dbus(acc.get_role()),
+            dbus(acc.description()),
+            dbus(acc.get_state()),
+        );
+        let (bus_name, object_path) = obj
+            .as_ref()
+            .map(|o| {
+                (
+                    o.name_as_str().unwrap_or_default().to_owned(),
+                    o.path_as_str().to_owned(),
+                )
+            })
+            .unwrap_or_default();
+        ScannedNode {
+            name: name.unwrap_or_default(),
+            role: role.ok().map(role_kebab),
+            description: description.unwrap_or_default(),
+            states: states
+                .map(|ss| ss.iter().map(state_name).collect())
+                .unwrap_or_default(),
+            bounds,
+            bus_name,
+            object_path,
+            children: Vec::new(),
+        }
+    }
+
+    /// Rebuild an `ObjectRefOwned` from a scanned node's stored
+    /// identity — enough to rebuild any proxy for live follow-up calls.
+    /// `None` when the node carried no usable ref (the strings came
+    /// from the bus, so revalidation failure is purely defensive).
+    fn scanned_ref(node: &ScannedNode) -> Option<ObjectRefOwned> {
+        // Owned `String` conversions so the rebuilt ref is `'static`.
+        let name = UniqueName::try_from(node.bus_name.clone()).ok()?;
+        let path = ObjectPath::try_from(node.object_path.clone()).ok()?;
+        Some(ObjectRef::new_owned(name, path))
     }
 
     /// Navigate a `path:/i/j/…` index path from the desktop root.
@@ -688,57 +930,26 @@ impl AtspiUi {
     }
 
     /// First element matching `query`, searched across applications
-    /// (active-window owner first). `None` = not found.
+    /// (active-window owner first). `None` = not found. Runs over the
+    /// bounded-staleness [`Self::tree_scan`]; `path:/i/j` index queries
+    /// keep their direct navigation (cheap, and precise — index paths
+    /// go stale faster than attributes).
     async fn find_match(&self, query: &Query) -> Result<Option<ObjectRefOwned>> {
         if let Query::IndexPath(indices) = query {
             return self.navigate_index_path(indices).await;
         }
-
-        let mut budget = Budget::new(MAX_SEARCH_NODES);
-        for app_ref in self.ordered_apps().await? {
-            let Some(app) = self.accessible_at(&app_ref).await else {
-                continue;
-            };
-            if let Some(hit) = self.search_node(&app, query, &mut budget).await {
-                return Ok(Some(hit));
-            }
-        }
-        Ok(None)
-    }
-
-    /// Multi-match variant of [`Self::search_node`]: preorder DFS
-    /// collecting up to `limit` matches (with metadata) into `out`.
-    fn search_node_all<'a>(
-        &'a self,
-        acc: &'a AccessibleProxy<'a>,
-        query: &'a Query,
-        budget: &'a mut Budget,
-        out: &'a mut Vec<Node>,
-        limit: usize,
-    ) -> BoxFut<'a, ()> {
-        Box::pin(async move {
-            if out.len() >= limit || !budget.take() {
-                return;
-            }
-            if self.node_matches(acc, query).await {
-                out.push(self.node_meta(acc).await);
-            }
-            if out.len() >= limit {
-                return;
-            }
-            for child in self.children_of(acc).await {
-                if out.len() >= limit || budget.visited >= budget.limit {
-                    break;
-                }
-                self.search_node_all(&child, query, budget, out, limit)
-                    .await;
-            }
-        })
+        let scan = self.tree_scan().await?;
+        // A matching node whose stored ref can't be rebuilt resolves
+        // to "not found" — mirroring the live walk's `object_ref`
+        // failure path rather than skipping to the next match.
+        Ok(scan.first_match(query).and_then(Self::scanned_ref))
     }
 
     /// All matches for `query` across applications (active-window owner
     /// first), capped at `limit`, in preorder tree order — the harvest
-    /// behind [`UIAutomationProvider::find_elements`].
+    /// behind [`UIAutomationProvider::find_elements`]. Runs over the
+    /// bounded-staleness [`Self::tree_scan`]; index paths navigate
+    /// live, as in [`Self::find_match`].
     async fn find_matches(&self, query: &Query, limit: usize) -> Result<Vec<Node>> {
         if let Query::IndexPath(indices) = query {
             let Some(obj) = self.navigate_index_path(indices).await? else {
@@ -749,20 +960,12 @@ impl AtspiUi {
             };
             return Ok(vec![self.node_meta(&acc).await]);
         }
-
-        let mut budget = Budget::new(MAX_SEARCH_NODES);
-        let mut out = Vec::new();
-        for app_ref in self.ordered_apps().await? {
-            let Some(app) = self.accessible_at(&app_ref).await else {
-                continue;
-            };
-            self.search_node_all(&app, query, &mut budget, &mut out, limit)
-                .await;
-            if out.len() >= limit || budget.visited >= budget.limit {
-                break;
-            }
-        }
-        Ok(out)
+        let scan = self.tree_scan().await?;
+        Ok(scan
+            .matches(query, limit)
+            .iter()
+            .map(|n| n.to_node())
+            .collect())
     }
 
     // ---- focus ----------------------------------------------------------
@@ -1305,6 +1508,212 @@ mod tests {
             resolve_action_index(names.iter().copied(), "  press  "),
             Some(0)
         );
+    }
+
+    // ---- element-scan cache (hermetic — no bus) ------------------------
+
+    fn scanned(
+        name: &str,
+        role: Option<&str>,
+        path: &str,
+        children: Vec<ScannedNode>,
+    ) -> ScannedNode {
+        ScannedNode {
+            name: name.into(),
+            role: role.map(str::to_owned),
+            object_path: path.into(),
+            bus_name: ":1.42".into(),
+            children,
+            ..ScannedNode::default()
+        }
+    }
+
+    /// Two apps, each `root → [a, b]`; `b` of the second app carries a
+    /// matching grandchild to exercise preorder across boundaries.
+    fn sample_scan() -> TreeScan {
+        TreeScan {
+            apps: vec![
+                scanned(
+                    "app0",
+                    Some("application"),
+                    "/org/a11y/atspi/accessible/1",
+                    vec![
+                        scanned("Save", Some("push-button"), "/a/1/0", vec![]),
+                        scanned("Cancel", Some("push-button"), "/a/1/1", vec![]),
+                    ],
+                ),
+                scanned(
+                    "app1",
+                    Some("application"),
+                    "/org/a11y/atspi/accessible/2",
+                    vec![
+                        scanned("frame", Some("frame"), "/a/2/0", vec![]),
+                        scanned(
+                            "outer",
+                            Some("panel"),
+                            "/a/2/1",
+                            vec![scanned("Save As", Some("push-button"), "/a/2/1/0", vec![])],
+                        ),
+                    ],
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn scan_fresh_hit_miss_expiry() {
+        let t = Instant::now();
+        // Inside the window: hit.
+        assert!(scan_fresh(t, t));
+        assert!(scan_fresh(t, t + SCAN_CACHE_TTL - Duration::from_millis(1)));
+        // At/past the window: miss.
+        assert!(!scan_fresh(t, t + SCAN_CACHE_TTL));
+        assert!(!scan_fresh(t, t + SCAN_CACHE_TTL * 4));
+        // A timestamp in `now`'s future saturates to age zero — fresh,
+        // never a panic.
+        assert!(scan_fresh(t + SCAN_CACHE_TTL * 2, t));
+    }
+
+    #[test]
+    fn cached_scan_serves_fresh_entry_and_drops_expired() {
+        // AtspiUi is constructible with a pre-seeded cache — the scan
+        // cache never needs a live bus to exercise hit/miss/expiry.
+        let scan = Arc::new(sample_scan());
+        let fresh = AtspiUi {
+            conn: tokio::sync::OnceCell::new(),
+            scan_cache: Mutex::new(Some((Instant::now(), scan.clone()))),
+        };
+        let hit = fresh.cached_scan().expect("fresh entry must hit");
+        assert!(Arc::ptr_eq(&hit, &scan));
+
+        let taken = Instant::now()
+            .checked_sub(SCAN_CACHE_TTL * 2)
+            .expect("test clock goes back 600ms");
+        let stale = AtspiUi {
+            conn: tokio::sync::OnceCell::new(),
+            scan_cache: Mutex::new(Some((taken, scan))),
+        };
+        assert!(stale.cached_scan().is_none());
+
+        let empty = AtspiUi {
+            conn: tokio::sync::OnceCell::new(),
+            scan_cache: Mutex::new(None),
+        };
+        assert!(empty.cached_scan().is_none());
+    }
+
+    #[test]
+    fn first_match_is_preorder_across_apps_and_children() {
+        let scan = sample_scan();
+        let q = parse_query("name:Save As").unwrap();
+        let hit = scan.first_match(&q).expect("grandchild must match");
+        assert_eq!(hit.object_path, "/a/2/1/0");
+        // First match wins in tree order: "Save" precedes "Save As".
+        let q = parse_query("Save").unwrap();
+        assert_eq!(scan.first_match(&q).unwrap().object_path, "/a/1/0");
+        // No match → None.
+        assert!(
+            scan.first_match(&parse_query("name:nope").unwrap())
+                .is_none()
+        );
+        // Index paths are not evaluated against the scan (direct
+        // navigation handles them upstream).
+        assert!(scan.first_match(&Query::IndexPath(vec![0])).is_none());
+    }
+
+    #[test]
+    fn matches_collects_in_preorder_up_to_limit() {
+        let scan = sample_scan();
+        let q = parse_query("role:push-button").unwrap();
+        let all = scan.matches(&q, 10);
+        let paths: Vec<&str> = all.iter().map(|n| n.object_path.as_str()).collect();
+        assert_eq!(paths, ["/a/1/0", "/a/1/1", "/a/2/1/0"]);
+        // Limit truncates the tail, never reorders.
+        let one = scan.matches(&q, 1);
+        assert_eq!(one[0].object_path, "/a/1/0");
+        // A parent match does not prune its subtree.
+        let q = parse_query("name:app").unwrap();
+        let apps = scan.matches(&q, 10);
+        assert_eq!(apps.len(), 2);
+    }
+
+    #[test]
+    fn scanned_node_matches_every_query_kind() {
+        let node = scanned(
+            "Save As",
+            Some("push-button"),
+            "/org/a11y/atspi/accessible/42",
+            vec![],
+        );
+        assert!(node.matches(&Query::Any("save".into())));
+        assert!(node.matches(&Query::Any("pushbutton".into())));
+        assert!(node.matches(&Query::Role("PushButton".into())));
+        assert!(node.matches(&Query::Name("SAVE".into())));
+        assert!(!node.matches(&Query::Name("cancel".into())));
+        assert!(node.matches(&Query::ObjectPath("/42".into())));
+        assert!(!node.matches(&Query::ObjectPath("/43".into())));
+        assert!(!node.matches(&Query::IndexPath(vec![0])));
+    }
+
+    #[test]
+    fn scanned_node_failed_role_fetch_never_matches_role_queries() {
+        // `role: None` mirrors the live walk's `get_role` failure:
+        // attribute queries still evaluate; role-bearing ones miss.
+        let node = scanned("Save", None, "/a/0", vec![]);
+        assert!(!node.matches(&Query::Role("button".into())));
+        assert!(!node.matches(&Query::Any("button".into())));
+        assert!(node.matches(&Query::Any("save".into())));
+        assert!(node.matches(&Query::Name("save".into())));
+        // …and the output default stays "unknown", as `node_meta` produced.
+        assert_eq!(node.to_node().role, "unknown");
+    }
+
+    #[test]
+    fn scanned_ref_roundtrips_identity_and_rejects_garbage() {
+        let node = ScannedNode {
+            bus_name: ":1.42".into(),
+            object_path: "/org/a11y/atspi/accessible/7".into(),
+            ..ScannedNode::default()
+        };
+        let r = AtspiUi::scanned_ref(&node).expect("valid identity rebuilds");
+        assert_eq!(r.name_as_str(), Some(":1.42"));
+        assert_eq!(r.path_as_str(), "/org/a11y/atspi/accessible/7");
+        assert!(!r.is_null());
+
+        // No identity → no ref (matches resolve to "not found").
+        assert!(AtspiUi::scanned_ref(&ScannedNode::default()).is_none());
+        // Malformed stored strings → defensive None, never a panic.
+        let bad = ScannedNode {
+            bus_name: "not a bus name".into(),
+            object_path: "relative/path".into(),
+            ..ScannedNode::default()
+        };
+        assert!(AtspiUi::scanned_ref(&bad).is_none());
+    }
+
+    #[test]
+    fn scanned_node_to_node_mirrors_match_output() {
+        let node = ScannedNode {
+            name: "OK".into(),
+            role: Some("push-button".into()),
+            description: "confirms".into(),
+            states: vec!["sensitive".into()],
+            bounds: Some(Rect {
+                x: 1,
+                y: 2,
+                w: 3,
+                h: 4,
+            }),
+            children: vec![ScannedNode::default()],
+            ..ScannedNode::default()
+        };
+        let n = node.to_node();
+        assert_eq!(n.role, "push-button");
+        assert_eq!(n.states, ["sensitive"]);
+        // Matches were always serialized leaf-shaped — no children, no
+        // truncated flag — identical to the live walk's `node_meta`.
+        assert!(n.children.is_empty());
+        assert!(!n.truncated);
     }
 
     // ---- live bus (opt-in; read-only; NEVER invoke) ---------------------

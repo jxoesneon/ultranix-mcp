@@ -1,8 +1,10 @@
 # Testing Strategy
 
-> **Status:** Implemented — describes the test pyramid shipped with v1.1.0
+> **Status:** Implemented — describes the test pyramid shipped with v1.2.0
 > (Phases 0–5 complete, plus the v1.1.0 wave: X11 provider rungs, OCR cache,
-> Sentry, additional metrics).
+> Sentry, additional metrics — and the v1.2.0 wave: clipboard, plugin macros,
+> `screen_record`, sway IPC, per-backend features, history v2, AT-SPI scan
+> cache).
 
 ultranix-mcp automates a live GUI session, which makes naive end-to-end testing
 host-dependent and flaky. The strategy therefore follows ultrawin's proven
@@ -69,16 +71,19 @@ fn handler_with(p: Providers) -> UltranixHandler { /* Option<Arc<dyn ..>> DI */ 
 
 **Coverage rules:**
 
-- **Every one of the 32 tools** has at least one happy-path unit test through
+- **Every one of the 39 tools** has at least one happy-path unit test through
   `tools/call` with all-mock providers (the ultrawin `test_tools_exhaustive`
   pattern — one test iterating the full catalog).
 - **Every tool** has a `None`-provider test asserting the structured
   capability-unavailable error (ADR 0004) — not a panic, not a transport error.
 - **Every provider fallback chain** has a selection unit test: stub the probe
   results, assert the chosen implementation order (wlr → grim/slurp → portal →
-  `None`; wlr-input → uinput → portal → `None`; hyprctl → `None`, or `wmctrl`
-  on non-Hyprland X11; scrot → portal on X11 capture; AT-SPI2 → `None`;
-  CPU → OpenVINO → CUDA → `None`; layer-shell → `None` for overlay).
+  `None`; wlr-input → uinput → portal → `None`; hyprctl → `None` on Hyprland,
+  `sway-ipc` → `None` on sway, `wmctrl` on non-Hyprland X11, `kdotool` →
+  `None` on KDE (gated on the KDE session marker + pinned binary);
+  scrot → portal on X11 capture;
+  AT-SPI2 → `None`; CPU → OpenVINO → CUDA → ROCm → `None`; layer-shell →
+  `None` for overlay; wl-clipboard → xclip/xsel → `None` for clipboard).
 - **Negative-argument tests** per tool: missing required field, wrong type,
   out-of-range coordinates, oversized strings.
 
@@ -88,7 +93,7 @@ The MCP surface is a public contract (ADR 0006); it is pinned by fixtures.
 
 | Test | Mechanism | Assertion |
 | ---- | --------- | --------- |
-| `tools/list` full | drive `tools/list` via rmcp test client | byte-compares against `tests/golden/tools_list_all.json` — all 32 names, schemas, descriptions |
+| `tools/list` full | drive `tools/list` via rmcp test client | byte-compares against `tests/golden/tools_list_all.json` — all 39 names, schemas, descriptions |
 | `tools/list` filtered | start server with `--category=mouse,keyboard` | golden contains exactly the 9 expected tools; excluded categories absent |
 | `tools/call` result shape | mock providers | every result conforms to `CallToolResult` (`content[]` with `type: text`/`image`) |
 | `tools/call` unknown tool | `{"name": "nope"}` | typed `MethodNotFound`/`InvalidParams` error, matching golden |
@@ -111,7 +116,11 @@ review items because they represent public API changes.
 | Arg constraints | exec-capable subcommands denied: `hyprctl dispatch exec`/`exec-once` rejected even though `hyprctl` is whitelisted; `xdotool`/`wmctrl` accepted only when the session resolved to the X11 chain; arg-injected escapes (`--help; rm`) rejected |
 | Path whitelist | `$XDG_RUNTIME_DIR`, `/tmp`, `~/.ultranix-mcp/**` accepted post-canonicalization; `$HOME` outside `~/.ultranix-mcp/` rejected; `..` traversal, symlink escapes, `/etc/passwd` rejected |
 | TOCTOU capture-write | screenshot/capture file outputs canonicalize-then-compare and open with `O_NOFOLLOW`; a symlink (or swapped directory component) planted between validation and the write is rejected — no write follows the race |
-| Consent gate | `system_command`, `clear_action_history`, `replay_action`, `window_control close` without consent → `-32015 ConsentRequired` + challenge token; retry with `consent_token` succeeds; expired/forged token rejected; `--allow-destructive` bypass honored and audit-logged |
+| Consent gate | `system_command`, `clear_action_history`, `replay_action`, `window_control close`, `clipboard_set`, `clipboard_clear` without consent → `-32015 ConsentRequired` + challenge token; retry with `consent_token` succeeds; expired/forged token rejected; `--allow-destructive` bypass honored and audit-logged |
+| Plugin store & dispatch (v1.2.0) | manifest validation (name regex, catalog-name collision, semver version, ≤64 typed params, 1–32 steps, `plugin_*` step rejection, undeclared `${param}` refs); fresh tempdir scan per call; `plugin_run` param binding (undeclared keys rejected, `$$` escape, typed substitution); per-step consent re-challenge and `-32017 PluginStepError` on step `isError` |
+| `screen_record` bounds (v1.2.0) | `duration_ms`/`interval_ms` range validation; 600-frame and 512 MiB caps end the run `truncated: true`; `manifest.json` written for partial/failing runs; `rec-<ulid>` dir is `0700` under the captures root or `/tmp` fallback |
+| History format v2 (v1.2.0) | `UNXHIST2` magic + framed append round-trip; O(1) append path; v1 whole-file read + migration rewrite on next append; FIFO-eviction rewrite |
+| AT-SPI scan cache (v1.2.0) | 300 ms TTL reuse — two queries in-window issue one tree scan; expiry re-scans; `path:` queries bypass the cache |
 | Consent-token binding | tokens are CSPRNG-generated, single-use, 60 s TTL, bound to `key_id`/session + tool + `args_hash`; a token issued under key A is **rejected when presented under key B** (cross-key binding); a token for tool X does not authorise tool Y or different args |
 | Replay re-challenge | re-submitting a previously consented gated call (or a recorded `replay_action` step) triggers a **fresh** `-32015` challenge — a spent token never re-authorizes, and the new challenge carries a new `consent_token` |
 | udev rule contents | packaged `packaging/99-ultranix-mcp-uinput.rules` asserted verbatim: `SUBSYSTEM=="uinput", MODE="0660", GROUP="ultranix-input", OPTIONS+="static_node=uinput"` — dedicated group, never `input`; `uaccess` variant documented as a complement |
@@ -170,6 +179,20 @@ For CI where a full seat is unavailable:
   dispatches via `xdotool`, `get_windows` lists via `wmctrl`.
 - Also validates that wlroots/portal probes correctly *decline* in an X11
   environment (no false-positive backend selection).
+- With `xclip`/`xsel` installed: `clipboard_set`→`clipboard_get`→
+  `clipboard_clear` round-trip on X11 (consent-gated writes).
+
+### 2.4 v1.2.0 paths — hermetic today, live sessions pending
+
+The v1.2.0 providers are covered hermetically (Tier 1): clipboard tools
+via mock `ClipboardProvider` + fake helper binaries, `SwayWindow` via a
+fake i3-flavoured IPC responder, plugins via tempdir manifest stores,
+`screen_record` via mock capture + tempdir output roots. **Live-session
+evidence remains Hyprland/wlr-only** (Tier 2.1); sway, KDE, GNOME,
+Wayfire/river, and clipboard-helper runs are implemented and unit-tested
+but not yet smoke-tested on real sessions — add Tier-2 jobs as seats
+become available (sway session on `$SWAYSOCK`; KDE/GNOME portal sessions;
+a wl-clipboard-equipped Wayland seat).
 
 ## CI Matrix
 
@@ -216,7 +239,7 @@ Executed on the verified environment before tagging:
 - [ ] X11 session (or Xvfb): scrot/xdotool/wmctrl chain works end-to-end
 - [ ] Model cache: `find_icon` downloads once to `~/.ultranix-mcp/models/`; second boot reuses; digest mismatch re-fetches
 - [ ] Prometheus: all 8 shipped metrics present, correct types/labels; with `ULTRANIX_MCP_SENTRY_DSN` set, a forced error is captured by Sentry (a malformed DSN warns and disables)
-- [ ] `--category=vision` serves exactly the 12 vision tools; `--category` omitted serves all 32
+- [ ] `--category=vision` serves exactly the 13 vision tools; `--category` omitted serves all 39
 - [ ] Upgrade path: stop unit → replace binary → start; `history.json` and logs preserved under `~/.ultranix-mcp/`
 
 ## Phase-to-Test Mapping

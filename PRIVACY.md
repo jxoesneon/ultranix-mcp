@@ -1,8 +1,8 @@
 # Privacy Policy
 
-**Last updated**: 2026 — **Policy version**: 1.0.0
+**Last updated**: 2026 — **Policy version**: 1.2.0
 **Status**: Implemented — describes the data handling of shipped ultranix-mcp
-v1.1.0; features marked *post-v1* are not yet wired.
+v1.2.0; features marked *post-v1* are not yet wired.
 
 ## Overview
 
@@ -26,7 +26,9 @@ third-party SDKs phoning home — unless you turn one on.
 2. **No hidden persistence.** Every artifact the server writes lives under
    `~/.ultranix-mcp/`. There is no state anywhere else except temporary
    screenshot files under `/tmp` (created via `mktemp`, mode `0600`, deleted
-   after use).
+   after use) — and, when the state directory is unwritable, `screen_record`
+   output under a fresh `0700` `/tmp` dir (v1.2.0; `/tmp` fallback only,
+   still owner-only).
 3. **No covert channels.** Screenshot pixel data is returned to the MCP client
    that requested it and is otherwise never transmitted, logged, or persisted.
 
@@ -42,6 +44,9 @@ third-party SDKs phoning home — unless you turn one on.
 | **Audit log** | Every tool invocation (`key_id`, `args_hash` — never raw args — `prev_hash`-chained) + auth events (accepted *and* rejected) | `~/.ultranix-mcp/logs/audit.jsonl` | Plaintext JSONL, dir `0700`, file `0600` | 30 days (rotated) |
 | **Runtime/debug log** | Operational messages, errors | `~/.ultranix-mcp/logs/` | Plaintext, `0600` | 30 days (rotated) |
 | **Screenshots** | Raw frame data requested by capture tools | In-memory; `/tmp` only if a tool needs a file | `mktemp` + `0600` + explicit cleanup | Lifetime of the request |
+| **`screen_record` output** (v1.2.0) | PNG frames + `manifest.json` per recording call | `~/.ultranix-mcp/captures/rec-<ulid>/` (or `0700` `/tmp` dir fallback) | Server-owned `0700` dirs; ≤600 frames / ≤512 MiB per run | **Retained on disk** — delete `captures/` to erase |
+| **Clipboard contents** (v1.2.0) | Whatever `clipboard_get` reads; payload given to `clipboard_set` | In-memory (returned to client) / helper stdin | Text-only, ≤1 MiB; never written to disk by the server | Lifetime of the request |
+| **Plugin manifests** (v1.2.0) | Declarative tool-macro JSON you (or your agent) install | `~/.ultranix-mcp/plugins/*.json` | State dir `0700`; read-only scan per call | Until deleted |
 | **API keys** | `uxcp_*` keys | Env `ULTRANIX_MCP_API_KEY` | SHA-256 hash in memory; plaintext only in your env/config | Until rotation |
 | **ONNX models** | Local vision/inference models | `~/.ultranix-mcp/models/` | SHA-256-verified at download | Until deleted |
 | **Metrics** | Tool-call counts, latencies, error rates | In-memory, exposed at `/metrics` | None (counters only, no content) | Process lifetime |
@@ -66,6 +71,15 @@ third-party SDKs phoning home — unless you turn one on.
   for `replay_action`); the audit log records only a keyed `args_hash` of the
   arguments, never the raw text. Still, **do not type passwords through
   automation** — history retains them until cleared or rotated out.
+- **`screen_record` is the one capture tool that persists.** Unlike
+  `screenshot`, whose frames live only in memory (or a `0600` temp file
+  deleted after the call), `screen_record` writes PNG frames plus a
+  `manifest.json` to a kept `rec-<ulid>` directory — bounded per run but
+  accumulating across runs. Erase via `rm -rf ~/.ultranix-mcp/captures/`.
+- **Clipboard reads surface ambient exposure.** `clipboard_get` returns
+  whatever the session clipboard already holds — frequently copied secrets —
+  to the requesting client. The server adds an audit record, not new
+  exposure; treat clipboard contents as sensitive.
 
 ---
 
@@ -137,6 +151,8 @@ ls ~/.ultranix-mcp/logs/                  # audit.jsonl, runtime logs
 rm ~/.ultranix-mcp/history.json     # encrypted action history
 rm -rf ~/.ultranix-mcp/logs/        # audit + runtime logs
 rm -rf ~/.ultranix-mcp/models/      # downloaded ONNX models
+rm -rf ~/.ultranix-mcp/captures/    # screen_record frame output (v1.2.0)
+rm -rf ~/.ultranix-mcp/plugins/     # plugin tool-macro manifests (v1.2.0)
 ```
 
 Deleting the entire `~/.ultranix-mcp/` directory returns the host to a

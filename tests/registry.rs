@@ -1,4 +1,4 @@
-//! `tools/list` surface: exactly the frozen 32 tools, each name present
+//! `tools/list` surface: exactly the frozen 39 tools, each name present
 //! once, correct category-filter subsets, spec-shaped input schemas.
 
 mod common;
@@ -17,12 +17,12 @@ fn cats(categories: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn list_all_returns_exactly_32_tools() {
+fn list_all_returns_exactly_39_tools() {
     let tools = list_tools(None);
     assert_eq!(
         tools.len(),
-        32,
-        "expected exactly 32 tools, got: {:?}",
+        39,
+        "expected exactly 39 tools, got: {:?}",
         names(&tools)
     );
 }
@@ -40,7 +40,7 @@ fn every_frozen_name_present_exactly_once() {
         names(&tools)
     );
 
-    // All 32 frozen names are present.
+    // All 39 frozen names are present.
     for name in ALL_TOOL_NAMES {
         assert!(listed.contains(*name), "missing frozen tool {name}");
     }
@@ -97,9 +97,10 @@ fn category_filter_each_category() {
     let expected = [
         ("mouse", 7usize),
         ("keyboard", 2),
-        ("vision", 12),
+        ("vision", 13),
         ("automation", 4),
-        ("admin", 7),
+        ("admin", 10),
+        ("clipboard", 3),
     ];
     for (cat, count) in expected {
         let tools = list_tools(Some(&cats(&[cat])));
@@ -131,15 +132,16 @@ fn category_filter_mouse_keyboard_returns_9() {
 }
 
 #[test]
-fn category_filter_all_five_returns_32() {
+fn category_filter_all_six_returns_39() {
     let tools = list_tools(Some(&cats(&[
         "mouse",
         "keyboard",
         "vision",
         "automation",
         "admin",
+        "clipboard",
     ])));
-    assert_eq!(tools.len(), 32, "got {:?}", names(&tools));
+    assert_eq!(tools.len(), 39, "got {:?}", names(&tools));
 }
 
 #[test]
@@ -163,5 +165,5 @@ fn category_filter_is_order_independent() {
     let sa: BTreeSet<String> = a.into_iter().collect();
     let sb: BTreeSet<String> = b.into_iter().collect();
     assert_eq!(sa, sb);
-    assert_eq!(sa.len(), 14);
+    assert_eq!(sa.len(), 17);
 }

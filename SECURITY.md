@@ -1,7 +1,7 @@
 # Security Policy
 
 **Project**: ultranix-mcp — Rust MCP server for Linux desktop automation (Wayland/Hyprland, CachyOS)
-**Status**: Implemented (v1.1.0) — this document describes the shipped security design. Where the implementation still lags this document (called out inline), the gap is tracked as a defect or roadmap item.
+**Status**: Implemented (v1.2.0) — this document describes the shipped security design. Where the implementation still lags this document (called out inline), the gap is tracked as a defect or roadmap item.
 
 ultranix-mcp grants AI agents the ability to see the screen and inject input on a
 live desktop session. That is an inherently high-privilege capability. This
@@ -124,14 +124,20 @@ arguments are constrained at the validator layer:
   (portals, AT-SPI2) happens in-process via `zbus`; the CLI helpers can
   reach methods like `StartTransientUnit` that amount to arbitrary exec.
 - Every whitelisted binary is resolved to its **absolute path at startup
-  and pinned** — a hijacked `PATH` cannot redirect execution.
+  and pinned** — a hijacked `PATH` cannot redirect execution. Provider-internal
+  helpers (`xrandr`, `xprop`, `wl-copy`, `wl-paste`, `xclip`, `xsel`,
+  `kdotool` — the latter pinned for the KDE window rung) are
+  likewise pinned but have **no `validate_command` arm**:
+  `system_command` cannot invoke them; only provider code spawns them,
+  with scrubbed environments and bounded execution.
 
 #### Consent gate for destructive-class tools
 
 Authentication proves *which key* called; it cannot prove *a human approved
 the action*. Destructive-class tools — `system_command`,
-`clear_action_history`, `replay_action`, and
-`window_control{action:"close"}` — therefore return JSON-RPC error
+`clear_action_history`, `replay_action`,
+`window_control{action:"close"}`, `clipboard_set`, and
+`clipboard_clear` — therefore return JSON-RPC error
 `-32015 ConsentRequired` with a short-lived (60 s), single-use challenge
 token on first call; the client surfaces the challenge to the operator and
 re-issues the call with `consent_token`. Tokens are CSPRNG-generated
@@ -139,6 +145,9 @@ re-issues the call with `consent_token`. Tokens are CSPRNG-generated
 so they cannot be transplanted across callers, tools, or arguments —
 and `replay_action` never inherits the original call's consent: replaying
 a recorded destructive-class action re-challenges through the full gate.
+`plugin_run` steps re-enter the gate individually — consent for the plugin
+call does not authorize a destructive step (the step's `-32015` surfaces
+annotated with `plugin`/`step`/`step_tool`).
 `--allow-destructive` bypasses the gate for
 trusted local use; the bypass is logged at startup and stamped on the
 affected audit records.
@@ -162,14 +171,17 @@ preference order:
 
 Screen capture uses **wlr-screencopy** where the compositor supports it, falling
 back to the Screenshot portal (with its consent UX). Compositor control goes
-through the **hyprctl IPC socket** and **AT-SPI2** for the accessibility tree.
+through the **hyprctl IPC socket** (or **sway's `$SWAYSOCK`** on sway
+sessions, v1.2.0+) and **AT-SPI2** for the accessibility tree.
 
 ### Storage
 
 | Artifact | Location | Protection |
 | -------- | -------- | ---------- |
-| Action history | `~/.ultranix-mcp/history.json` | AES-256-GCM at rest (`ULTRANIX_MCP_HISTORY_SECRET` or per-install derived key) |
+| Action history | `~/.ultranix-mcp/history.json` | AES-256-GCM at rest (`ULTRANIX_MCP_HISTORY_SECRET` or per-install derived key); `UNXHIST2` framed append format since v1.2.0 — O(1) sealed appends, full rewrite only on FIFO eviction or v1→v2 migration |
 | Audit log | `~/.ultranix-mcp/logs/audit.jsonl` | JSONL, file mode `0600`, dir mode `0700`; `prev_hash` hash-chaining makes silent edits detectable |
+| Plugin manifests | `~/.ultranix-mcp/plugins/*.json` | Declarative tool-macros (no code); strict validation; state dir `0700`; fresh read-only scan per call |
+| `screen_record` output | `~/.ultranix-mcp/captures/rec-*` (or `0700` `/tmp` dir fallback) | Server-owned `0700` dirs; ≤600 frames / ≤512 MiB per run; `manifest.json` audit |
 | API keys | Env `ULTRANIX_MCP_API_KEY` | Only SHA-256 hashes held in memory |
 | Screenshots | In-memory; tmp files only when required | `mktemp` + mode `0600` + explicit cleanup |
 | ONNX models | `~/.ultranix-mcp/models/` | SHA-256 checksum verified at download |
@@ -270,4 +282,4 @@ through the **hyprctl IPC socket** and **AT-SPI2** for the accessibility tree.
 
 ---
 
-**Last updated**: 2026 — Policy version 1.0.0
+**Last updated**: 2026 — Policy version 1.2.0

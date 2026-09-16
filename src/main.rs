@@ -36,7 +36,7 @@ struct Cli {
     stdio: bool,
 
     /// Restrict the advertised tool surface to these categories
-    /// (comma-separated: mouse,keyboard,vision,automation,admin).
+    /// (comma-separated: mouse,keyboard,vision,automation,admin,clipboard).
     #[arg(long, value_delimiter = ',')]
     category: Vec<String>,
 
@@ -77,45 +77,53 @@ async fn main() -> anyhow::Result<()> {
     // sentry-tracing layer can be attached in the same registry; the raw
     // value is kept so a malformed one can be warned about once the
     // subscriber is live (a warning emitted earlier would be dropped).
+    #[cfg(feature = "sentry")]
     let sentry_dsn_raw = std::env::var("ULTRANIX_MCP_SENTRY_DSN").ok();
+    #[cfg(feature = "sentry")]
     let sentry_dsn = sentry_dsn_raw.as_deref().and_then(parse_sentry_dsn);
 
     // stdout is the JSON-RPC channel on stdio — diagnostics go to stderr.
-    tracing_subscriber::registry()
+    let base = tracing_subscriber::registry()
         .with(
             EnvFilter::try_from_env("ULTRANIX_MCP_LOG_LEVEL")
                 .unwrap_or_else(|_| EnvFilter::new("info")),
         )
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-        // `Option<layer>` is itself a `Layer`: the sentry-tracing layer
-        // forwards `tracing::error!` events to Sentry only when a DSN is
-        // configured; `None` adds nothing.
-        .with(
-            sentry_dsn
-                .is_some()
-                .then(sentry::integrations::tracing::layer),
-        )
-        .init();
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr));
 
-    if let (Some(raw), None) = (&sentry_dsn_raw, &sentry_dsn)
-        && !raw.trim().is_empty()
+    // `Option<layer>` is itself a `Layer`: the sentry-tracing layer
+    // forwards `tracing::error!` events to Sentry only when a DSN is
+    // configured; `None` adds nothing. `sentry` feature off → no layer.
+    #[cfg(feature = "sentry")]
+    let base = base.with(
+        sentry_dsn
+            .is_some()
+            .then(sentry::integrations::tracing::layer),
+    );
+
+    base.init();
+
+    #[cfg(feature = "sentry")]
     {
-        tracing::warn!("ULTRANIX_MCP_SENTRY_DSN is set but unparsable; Sentry disabled");
-    }
+        if let (Some(raw), None) = (&sentry_dsn_raw, &sentry_dsn)
+            && !raw.trim().is_empty()
+        {
+            tracing::warn!("ULTRANIX_MCP_SENTRY_DSN is set but unparsable; Sentry disabled");
+        }
 
-    // Panic + error reporting goes live here and stays live until the
-    // guard drops at end of `main` (which also flushes pending events).
-    let _sentry_guard = sentry_dsn.map(|dsn| {
-        tracing::info!("Sentry error reporting enabled via ULTRANIX_MCP_SENTRY_DSN");
-        let mut opts = sentry::ClientOptions::new();
-        opts.dsn = Some(dsn);
-        opts.release = Some(env!("CARGO_PKG_VERSION").into());
-        // Pre-send redaction per PRIVACY.md: `uxcp_*` key material is
-        // scrubbed, absolute paths are reduced to basename + parent-dir
-        // hash, and the `device` context (hostname) is dropped.
-        opts.before_send = Some(std::sync::Arc::new(sentry_redact));
-        sentry::init(opts)
-    });
+        // Panic + error reporting goes live here and stays live until the
+        // guard drops at end of `main` (which also flushes pending events).
+        let _sentry_guard = sentry_dsn.map(|dsn| {
+            tracing::info!("Sentry error reporting enabled via ULTRANIX_MCP_SENTRY_DSN");
+            let mut opts = sentry::ClientOptions::new();
+            opts.dsn = Some(dsn);
+            opts.release = Some(env!("CARGO_PKG_VERSION").into());
+            // Pre-send redaction per PRIVACY.md: `uxcp_*` key material is
+            // scrubbed, absolute paths are reduced to basename + parent-dir
+            // hash, and the `device` context (hostname) is dropped.
+            opts.before_send = Some(std::sync::Arc::new(sentry_redact));
+            sentry::init(opts)
+        });
+    }
 
     let state = StateDir::bootstrap()?;
     tracing::info!(data_dir = %state.root().display(), "ultranix-mcp starting");
@@ -154,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
 /// Parse a configured DSN; `None` for empty or unparsable values (the
 /// server then runs exactly as if the variable were absent). Pure — the
 /// caller reports the malformed case once tracing is live.
+#[cfg(feature = "sentry")]
 fn parse_sentry_dsn(raw: &str) -> Option<sentry::types::Dsn> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -164,6 +173,7 @@ fn parse_sentry_dsn(raw: &str) -> Option<sentry::types::Dsn> {
 
 /// `uxcp_<64 hex>` API-key material must never reach Sentry. Scan for
 /// the `uxcp_` prefix and blank the run when it is 64 hex chars.
+#[cfg(feature = "sentry")]
 fn scrub_keys(s: &str) -> String {
     const PREFIX: &str = "uxcp_";
     let mut out = String::with_capacity(s.len());
@@ -185,6 +195,7 @@ fn scrub_keys(s: &str) -> String {
 }
 
 /// Absolute path → `<basename>#<8-hex hash of parent>` (PRIVACY.md).
+#[cfg(feature = "sentry")]
 fn hash_path(p: &str) -> String {
     let path = std::path::Path::new(p);
     let base = path
@@ -202,6 +213,7 @@ fn hash_path(p: &str) -> String {
 /// Pre-send scrub for Sentry events (PRIVACY.md "Redaction rules
 /// applied before send"): `uxcp_*` keys redacted, stack-frame
 /// filenames hashed, `device` context (hostname) dropped.
+#[cfg(feature = "sentry")]
 fn sentry_redact(
     mut event: sentry::protocol::Event<'static>,
 ) -> Option<sentry::protocol::Event<'static>> {
@@ -239,6 +251,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "sentry")]
     fn sentry_disabled_when_dsn_unset_or_empty() {
         // The common case: no env var → no DSN → `sentry::init` never
         // runs. (Skipped if the ambient environment happens to set one.)
@@ -255,6 +268,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "sentry")]
     fn sentry_disabled_on_malformed_dsn() {
         // Set-but-broken must behave like unset — init is opt-in only
         // for values that actually parse.
@@ -263,6 +277,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "sentry")]
     fn scrub_keys_redacts_uxcp_material() {
         let key = format!("uxcp_{}", "a".repeat(64));
         assert_eq!(scrub_keys(&format!("k={key} tail")), "k=[REDACTED] tail");
@@ -272,6 +287,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "sentry")]
     fn hash_path_keeps_basename_hashes_parent() {
         let h = hash_path("/home/u/.ultranix-mcp/history.json");
         assert!(h.starts_with("history.json#"));
@@ -283,6 +299,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "sentry")]
     fn sentry_redact_strips_key_device_and_paths() {
         use sentry::protocol::{Breadcrumb, Event, Exception, Frame, Stacktrace, Values};
         let key = format!("uxcp_{}", "b".repeat(64));
@@ -376,6 +393,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "sentry")]
     fn sentry_enabled_on_valid_dsn() {
         let dsn =
             parse_sentry_dsn("https://0123456789abcdef0123456789abcdef@o1.ingest.sentry.io/1");

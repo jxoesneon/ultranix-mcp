@@ -171,3 +171,22 @@ pub trait BrowserProvider: Send + Sync {
     /// Ensure the CDP endpoint is reachable (lazy connect).
     async fn ensure_ready(&self) -> Result<()>;
 }
+
+/// Clipboard access (wl-clipboard on Wayland, xclip/xsel on X11).
+///
+/// The contract is text-first: reads surface UTF-8 text only — binary
+/// payloads are never moved through the provider boundary (a clipboard
+/// can carry arbitrary secrets; the tool layer is not a file bridge).
+#[async_trait]
+pub trait ClipboardProvider: Send + Sync {
+    /// Current clipboard text, or `None` when the clipboard is empty or
+    /// offers no text MIME type.
+    async fn get_text(&self) -> Result<Option<String>>;
+    /// Overwrite the clipboard with `text`.
+    async fn set_text(&self, text: &str) -> Result<()>;
+    /// Drop the selection entirely — subsequent reads report empty.
+    async fn clear(&self) -> Result<()>;
+    /// MIME types the clipboard owner currently offers (empty when the
+    /// clipboard is empty).
+    async fn list_mimes(&self) -> Result<Vec<String>>;
+}

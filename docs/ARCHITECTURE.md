@@ -1,11 +1,17 @@
 # Architecture Overview
 
-> **Status:** Implemented (v1.1.0) — all six phases of the plan in
-> [Implementation Phases](#implementation-phases) have shipped, and the
+> **Status:** Implemented (v1.2.0) — all six phases of the plan in
+> [Implementation Phases](#implementation-phases) have shipped, the
 > v1.1.0 wave landed the layer-shell `OverlayProvider`/`screen_highlight`,
 > the X11-native provider rungs (`scrot`/`xdotool`/`wmctrl`), PipeWire
 > stream consumption on the portal RemoteDesktop path, opt-in Sentry
-> reporting, the OCR result cache, and the four additional metrics in §7.
+> reporting, the OCR result cache, and the four additional metrics in §7 —
+> and the v1.2.0 breadth wave added the `ClipboardProvider` + clipboard
+> tool category, plugin tool-macros (`plugin_list`/`plugin_run`/
+> `plugin_reload`), bounded `screen_record`, compositor-breadth session
+> detection (sway/Wayfire/river/KDE/GNOME) with the `sway-ipc` window
+> provider, the per-backend cargo-feature split, the framed v2 action-
+> history format, and the AT-SPI element-scan cache.
 > Items that remain unimplemented are marked inline as **planned /
 > post-v1**.
 
@@ -47,15 +53,16 @@ graph TB
 
     subgraph "Core Server (rmcp)"
         RMCP[rmcp ServerHandler]
-        TOOLS[32 Automation Tools<br/>5 categories · --category filter]
+        TOOLS[39 Automation Tools<br/>6 categories · --category filter]
     end
 
     subgraph "Tool Categories"
         MOUSE[mouse · 7 tools]
         KB[keyboard · 2 tools]
-        VISION[vision · 12 tools]
+        VISION[vision · 13 tools]
         AUTO[automation · 4 tools]
-        ADMIN[admin · 7 tools]
+        ADMIN[admin · 10 tools]
+        CLIP[clipboard · 3 tools]
     end
 
     subgraph "Provider Traits — Option<Arc<dyn Trait>> DI"
@@ -66,6 +73,7 @@ graph TB
         PVIS[VisionProvider]
         PBRW[BrowserProvider]
         POVL[OverlayProvider]
+        PCLIP[ClipboardProvider]
     end
 
     subgraph "Backend Implementations"
@@ -73,14 +81,16 @@ graph TB
         UIN[uinput / evdev<br/>udev rule, no compositor dependency]
         PORTAL[XDG Desktop Portal<br/>Screenshot · RemoteDesktop+PipeWire via zbus]
         HYPR[hyprctl IPC<br/>$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock]
+        SWAY[sway IPC<br/>$SWAYSOCK · i3-flavoured wire protocol]
         X11B[X11-native<br/>scrot · xdotool · wmctrl]
         ATSPI[AT-SPI2<br/>atspi crate]
-        ORT[ort / ONNX Runtime<br/>CPU → OpenVINO → CUDA]
+        ORT[ort / ONNX Runtime<br/>CPU → OpenVINO → CUDA → ROCm]
         CDP[Chrome DevTools Protocol<br/>127.0.0.1:9222]
+        WLC[Clipboard helpers<br/>wl-copy/wl-paste · xclip/xsel]
     end
 
     subgraph "Desktop Environment"
-        COMPOSITOR[Hyprland / wlroots Compositor]
+        COMPOSITOR[Compositor Session<br/>Hyprland · sway · Wayfire · river<br/>KDE · GNOME · Other]
         WAYLAND[Wayland Protocol Layer]
         DBUS[Session D-Bus<br/>AT-SPI2 · Portals]
         PIPEWIRE[PipeWire]
@@ -112,6 +122,7 @@ graph TB
     TOOLS --> VISION
     TOOLS --> AUTO
     TOOLS --> ADMIN
+    TOOLS --> CLIP
     MOUSE --> PIN
     KB --> PIN
     VISION --> PCAP
@@ -120,6 +131,7 @@ graph TB
     AUTO --> PIN
     AUTO --> PBRW
     ADMIN --> PWIN
+    CLIP --> PCLIP
     PCAP --> WLR
     PCAP --> PORTAL
     PCAP --> X11B
@@ -129,20 +141,25 @@ graph TB
     PIN --> X11B
     PUIA --> ATSPI
     PWIN --> HYPR
+    PWIN --> SWAY
     PWIN --> X11B
     PVIS --> ORT
     PBRW --> CDP
     VISION --> POVL
     POVL --> WLR
+    PCLIP --> WLC
     WLR --> WAYLAND
     PORTAL --> DBUS
     PORTAL --> PIPEWIRE
     ATSPI --> DBUS
     HYPR --> COMPOSITOR
+    SWAY --> COMPOSITOR
     X11B --> X11
     X11 --> COMPOSITOR
     WAYLAND --> COMPOSITOR
     COMPOSITOR --> PIPEWIRE
+    WLC --> WAYLAND
+    WLC --> X11
     RMCP --> HEALTH
     RMCP --> METRICS
     RMCP --> AUDIT
@@ -217,6 +234,9 @@ graph LR
   on X11-fallback sessions only. `xrandr`/`xprop` sit in the startup pin set
   as provider-internal helpers (X11 geometry / `_NET_WM_STATE` reads) but
   have **no** `validate_command` arm — `system_command` cannot invoke them.
+  v1.2.0 added `wl-copy`, `wl-paste`, `xclip`, `xsel`, and `kdotool` to the
+  same provider-internal pin set (clipboard providers + the shipped
+  `KdotoolWindow` KDE rung) — likewise unreachable through `system_command`.
   Binaries are pinned to absolute paths
   resolved once at startup. `busctl`/`gdbus` are not permitted — D-Bus work
   is in-process via `zbus`.
@@ -224,11 +244,14 @@ graph LR
   `/tmp`, or `~/.ultranix-mcp/**` after symlink/canonicalization checks.
   `$HOME` at large is *not* an allowed root.
 - **Consent gate** — destructive tools (`system_command`, `replay_action`,
-  `clear_action_history`, `window_control{action:"close"}`) return `-32015
+  `clear_action_history`, `window_control{action:"close"}`,
+  `clipboard_set`, `clipboard_clear`) return `-32015
   ConsentRequired` with a single-use, 60-second, CSPRNG-generated challenge
   token bound to the caller (`key_id` on HTTP, session id on stdio), the tool
   name, and `args_hash`; the retried call must carry `consent_token`, and a
-  `replay_action` never inherits the original call's consent.
+  `replay_action` never inherits the original call's consent. Plugin steps
+  re-enter the gate — consent for `plugin_run` itself does not authorize a
+  destructive step.
   `--allow-destructive` bypasses the gate (operator opt-out; still audited).
 - **Audit & history** — every tool call emits a JSONL audit record to
   `~/.ultranix-mcp/logs/audit.jsonl` (fields: timestamp, `key_id`, tool,
@@ -240,7 +263,7 @@ graph LR
 
 ### 3. Tool Execution Layer
 
-**32 snake_case tools in 5 categories**, gated by `--category=` at startup to
+**39 snake_case tools in 6 categories**, gated by `--category=` at startup to
 control token cost of `tools/list` for context-sensitive agents
 ([TOOLS.md](TOOLS.md) is the canonical tool catalog):
 
@@ -248,9 +271,10 @@ control token cost of `tools/list` for context-sensitive agents
 | -------- | ----- | ----------------- |
 | **mouse** (7) | `mouse_click`, `mouse_double_click`, `mouse_move`, `mouse_get_position`, `mouse_scroll`, `mouse_drag`, `mouse_button_control` | `InputProvider` |
 | **keyboard** (2) | `type_text`, `key_control` | `InputProvider` |
-| **vision** (12) | `screenshot`, `screen_info`, `screen_highlight`, `color_at`, `set_spatial_focus`, `get_ui_tree`, `get_focused_element`, `find_element`, `invoke_element`, `find_text_on_screen`, `find_icon`, `wait_for_ui_element` | `CaptureProvider`, `UIAutomationProvider`, `VisionProvider` |
+| **vision** (13) | `screenshot`, `screen_info`, `screen_highlight`, `color_at`, `set_spatial_focus`, `get_ui_tree`, `get_focused_element`, `find_element`, `invoke_element`, `find_text_on_screen`, `find_icon`, `wait_for_ui_element`, `screen_record` | `CaptureProvider`, `UIAutomationProvider`, `VisionProvider` |
 | **automation** (4) | `sleep`, `mouse_move_path`, `system_command`, `web_query` | `InputProvider`, `BrowserProvider`, security layer |
-| **admin** (7) | `window_control`, `get_windows`, `get_active_window`, `metrics`, `get_action_history`, `replay_action`, `clear_action_history` | `WindowProvider`, observability subsystem |
+| **admin** (10) | `window_control`, `get_windows`, `get_active_window`, `metrics`, `get_action_history`, `replay_action`, `clear_action_history`, `plugin_list`, `plugin_run`, `plugin_reload` | `WindowProvider`, observability subsystem, plugin manifest store |
+| **clipboard** (3) | `clipboard_get`, `clipboard_set`, `clipboard_clear` | `ClipboardProvider` |
 
 Every tool handler follows the same pipeline: schema validation → sanitization →
 provider dispatch → structured `CallToolResult` → audit/history/metrics emission.
@@ -259,18 +283,19 @@ unavailable* error — never a panic and never an opaque transport failure.
 
 ### 4. Provider Abstraction Layer
 
-The core design inheritance from ultrawin: **all OS coupling lives behind seven
+The core design inheritance from ultrawin: **all OS coupling lives behind eight
 async traits**, injected as `Option<Arc<dyn Trait>>` at server construction.
 
 | Trait | Responsibility | Implementations (priority order — summary; the canonical fallback-chain table is in §5) |
 | ----- | -------------- | -------------------------------- |
-| `CaptureProvider` | Frame capture, region capture, output geometry | `WlrCapture` → `GrimCapture` → `PortalCapture`; `X11Capture` (`scrot` + `xdotool`/`xrandr` geometry) on X11 sessions |
+| `CaptureProvider` | Frame capture, region capture, output geometry, bounded frame sequences (`screen_record`) | `WlrCapture` → `GrimCapture` → `PortalCapture`; `X11Capture` (`scrot` + `xdotool`/`xrandr` geometry) on X11 sessions |
 | `InputProvider` | Pointer motion/buttons/scroll, keyboard text & key events | `WlrInput` → `UinputInput` → `PortalInput`; `X11Input` (`xdotool`) first on X11 sessions |
-| `UIAutomationProvider` | UI tree, focused element, element lookup (multi-match via `find_elements`), AT-SPI action invocation (`invoke_element`) | `AtspiUi` → `None` (vision-only fallback) |
-| `WindowProvider` | Window list/focus/move/resize, active window | `HyprctlWindow`; `X11Window` (`wmctrl` + `xdotool` + `xprop`) on non-Hyprland X11 |
-| `VisionProvider` | OCR (`recognize_text`), zero-shot icon finding (`locate_icon`) | `OnnxVision` (ort: CPU EP; OpenVINO/CUDA behind `vision-openvino`/`vision-cuda` cargo features) |
+| `UIAutomationProvider` | UI tree, focused element, element lookup (multi-match via `find_elements`), AT-SPI action invocation (`invoke_element`); element queries reuse a 300 ms `TreeScan` cache (§6) | `AtspiUi` → `None` (vision-only fallback) |
+| `WindowProvider` | Window list/focus/move/resize, active window | `HyprctlWindow` (Hyprland), `SwayWindow` (`sway-ipc`, sway); `X11Window` (`wmctrl` + `xdotool` + `xprop`) on non-Hyprland X11; `KdotoolWindow` (`kdotool`, KDE — Wayland and X11) |
+| `VisionProvider` | OCR (`recognize_text`), zero-shot icon finding (`locate_icon`) | `OnnxVision` (ort: CPU EP; OpenVINO/CUDA/ROCm behind `vision-openvino`/`vision-cuda`/`vision-rocm` cargo features) |
 | `BrowserProvider` | DOM query/eval over CDP | `CdpBrowser` @ `127.0.0.1:9222` |
 | `OverlayProvider` | Translucent highlight overlay (`screen_highlight`) | `Overlay` (`zwlr_layer_shell_v1`, Wayland-only) → `None` on X11/headless |
+| `ClipboardProvider` | Text-first clipboard get/set/clear, MIME enumeration | `WlClipboard` (`wl-copy`/`wl-paste`, Wayland) → `XclipClipboard` (`xclip`/`xsel`, X11 + XWayland rung) → `None` |
 
 **Dependency injection** mirrors ultrawin's `build_server` signature: `main.rs`
 probes each backend, wraps successes in `Some(Arc::new(..) as Arc<dyn Trait>)`,
@@ -282,18 +307,25 @@ session and degrades per-capability rather than failing to start. All traits are
 
 Backend selection happens **once at startup** in `src/backend/detect.rs`, driven
 by environment probing — `XDG_CURRENT_DESKTOP` plus compositor-specific variables
-(`HYPRLAND_INSTANCE_SIGNATURE`, `WAYLAND_DISPLAY`, `DISPLAY`, `XDG_SESSION_TYPE`)
+(`HYPRLAND_INSTANCE_SIGNATURE`, `SWAYSOCK`, `WAYFIRE_SOCKET`,
+`KDE_SESSION_VERSION`, `WAYLAND_DISPLAY`, `DISPLAY`, `XDG_SESSION_TYPE`)
 — and protocol-availability checks on the live Wayland connection.
+`SessionKind` resolves to `Hyprland`, `Sway`, `Wayfire`, `River`, `Kde`,
+`Gnome`, or `Other` (signature-first detection); the wlroots family
+(Hyprland/sway/Wayfire/river) shares the `wlr-*` rungs, while KDE and GNOME
+Wayland sessions route capture/input through the portal backends they
+actually implement (wlr probing can never succeed there) and keep honest
+empty window/overlay ladders where no IPC exists.
 
 ```mermaid
 flowchart TD
-    START[Startup probe] --> ENV{Read env:<br/>XDG_CURRENT_DESKTOP<br/>HYPRLAND_INSTANCE_SIGNATURE<br/>XDG_SESSION_TYPE}
-    ENV -->|Hyprland / wlroots| WLR{wlroots protocols<br/>available?}
-    ENV -->|Other Wayland| PORTAL_Q{Portal backend<br/>responding on D-Bus?}
+    START[Startup probe] --> ENV{Read env:<br/>XDG_CURRENT_DESKTOP<br/>HYPRLAND_INSTANCE_SIGNATURE<br/>SWAYSOCK · WAYFIRE_SOCKET<br/>KDE_SESSION_VERSION · XDG_SESSION_TYPE}
+    ENV -->|wlroots family<br/>Hyprland/sway/Wayfire/river| WLR{wlroots protocols<br/>available?}
+    ENV -->|KDE / GNOME / Other Wayland| PORTAL_Q{Portal backend<br/>responding on D-Bus?}
     ENV -->|X11 session| X11B[X11 backends<br/>scrot · xdotool · wmctrl]
     X11B --> CAP_X11[CaptureProvider = X11Capture<br/>scrot → portal]
     X11B --> IN_X11[InputProvider = X11Input<br/>xdotool → uinput → portal]
-    X11B --> WIN_X11[WindowProvider = X11Window<br/>wmctrl, non-Hyprland X11]
+    X11B --> WIN_X11[WindowProvider = X11Window<br/>wmctrl — GNOME/Other X11;<br/>KDE-X11 falls here after kdotool]
     WLR -->|wlr-screencopy| CAP_OK[CaptureProvider = WlrCapture]
     WLR -->|virtual-pointer +<br/>virtual-keyboard| IN_OK[InputProvider = WlrInput]
     WLR -->|protocol missing| UIN_Q{/dev/uinput<br/>writable?}
@@ -304,7 +336,7 @@ flowchart TD
     PORTAL_Q -->|RemoteDesktop iface| IN_P[InputProvider = PortalInput]
     PORTAL_Q -->|no response| CAP_X[CaptureProvider = None]
     HYPR_Q{hyprctl socket<br/>exists?} -->|yes| WIN_OK[WindowProvider = HyprctlWindow]
-    HYPR_Q -->|no + DISPLAY set| WIN_X[WindowProvider = X11Window<br/>via wmctrl]
+    HYPR_Q -->|no| WIN_NONE[WindowProvider = None<br/>no wmctrl fallback on Hyprland]
     LYRS_Q{zwlr_layer_shell_v1<br/>advertised?} -->|yes| OVL_OK[OverlayProvider = Overlay]
     LYRS_Q -->|no / X11| OVL_NONE[None — screen_highlight<br/>returns ProviderUnavailable]
     ATSPI_Q{AT-SPI2 bus<br/>live?} -->|yes| UIA_OK[UIAutomationProvider = AtspiUi]
@@ -323,7 +355,7 @@ flowchart TD
     IN_P --> DONE
     IN_X11 --> DONE
     WIN_OK --> DONE
-    WIN_X --> DONE
+    WIN_NONE --> DONE
     WIN_X11 --> DONE
     OVL_OK --> DONE
     OVL_NONE --> DONE
@@ -335,15 +367,16 @@ flowchart TD
 documents (including §4 above and TOOLS.md) summarize or reference it rather
 than restating it:
 
-| Provider | Chain (as shipped at v1.1.0) |
+| Provider | Chain (as shipped at v1.2.0) |
 | -------- | ----- |
-| Capture | Wayland: `wlr-screencopy-unstable-v1` (in-process) → `grim`/`slurp` → XDG Portal `Screenshot` (zbus; `RemoteDesktop`+PipeWire stream when only `RemoteDesktop` is advertised) → `None`. X11: `scrot` (`X11Capture`) → portal → `None` |
+| Capture | Wayland: `wlr-screencopy-unstable-v1` (in-process) → `grim`/`slurp` → XDG Portal `Screenshot` (zbus; `RemoteDesktop`+PipeWire stream when only `RemoteDesktop` is advertised and the `pipewire` feature is enabled) → `None`. X11: `scrot` (`X11Capture`) → portal → `None` |
 | Input | Wayland: `zwlr_virtual_pointer_v1` + `virtual-keyboard-unstable-v1` (no root on Hyprland) → `/dev/uinput` + evdev → Portal `RemoteDesktop` → `None`. X11: `xdotool` (`X11Input`) → uinput → portal → `None` |
-| Window | `hyprctl` IPC socket → `None` on Hyprland; `wmctrl` + `xdotool`/`xprop` (`X11Window`) → `None` on other X11 sessions |
+| Window | Hyprland: `hyprctl` IPC socket → `None`. Sway: `sway-ipc` on `$SWAYSOCK` (`SwayWindow`) → `None`. KDE-Wayland: `kdotool` (`KdotoolWindow`, gated on the KDE session marker + pinned binary) → `None`. KDE-X11: `kdotool` → `wmctrl` (`X11Window`) → `None`. GNOME-Wayland, Wayfire, river: `None` (no general window IPC). Other X11: `wmctrl` + `xdotool`/`xprop` (`X11Window`) → `None` |
 | Overlay | `zwlr_layer_shell_v1` (`Overlay`, Wayland-only) → `None` |
 | UI Automation | AT-SPI2 via `atspi` crate → `None` |
-| Vision | `ort` ONNX: CPU EP → OpenVINO/CUDA EPs behind `vision-openvino`/`vision-cuda` features → `None` |
+| Vision | `ort` ONNX: CPU EP → OpenVINO/CUDA/ROCm EPs behind `vision-openvino`/`vision-cuda`/`vision-rocm` features (`ort/load-dynamic` + `ORT_DYLIB_PATH`) → `None` |
 | Browser | CDP WebSocket `127.0.0.1:9222` → `None` |
+| Clipboard | Wayland: `wl-copy`/`wl-paste` (`WlClipboard`, needs `WAYLAND_DISPLAY` + pinned helpers) → `xclip`/`xsel` (`XclipClipboard`, XWayland rung when `DISPLAY` is set) → `None`. X11: `xclip`/`xsel` → `None` |
 
 **X11-native rungs (shipped at v1.1.0):** `X11Capture` (`scrot` frames,
 `xdotool getmouselocation` pointer position, `xrandr`/`xdotool` geometry),
@@ -362,6 +395,20 @@ protocol as `hyprctl -j`), avoiding process spawn on the hot path; the
 arg-constrained `hyprctl` binary remains the fallback for
 `system_command`-driven window ops.
 
+**sway IPC (shipped at v1.2.0):** `SwayWindow` speaks sway's i3-flavoured
+binary wire protocol over `$SWAYSOCK` — `GET_TREE` for
+list/active/geometry, `RUN_COMMAND` scoped to `[con_id=N]` criteria with a
+closed command set (`focus`, `kill`, `move scratchpad`,
+`move absolute position`, `resize set|grow|shrink`; `exec` is unreachable).
+`minimize` honestly maps to the scratchpad and move/resize are
+floating-window ops (no-op on tiled nodes). Backend name `"sway-ipc"`.
+
+**Clipboard helpers (shipped at v1.2.0):** `WlClipboard` spawns the pinned
+`wl-copy`/`wl-paste` binaries (payload over stdin, never argv; bounded
+execution, scrubbed environment) and `XclipClipboard` does the same with
+`xclip`/`xsel` for X11 and the XWayland rung. Reads are text-first —
+binary MIME payloads never cross the provider boundary.
+
 **uinput fallback:** `UinputInput` requires the documented udev rule
 (`packaging/99-ultranix-mcp-uinput.rules`:
 `SUBSYSTEM=="uinput", MODE="0660", GROUP="ultranix-input", OPTIONS+="static_node=uinput"`,
@@ -378,7 +425,7 @@ graph LR
     CACHE -->|OCR/icon results| OCRCACHE[OCR Cache<br/>10s TTL, in-memory]
     CACHE -->|All calls| HISTORY[Action History]
     OCRCACHE --> MEM[DashMap<br/>blake3-keyed: ocr/frame · icon/frame/desc]
-    HISTORY --> ENC[AES-256-GCM<br/>~/.ultranix-mcp/history.json]
+    HISTORY --> ENC[AES-256-GCM UNXHIST2 frames<br/>~/.ultranix-mcp/history.json]
     HISTORY --> AUDITL[JSONL audit<br/>~/.ultranix-mcp/logs/audit.jsonl]
     MODELS[ONNX models<br/>~/.ultranix-mcp/models/] -.->|lazy load<br/>once per session| PVIS2[VisionProvider]
 ```
@@ -395,8 +442,24 @@ graph LR
   `~/.ultranix-mcp/history.json`, AES-256-GCM encrypted at rest (key material from
   `ULTRANIX_MCP_HISTORY_SECRET` or a generated per-install secret under
   `~/.ultranix-mcp/`, mode 0700); powers `get_action_history` and `replay_action`.
+  v1.2.0 replaced the whole-file format with the **v2 framed append log**:
+  an 8-byte `UNXHIST2` magic header plus one AES-256-GCM-sealed frame per
+  record, so `record()` appends in O(1) instead of re-encrypting and
+  rewriting the entire blob. Full rewrites now happen only for FIFO-cap
+  eviction and the automatic v1→v2 migration (a v1 file is detected by the
+  absent magic, read normally, and rewritten on the next append).
+  Encryption, redaction, and cap semantics are unchanged.
   Blocking store work (history appends/`clear()` and audit appends) runs on
   `spawn_blocking`, off the async executor.
+- **AT-SPI element-scan cache** — shipped at v1.2.0 (`atspi.rs`):
+  `find_element`/`find_elements`/`invoke_element`/`wait_for_ui_element`
+  evaluate their query against a cached whole-desktop `TreeScan` with a
+  300 ms TTL (measured from scan completion) instead of re-walking the
+  D-Bus tree per call — `wait_for_ui_element`'s 250 ms polls now share one
+  scan per TTL window rather than rescanning every poll. Staleness is
+  bounded by TTL + one poll interval + scan time (~550 ms + scan);
+  `path:/i/j` index queries bypass the cache since direct navigation is
+  cheaper and stays exact.
 - **Model cache** — ONNX weights (OCR + OWL-ViT) under
   `~/.ultranix-mcp/models/`, downloaded on first vision call, pinned by SHA-256.
 - **Spatial-focus state** — `set_spatial_focus` stores a process-global
@@ -440,7 +503,7 @@ them. The registry is the dependency-free exporter in `src/metrics.rs` — no
 | `ultranix_mcp_ocr_cache_entries` | Gauge | — | Live entries in the ONNX vision result cache (§6) |
 
 Health endpoints: `/health` (process alive, <10ms cached) and `/readyz` (reports
-which of the seven providers resolved to `Some`, enabling precise readiness gating).
+which of the eight providers resolved to `Some`, enabling precise readiness gating).
 
 ## Data Flow
 
@@ -511,8 +574,9 @@ sequenceDiagram
 | **D-Bus** | `zbus` | XDG Desktop Portal (Screenshot, RemoteDesktop) |
 | **Accessibility** | `atspi` | AT-SPI2 client |
 | **Kernel input** | `evdev` / `uinput` crates | fallback input path |
-| **Compositor IPC** | Unix socket JSON (hyprctl wire protocol) | `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock` |
-| **ML inference** | `ort` (ONNX Runtime) | EPs: CPU → OpenVINO → CUDA; OCR + OWL-ViT |
+| **Compositor IPC** | Unix socket JSON (hyprctl wire protocol); sway i3-flavoured binary IPC | `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock`; `$SWAYSOCK` |
+| **Clipboard helpers** | `wl-copy`/`wl-paste` (wl-clipboard), `xclip`/`xsel` | pinned at startup; stdin payload, scrubbed env, bounded exec |
+| **ML inference** | `ort` (ONNX Runtime) | EPs: CPU → OpenVINO → CUDA → ROCm; OCR + OWL-ViT |
 | **Browser bridge** | `tokio-tungstenite` CDP client | `127.0.0.1:9222` |
 | **Crypto** | `aes-gcm` | AES-256-GCM history encryption |
 | **Serialization** | `serde` / `serde_json` | schemas, history, audit |
@@ -583,7 +647,9 @@ graph TD
 | Brute-force / abuse over HTTP | 10 req/s token bucket + loopback-only default bind + fail-closed bind when no key is configured |
 | Unauthorized access | `uxcp_*` key auth on HTTP (`X-API-Key` canonical, `Bearer` accepted); constant-time compare |
 | Destructive-action abuse | Consent gate (`-32015` challenge, single-use 60s CSPRNG tokens bound to `key_id`/session + `args_hash`; replay never inherits consent) + tamper-evident audit (`prev_hash` chain) |
-| History disclosure at rest | AES-256-GCM on `history.json`, dir mode 0700 |
+| Plugin macro abuse | Manifests are declarative JSON (no code exec); strict name/version/param/step validation; steps limited to real catalog tools with `plugin_*` rejected (no recursion); every step re-enters the secured dispatch — per-step consent challenge, audit, history, metrics |
+| Clipboard data abuse | Text-first contract (binary MIME never crosses the provider); 1 MiB write cap; payload over stdin not argv; `clipboard_set`/`clipboard_clear` consent-gated; helpers pinned + env-scrubbed |
+| History disclosure at rest | AES-256-GCM on `history.json` (UNXHIST2 framed records), dir mode 0700 |
 | Data exfiltration | JSONL audit trail of every call; metrics on anomalies |
 | Resource exhaustion (OCR/vision) | Rate limit + spatial-focus caps + model load once |
 | Session hijack of portal prompts | Portal calls carry `org.freedesktop.portal` session tokens; failures degrade to `None`, never escalate privileges |
@@ -704,7 +770,9 @@ xdg-desktop-portal-hyprland, AT-SPI2 live, Rust 1.98.1):
 | `color_at` | <60ms | 1×1 screencopy + PNG decode | one capture, centre-pixel sample |
 | `get_ui_tree` | **<500ms** | AT-SPI2 | full recursive snapshot; child proxies built in parallel (`join_all`) |
 | `get_focused_element` | <100ms | AT-SPI2 | per-app active-window scan, parallel across apps (`join_all`) |
-| `find_element` | <500ms | AT-SPI2 | tree scan + match; returns up to 10 matches (`find_elements`) |
+| `find_element` | <500ms | AT-SPI2 | cached `TreeScan` (300 ms TTL) + match; returns up to 10 matches (`find_elements`) |
+| `wait_for_ui_element` | poll-bounded | AT-SPI2 | 250 ms polls share the cached scan per TTL window — no per-poll tree walk |
+| `screen_record` | duration-bounded | active `CaptureProvider` | ≤600 frames / ≤512 MiB; `rec-<ulid>` dir + `manifest.json` |
 | `find_text_on_screen` (cached) | <1ms | OCR cache (10s TTL, blake3-keyed) | memoized `Detection`s; hit requires identical frame bytes |
 | `find_text_on_screen` (uncached) | **<2s** | ort CPU EP | OpenVINO/CUDA reduce further |
 | `find_icon` (OWL-ViT) | <2s | ort, EP-dependent | zero-shot, no retraining |
@@ -733,17 +801,20 @@ Implement the trait, probe it in `src/backend/detect.rs`, and insert it into the
 provider's fallback chain — no tool code changes:
 
 ```rust
-struct SwayMsgWindow; // e.g., a sway-ipc WindowProvider
+struct MyWindowBackend; // e.g., a hypothetical new compositor IPC
 
 #[async_trait]
-impl WindowProvider for SwayMsgWindow {
-    async fn list_windows(&self) -> Result<Vec<WindowInfo>> { /* sway IPC */ }
-    async fn focus_window(&self, id: &str) -> Result<()> { /* ... */ }
+impl WindowProvider for MyWindowBackend {
+    async fn list_windows(&self) -> Result<Vec<WindowInfo>> { /* ... */ }
+    async fn active_window(&self) -> Result<Option<WindowInfo>> { /* ... */ }
     // ...
 }
 
-// detect.rs — insert into the window ladder's candidate list (e.g. before
-// `WindowBackend::Wmctrl` on sway sessions).
+// detect.rs — insert into the window ladder's candidate list.
+// `KdotoolWindow` at src/providers/kdotool_window.rs (wired on the
+// `WindowBackend::Kdotool` rung for KDE sessions) and `SwayWindow` at
+// src/providers/sway_window.rs are the shipped examples of this
+// pattern.
 ```
 
 ### Registering a custom metric
@@ -761,7 +832,7 @@ crate::metrics::record_call(tool_name, elapsed, "ok");
 
 | Phase | Scope | Exit criteria |
 | ----- | ----- | ------------- |
-| **0 — Scaffold + mocks** | Cargo workspace, rmcp server skeleton (stdio + streamable-HTTP `:3010` transports), all 7 traits + mock providers, `tools/list`/`tools/call` golden | Server lists all 32 tools with mocks; CI green |
+| **0 — Scaffold + mocks** | Cargo workspace, rmcp server skeleton (stdio + streamable-HTTP `:3010` transports), provider traits + mock providers (7 traits at v1.0.0; 8 since the v1.2.0 `ClipboardProvider`), `tools/list`/`tools/call` golden | Server lists all tools with mocks (32 at v1.0.0; 39 since v1.2.0); CI green |
 | **1 — Hyprland I/O + security scaffolding** | wlr-screencopy capture, virtual-pointer/keyboard input, hyprctl WindowProvider; input sanitization, arg-constrained exec, path whitelist, audit skeleton, consent gate | Screenshot <50ms, click <10ms on real Hyprland; consent challenge on `system_command` |
 | **2 — AT-SPI2** | `AtspiUi` provider: tree, focus, multi-match `find_element`, AT-SPI action invocation (`invoke_element`); `set_spatial_focus` shipped process-scoped; `screen_highlight` draws a real `zwlr_layer_shell_v1` overlay (the layer-shell `Overlay` backend landed at v1.1.0) | `get_ui_tree` <500ms on live session |
 | **3 — Vision + CDP** | ort OCR + OWL-ViT, model cache, `CdpBrowser`, blake3-keyed OCR/icon result cache (v1.1.0) | `find_text_on_screen` <2s; `web_query` on :9222 |

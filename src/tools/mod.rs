@@ -1,10 +1,13 @@
 //! Tool registry: schemas, categories, dispatch. Canonical catalog lives in
-//! docs/TOOLS.md — this module is its compiled mirror (32 tools).
+//! docs/TOOLS.md — this module is its compiled mirror (39 tools).
 
 mod admin;
 mod automation;
+mod clipboard;
 mod keyboard;
 mod mouse;
+mod plugin;
+mod record;
 mod vision;
 
 use std::sync::{Arc, LazyLock};
@@ -57,6 +60,7 @@ const CATALOG: &[(&str, &[&str])] = &[
             "find_icon",
             "wait_for_ui_element",
             "invoke_element",
+            "screen_record",
         ],
     ),
     (
@@ -73,19 +77,29 @@ const CATALOG: &[(&str, &[&str])] = &[
             "get_action_history",
             "replay_action",
             "clear_action_history",
+            "plugin_list",
+            "plugin_run",
+            "plugin_reload",
         ],
+    ),
+    (
+        "clipboard",
+        &["clipboard_get", "clipboard_set", "clipboard_clear"],
     ),
 ];
 
 /// Every advertised tool definition, built once (schemas are static).
 fn all_tools() -> &'static [Tool] {
     static ALL: LazyLock<Vec<Tool>> = LazyLock::new(|| {
-        let mut v = Vec::with_capacity(32);
+        let mut v = Vec::with_capacity(39);
         v.extend(mouse::tools());
         v.extend(keyboard::tools());
         v.extend(vision::tools());
         v.extend(automation::tools());
         v.extend(admin::tools());
+        v.extend(clipboard::tools());
+        v.extend(record::tools());
+        v.extend(plugin::tools());
         v
     });
     &ALL
@@ -189,6 +203,15 @@ async fn dispatch(
     if let Some(r) = admin::dispatch(name, args, providers).await {
         return r;
     }
+    if let Some(r) = clipboard::dispatch(name, args, providers).await {
+        return r;
+    }
+    if let Some(r) = record::dispatch(name, args, providers).await {
+        return r;
+    }
+    if let Some(r) = plugin::dispatch(name, args, providers).await {
+        return r;
+    }
     Err(unknown_tool(name))
 }
 
@@ -219,6 +242,17 @@ async fn dispatch_secured(
     }
     if let Some(r) =
         admin::dispatch_secured(name, args, providers, security, session_id, key_id).await
+    {
+        return r;
+    }
+    if let Some(r) = clipboard::dispatch(name, args, providers).await {
+        return r;
+    }
+    if let Some(r) = record::dispatch(name, args, providers).await {
+        return r;
+    }
+    if let Some(r) =
+        plugin::dispatch_secured(name, args, providers, security, session_id, key_id).await
     {
         return r;
     }
@@ -308,6 +342,10 @@ fn consent_required(token: &str, expires_in_ms: u64, tool: &str) -> ErrorData {
 fn is_destructive(name: &str, args: &Map<String, Value>) -> bool {
     match name {
         "system_command" | "clear_action_history" | "replay_action" => true,
+        // Clipboard writes destroy user state (and can plant hostile
+        // paste content) — same destructive class as the other mutating
+        // tools.
+        "clipboard_set" | "clipboard_clear" => true,
         "window_control" => args.get("action").and_then(Value::as_str) == Some("close"),
         _ => false,
     }
@@ -535,7 +573,7 @@ pub async fn call_tool_secured<'a>(
         let rec = crate::security::history::NewActionRecord {
             tool: name.to_string(),
             args_json: recorded,
-            result_summary: result_summary(&result),
+            result_summary: result_summary(name, &result),
             caller: key_id.unwrap_or(session_id).to_string(),
             duration_ms: elapsed.as_millis() as u64,
             outcome: outcome.to_string(),
@@ -587,8 +625,49 @@ async fn resolve_close_target(
 }
 
 /// First text block of a tool result (or the error line) — the summary
-/// persisted beside each action-history record.
-fn result_summary(result: &Result<CallToolResult, ErrorData>) -> String {
+/// persisted beside each action-history record. `clipboard_get` is
+/// special-cased: clipboard contents are secrets-adjacent (password
+/// managers copy through the clipboard), so the summary keeps only the
+/// MIME type and payload length — never the payload itself, the same
+/// threat model as the `type_text`/`clipboard_set` arg redaction.
+/// `plugin_run` is also special-cased: step payloads (which may come from
+/// secret-bearing tools like `clipboard_get`) are never persisted; only
+/// the plugin name and step count are recorded.
+fn result_summary(tool: &str, result: &Result<CallToolResult, ErrorData>) -> String {
+    if tool == "plugin_run"
+        && let Ok(r) = result
+    {
+        return r
+            .content
+            .first()
+            .and_then(ContentBlock::as_text)
+            .and_then(|t| serde_json::from_str::<Value>(&t.text).ok())
+            .map(|v| {
+                format!(
+                    "plugin={} steps={}",
+                    v.get("plugin").and_then(Value::as_str).unwrap_or("?"),
+                    v.get("steps_run").and_then(Value::as_u64).unwrap_or(0)
+                )
+            })
+            .unwrap_or_else(|| "<plugin run>".into());
+    }
+    if tool == "clipboard_get"
+        && let Ok(r) = result
+    {
+        return r
+            .content
+            .first()
+            .and_then(ContentBlock::as_text)
+            .and_then(|t| serde_json::from_str::<Value>(&t.text).ok())
+            .map(|v| {
+                format!(
+                    "mime={} len={}",
+                    v.get("mime").and_then(Value::as_str).unwrap_or("?"),
+                    v.get("text").and_then(Value::as_str).map_or(0, str::len)
+                )
+            })
+            .unwrap_or_else(|| "<clipboard read>".into());
+    }
     match result {
         Ok(r) => r
             .content
@@ -643,11 +722,18 @@ async fn exec_system_command(
         .map_err(|e| whitelist_error_data(&e))?;
 
     // Pinned absolute path, scrubbed environment (S-10), kill-on-drop so
-    // a timed-out wait still reaps the child, 15 s budget, 64 KiB
-    // stdout/stderr truncation (docs/TOOLS.md contract).
+    // a timed-out wait still reaps the child, 15 s budget, 4 MiB
+    // stdout/stderr capture via `spawn::output_within` (unbounded
+    // post-exit buffering removed in v1.2.0). The outer timeout
+    // preserves the `{"timed_out": true}` contract; the inner bound is
+    // a defensive backstop only.
     let argv: Vec<&str> = inv.argv[1..].iter().map(String::as_str).collect();
     let mut cmd = crate::security::spawn::command(&inv.abs_path, &argv);
-    let out = tokio::time::timeout(std::time::Duration::from_secs(15), cmd.output()).await;
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        crate::security::spawn::output_within(&mut cmd, std::time::Duration::from_secs(30)),
+    )
+    .await;
 
     // Unlink the server-supplied capture file after use (unlink-after-use).
     if let Some(d) = &capture_dir {
@@ -921,11 +1007,14 @@ mod tests {
     }
 
     #[test]
-    fn catalog_has_32_tools() {
+    fn catalog_covers_every_built_tool() {
         let all = list_tools(None);
-        assert_eq!(all.len(), 32, "expected the full 32-tool catalog");
         let total: usize = CATALOG.iter().map(|(_, names)| names.len()).sum();
-        assert_eq!(total, 32);
+        assert_eq!(
+            all.len(),
+            total,
+            "every catalog name must map to a built tool"
+        );
         // every catalog name maps to a built tool, and vice versa
         for t in &all {
             assert!(
@@ -941,7 +1030,9 @@ mod tests {
         let mouse = list_tools(Some(&["mouse".to_string()]));
         assert_eq!(mouse.len(), 7);
         let kb_admin = list_tools(Some(&["keyboard".to_string(), "admin".to_string()]));
-        assert_eq!(kb_admin.len(), 9);
+        assert_eq!(kb_admin.len(), 12);
+        let clipboard = list_tools(Some(&["clipboard".to_string()]));
+        assert_eq!(clipboard.len(), 3);
         let empty = list_tools(Some(&[]));
         assert_eq!(empty.len(), 0);
     }

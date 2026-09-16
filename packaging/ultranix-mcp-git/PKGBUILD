@@ -3,7 +3,7 @@ pkgname=ultranix-mcp-git
 _pkgname=ultranix-mcp
 pkgver=1.1.0.r0.g0000000
 pkgrel=1
-pkgdesc="Wayland-native, security-first MCP server for Linux desktop automation (Hyprland-first) — git build"
+pkgdesc="Wayland-native, security-first MCP server for Linux desktop automation (Hyprland-first, with sway/KDE fallbacks and clipboard tools) — git build"
 arch=('x86_64' 'aarch64')
 url="https://github.com/jxoesneon/ultranix-mcp"
 license=('ISC')
@@ -18,7 +18,7 @@ optdepends=(
   'xdg-desktop-portal-wlr: portal backend for other wlroots compositors'
   'xdg-desktop-portal-gnome: portal backend under GNOME'
   'pipewire: PipeWire daemon for the portal RemoteDesktop capture stream (v1.1.0+ consumes the video fd when Screenshot is not advertised)'
-  'wl-clipboard: post-v1 clipboard tools (wl-copy/wl-paste) — NOT a v1 runtime dep'
+  'wl-clipboard: Wayland clipboard tools (wl-copy/wl-paste) used by the clipboard backend'
   'at-spi2-core: semantic UI tree (a11y backend)'
   'onnxruntime: system ONNX Runtime for ORT_STRATEGY=system builds'
   'grim: whitelisted system_command capture helper (wlroots)'
@@ -26,6 +26,9 @@ optdepends=(
   'xdotool: X11 input fallback + pointer position (X11 sessions only)'
   'scrot: X11 capture fallback (X11 sessions only)'
   'wmctrl: X11 window-management fallback (X11 sessions only)'
+  'xclip: X11 clipboard tool used by the clipboard backend'
+  'xsel: X11 clipboard clear helper used by the clipboard backend'
+  'kdotool: KDE KWin window-management helper'
   'xorg-xrandr: X11 output-geometry enrichment for the capture backend (X11 sessions only)'
   'xorg-xprop: X11 _NET_WM_STATE enrichment for the window backend (X11 sessions only)'
 )

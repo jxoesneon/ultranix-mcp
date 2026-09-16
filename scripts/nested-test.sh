@@ -7,7 +7,7 @@
 # `ultranix-mcp --transport stdio` bound to it, and drives the read-only
 # MCP flow over JSON-RPC:
 #
-#   initialize → tools/list (assert exactly 32 tools) → get_windows
+#   initialize → tools/list (assert exactly 39 tools) → get_windows
 #   → screen_info → screenshot (assert PNG magic bytes) → get_ui_tree
 #   → stdin EOF (shutdown; stdio MCP has no `shutdown` method — EOF is
 #   the spec'd teardown and rmcp exits 0 on it)
@@ -21,8 +21,8 @@
 #   sway      `WLR_BACKENDS=headless sway -c <minimal>`; a HEADLESS output
 #             is created via `swaymsg create_output`. wlroots screencopy
 #             works, so the PNG assertion is fully exercised; the window
-#             provider is hyprctl-only, so get_windows must return the
-#             structured -32010 ProviderUnavailable error.
+#             provider is `SwayWindow` over sway IPC, so get_windows must
+#             succeed the same as under Hyprland.
 #   weston    `weston --backend=headless-backend.so` — last resort:
 #             weston lacks wlr-screencopy, so screenshot/screen_info
 #             accept -32010 / isError instead of a PNG (documented
@@ -359,12 +359,12 @@ export ULTRANIX_NESTED_TIMEOUT="${TIMEOUT}"
 # JSON-RPC driver. Speaks MCP-over-stdio: newline-delimited JSON-RPC on
 # stdin/stdout (server diagnostics are on stderr → $SERVER_LOG).
 #
-# Step expectations are mode-aware: the window provider only exists under
-# Hyprland (hyprctl IPC), and capture only where wlr-screencopy/grim can
-# work (hyprland, sway). Under weston those calls must still fail
-# *cleanly* — structured -32010 or an isError result, never a transport
-# failure. get_ui_tree is informational: AT-SPI2 availability depends on
-# the session bus, not the compositor.
+# Step expectations are mode-aware: the window provider exists under
+# Hyprland (hyprctl IPC) and sway (sway IPC); capture works where
+# wlr-screencopy/grim can work (hyprland, sway). Under weston those calls
+# must still fail *cleanly* — structured -32010 or an isError result, never
+# a transport failure. get_ui_tree is informational: AT-SPI2 availability
+# depends on the session bus, not the compositor.
 # ---------------------------------------------------------------------------
 python3 - <<'PYEOF'
 import base64
@@ -384,7 +384,7 @@ HOME_DIR = os.environ["ULTRANIX_NESTED_HOME"]
 SERVER_LOG = os.environ["ULTRANIX_NESTED_SERVER_LOG"]
 TIMEOUT = float(os.environ.get("ULTRANIX_NESTED_TIMEOUT", "20"))
 
-EXPECT_WINDOW = MODE == "hyprland"
+EXPECT_WINDOW = MODE in ("hyprland", "sway")
 EXPECT_CAPTURE = MODE in ("hyprland", "sway")
 DESKTOP = {"hyprland": "Hyprland", "sway": "sway:wlroots", "weston": "weston"}.get(MODE, MODE)
 PROVIDER_UNAVAILABLE = -32010
@@ -495,7 +495,7 @@ try:
     r = read_reply(2)
     tools = (r.get("result") or {}).get("tools") or []
     names = sorted(t.get("name") for t in tools)
-    step(len(tools) == 32, "tools/list", f"{len(tools)} tools")
+    step(len(tools) == 39, "tools/list", f"{len(tools)} tools")
     for needed in ("get_windows", "screen_info", "screenshot", "get_ui_tree"):
         step(needed in names, f"tools/list contains {needed}")
 
@@ -520,8 +520,10 @@ try:
                 detail = "non-JSON payload"
         step(ok, "get_windows (hyprctl provider)", detail or json.dumps(r)[:160])
     else:
+        # Sway now has a real window provider; weston/wlroots compositors
+        # without a known IPC fall back to ProviderUnavailable.
         step(rpc_error_code(r) == PROVIDER_UNAVAILABLE or is_error_result(tool_result(r)),
-             "get_windows → structured unavailable (no hyprctl under non-Hyprland)",
+             "get_windows → structured unavailable (no window IPC under this compositor)",
              f"code={rpc_error_code(r)}")
 
     # --- screen_info --------------------------------------------------------

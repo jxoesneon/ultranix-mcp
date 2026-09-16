@@ -2,7 +2,7 @@
 
 Complete API specification for every tool exposed by **ultranix-mcp**, the
 Rust MCP server for Linux desktop automation. This document describes the
-shipped v1.1.0 tool surface.
+shipped v1.2.0 tool surface.
 
 - **Server**: `ultranix-mcp` (Rust 2024, tokio, `rmcp` SDK)
 - **Transports**: stdio and streamable HTTP on `:3010` (canonical JSON-RPC
@@ -23,7 +23,9 @@ shipped v1.1.0 tool surface.
   short-lived challenge token on first call; retry with `consent_token`.
   See [Destructive-Action Consent](#destructive-action-consent).
 - **State directory**: `~/.ultranix-mcp/` — AES-256-GCM action history
-  (`history.json`), JSONL audit log (`audit.jsonl`), config.
+  (`history.json`, `UNXHIST2` framed append format since v1.2.0), JSONL
+  audit log (`audit.jsonl`), config, plugin manifests (`plugins/*.json`),
+  `screen_record` output (`captures/rec-*`).
 
 ---
 
@@ -46,6 +48,8 @@ shipped v1.1.0 tool surface.
 - [Vision & Screen Tools](#vision--screen-tools)
 - [Automation Tools](#automation-tools)
 - [Admin & Observability Tools](#admin--observability-tools)
+- [Clipboard Tools](#clipboard-tools)
+- [Plugin Manifests](#plugin-manifests)
 - [Maturity Phases](#maturity-phases)
 
 ---
@@ -64,10 +68,11 @@ canonical normative fallback-chain table lives in
 | `OverlayProvider` | Highlight overlays | `wlr-layer-shell` (`zwlr_layer_shell_v1`, `overlay` layer) | — (returns `ProviderUnavailable` when the compositor lacks layer-shell) |
 | `InputProvider` | Pointer and keyboard injection | `wlr-virtual-pointer` + `virtual-keyboard` (zwlr_virtual_pointer_manager_v1 / virtual-keyboard-unstable-v1) | `/dev/uinput` → XDG Portal `RemoteDesktop`. On X11 sessions `xdotool` (`X11Input`, backend name `"xdotool"`) is tried first, then uinput → portal |
 | `UIAutomationProvider` | Accessibility tree, element search, AT-SPI action invocation | AT-SPI2 via the `atspi` crate over D-Bus | — (returns `ProviderUnavailable` when the AT-SPI bus is absent) |
-| `WindowProvider` | Window enumeration and control | `hyprctl` IPC (`hyprctl -j`) over `$XDG_RUNTIME_DIR/hypr/` sockets | `wmctrl` + `xdotool`/`xprop` (`X11Window`, backend name `"wmctrl"`) on non-Hyprland X11 sessions; `None` elsewhere off-Hyprland |
+| `WindowProvider` | Window enumeration and control | `hyprctl` IPC (`hyprctl -j`) over `$XDG_RUNTIME_DIR/hypr/` sockets | sway IPC over `$SWAYSOCK` (`SwayWindow`, backend name `"sway-ipc"`) on sway sessions; `kdotool` subprocess (`KdotoolWindow`, backend name `"kdotool"`) on KDE sessions (Wayland and X11 — it drives KWin on both); `wmctrl` + `xdotool`/`xprop` (`X11Window`, backend name `"wmctrl"`) on other X11 sessions — and as the KDE-X11 fallback rung behind `kdotool`; `None` elsewhere |
 | `VisionProvider` | OCR and open-vocabulary detection | ONNX Runtime (`ort`): text OCR model + OWL-ViT | — (tools fail closed with `ProviderUnavailable`) |
 | `BrowserProvider` | DOM queries | Chrome DevTools Protocol at `127.0.0.1:9222` | — (requires the browser launched with `--remote-debugging-port=9222`) |
-| Server core | Timing, session state, history, metrics | tokio timers, `~/.ultranix-mcp/` stores | — |
+| `ClipboardProvider` | Clipboard read/write | `wl-copy`/`wl-paste` (`wl-clipboard`, backend name `"wl-clipboard"`) on Wayland | `xclip` (+ `xsel` for clear; backend name `"xclip"`) on X11 and as the XWayland rung on Wayland |
+| Server core | Timing, session state, history, metrics, plugin macros | tokio timers, `~/.ultranix-mcp/` stores | — |
 
 ---
 
@@ -96,6 +101,7 @@ canonical normative fallback-chain table lives in
 | `find_text_on_screen` | vision | VisionProvider + CaptureProvider | 3 |
 | `find_icon` | vision | VisionProvider + CaptureProvider | 3 |
 | `wait_for_ui_element` | vision | UIAutomationProvider | 2 |
+| `screen_record` | vision | CaptureProvider | 6 |
 | `sleep` | automation | Server core | 1 |
 | `mouse_move_path` | automation | InputProvider | 1 |
 | `system_command` | automation | Server core (arg-constrained exec, consent-gated) | 1 |
@@ -107,8 +113,15 @@ canonical normative fallback-chain table lives in
 | `get_action_history` | admin | Server core (encrypted history) | 4 |
 | `replay_action` | admin | Server core (encrypted history, consent-gated) | 4 |
 | `clear_action_history` | admin | Server core (encrypted history, consent-gated) | 4 |
+| `plugin_list` | admin | Server core (plugin store) | 6 |
+| `plugin_run` | admin | Server core (plugin store; per-step secured dispatch) | 6 |
+| `plugin_reload` | admin | Server core (plugin store) | 6 |
+| `clipboard_get` | clipboard | ClipboardProvider | 6 |
+| `clipboard_set` | clipboard | ClipboardProvider (consent-gated) | 6 |
+| `clipboard_clear` | clipboard | ClipboardProvider (consent-gated) | 6 |
 
-**Total: 32 tools** (mouse 7 · keyboard 2 · vision 12 · automation 4 · admin 7).
+**Total: 39 tools** (mouse 7 · keyboard 2 · vision 13 · automation 4 ·
+admin 10 · clipboard 3).
 
 ---
 
@@ -264,7 +277,13 @@ challenge. The gated set is:
 - `system_command` (every invocation)
 - `replay_action`
 - `clear_action_history`
+- `clipboard_set`
+- `clipboard_clear`
 - `window_control` **only** when `action` is `"close"`
+
+The clipboard writes joined the class at v1.2.0: overwriting or clearing
+the clipboard destroys user state and can plant hostile content into the
+next paste. `clipboard_get` is a read and is **not** gated.
 
 **Consent-class boundary.** The gate covers the *state/system-mutating*
 class above and nothing else. UI-interaction tools (`mouse_click`,
@@ -355,8 +374,9 @@ Standard JSON-RPC 2.0 codes plus server-defined codes in the
 | `-32012` | `InputInjectionFailed` | Virtual input device failed | reserved — backend failures surface as `isError:true` results |
 | `-32013` | `FocusChanged` | Active window changed mid-action | delivered as `isError:true` result text (`FocusChanged: …`), not a JSON-RPC code |
 | `-32014` | `HistoryError` | Encrypted history store fault | corrupt `history.json`, bad `ULTRANIX_MCP_HISTORY_SECRET` |
-| `-32015` | `ConsentRequired` | Destructive call lacks a valid consent token | first `system_command`, `replay_action`, `clear_action_history`, or `window_control{action:"close"}` without `consent_token`; `data` carries the challenge token (see [Destructive-Action Consent](#destructive-action-consent)) |
+| `-32015` | `ConsentRequired` | Destructive call lacks a valid consent token | first `system_command`, `replay_action`, `clear_action_history`, `clipboard_set`, `clipboard_clear`, or `window_control{action:"close"}` without `consent_token`; `data` carries the challenge token (see [Destructive-Action Consent](#destructive-action-consent)) |
 | `-32016` | `ElementNotFound` | Action-targeted element query matched nothing | `invoke_element` query with no AT-SPI match |
+| `-32017` | `PluginStepError` | A `plugin_run` step failed at the tool level (`isError` result) or hit a post-validation template fault | `plugin_run` whose step returned an `isError` result; `data` carries `plugin`, `step`, `tool`, `detail`. JSON-RPC errors from the inner dispatch keep their own code instead (a step's `-32015 ConsentRequired` survives intact) |
 
 Example error response:
 
@@ -1212,6 +1232,117 @@ not an error).
 
 **Errors**: `InvalidParams`, `ProviderUnavailable`.
 
+### `screen_record`
+
+Record a bounded burst of screen captures: one PNG frame every
+`interval_ms` for up to `duration_ms`. This is the honest bounded version
+of "streaming capture", not a live stream — frames are written to a fresh
+`rec-<ulid>` directory (mode `0700`) under the captures root
+(`~/.ultranix-mcp/captures/` preferred, `/tmp` fallback) together with a
+`manifest.json`, and the directory is **kept** after the call returns.
+
+Shipped at v1.2.0. Works on any backend that can capture frames —
+wlr-screencopy and grim on wlroots sessions, the portal capture path on
+KDE/GNOME, `scrot` on X11 — and returns `-32010 ProviderUnavailable`
+where no `CaptureProvider` resolved.
+
+**inputSchema**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "duration_ms": {
+      "type": "integer", "minimum": 100, "maximum": 30000,
+      "description": "Total recording length in milliseconds"
+    },
+    "interval_ms": {
+      "type": "integer", "default": 250, "minimum": 50, "maximum": 5000,
+      "description": "Capture interval in milliseconds"
+    },
+    "region": {
+      "type": "object",
+      "description": "Crop rect in logical coordinates (same convention as screenshot)",
+      "properties": {
+        "x": { "type": "integer" },
+        "y": { "type": "integer" },
+        "w": { "type": "integer", "minimum": 1 },
+        "h": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["x", "y", "w", "h"],
+      "additionalProperties": false
+    },
+    "display": {
+      "type": "string",
+      "description": "Output name from screen_info (e.g. \"eDP-1\"); omit for all outputs"
+    }
+  },
+  "required": ["duration_ms"],
+  "additionalProperties": false
+}
+```
+
+Scope precedence mirrors `screenshot`: explicit `region` wins, then
+`display` resolves to that output's layout rect, else the full layout.
+The session spatial-focus rect is **not** consulted.
+
+Behaviour contract:
+
+- Target frame count is `duration_ms / interval_ms` (at least 1), hard-
+  capped at **600 frames**; total bytes written are hard-capped at
+  **512 MiB**. A frame that would cross the byte cap is dropped and the
+  recording ends with `truncated: true` / `stop_reason: "byte_cap"`.
+- Missed ticks delay rather than burst — successive captures stay at
+  least `interval_ms` apart even if a capture runs long.
+- The call always runs to its bound (duration, frame cap, or byte cap);
+  **mid-record cancellation is not supported**. For "live" UX, re-invoke
+  with small `duration_ms` values.
+- `manifest.json` is written on every exit path — including partial or
+  failed recordings — so the output directory is self-describing.
+- The `rec-<ulid>` dir is **kept** after the call returns — there is no
+  auto-prune; the operator removes recordings. Each recording is bounded
+  by the 512 MiB cap above.
+- **Not consent-gated**: the tool reads pixels and writes only into a
+  fresh server-owned `0700` directory — nothing caller-chosen is written
+  or destroyed.
+
+**Returns**: `text` containing JSON:
+
+```json
+{
+  "dir": "/home/user/.ultranix-mcp/captures/rec-01J9XKQV0R6T4H2Y8ZQ3N0AB12",
+  "frames": 40,
+  "duration_ms": 10042,
+  "truncated": false,
+  "manifest": {
+    "tool": "screen_record",
+    "schema": 1,
+    "backend": "wlr-screencopy",
+    "frame_target": 40,
+    "frames_written": 40,
+    "total_bytes": 1843200,
+    "byte_cap": 536870912,
+    "stop_reason": "duration",
+    "frames": [
+      { "file": "frame_0001.png", "bytes": 46080, "width": 1920, "height": 1080, "t_ms": 251 }
+    ]
+  }
+}
+```
+
+The manifest records `args`, `backend` (the resolved capture backend
+name), `region`/`display`, `started_at`/`finished_at`/`elapsed_ms`,
+`frames[]` (`file`, `bytes`, `width`, `height`, `t_ms`), `truncated`,
+`stop_reason` (`duration` | `byte_cap` | `capture_error` | `io_error`),
+and `error` when a failure occurred. A call that captures **zero** frames
+because the backend faulted is an `isError` result, not a success.
+
+**Errors**: `InvalidParams` (out-of-range `duration_ms`/`interval_ms`,
+`region` w/h < 1, unknown `display` name — the error lists the known
+outputs), `ProviderUnavailable` (no capture backend), `InternalError`
+(recording-dir creation failure). Backend capture faults mid-run surface
+as `isError` results with the partial manifest still on disk.
+
 ---
 
 ## Automation Tools
@@ -1603,7 +1734,9 @@ Read the AES-256-GCM-encrypted action history
 ```
 
 `result_summary` is truncated to 200 chars; arguments are stored verbatim
-except `type_text.text`, which is redacted to `"text": "<redacted:N chars>"`.
+except sensitive values: `type_text.text`, `clipboard_set.text`, and
+`plugin_run.params` are redacted to `<redacted:N chars>` / `<redacted:N params>`,
+and `clipboard_get` summaries keep only the MIME type and payload length.
 
 **Errors**: `HistoryError` (decrypt/read failure).
 
@@ -1683,6 +1816,316 @@ cleared by this tool. This is a destructive, consent-gated action (see
 **Errors**: `ConsentRequired` (no valid `consent_token`), `HistoryError`
 (filesystem failure; partial wipes are reported).
 
+### `plugin_list`
+
+List the plugin tool-macros loaded from `~/.ultranix-mcp/plugins/*.json`
+(see [Plugin Manifests](#plugin-manifests)). Shipped at v1.2.0.
+
+**inputSchema**
+
+```json
+{ "type": "object", "properties": {}, "additionalProperties": false }
+```
+
+**Returns**: `text` containing a JSON array — one entry per loaded plugin:
+
+```json
+[
+  {
+    "name": "focus-firefox",
+    "version": "1.0.0",
+    "description": "Focus the Firefox window",
+    "params": {
+      "title": { "type": "string", "required": true, "description": "title substring" }
+    },
+    "steps": 1
+  }
+]
+```
+
+The manifest dir is rescanned on **every** call (manifests are tiny; a live
+view beats cache invalidation), so edits are visible immediately.
+
+**Errors**: `InvalidParams` (any argument supplied).
+
+### `plugin_run`
+
+Execute a plugin tool-macro: bind `params` against the manifest's declared
+parameter spec, substitute `${param}` placeholders into each step's args,
+and run the steps in order. Shipped at v1.2.0.
+
+**inputSchema**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Plugin name as reported by plugin_list"
+    },
+    "params": {
+      "type": "object",
+      "description": "Parameter values for the manifest's declared params; undeclared keys are rejected"
+    }
+  },
+  "required": ["name"],
+  "additionalProperties": false
+}
+```
+
+Execution semantics:
+
+- `plugin_run` is **not** itself consent-gated. Each step re-enters the
+  normal dispatch path — `call_tool_secured` when a `SecurityContext`
+  exists (the production path), `call_tool` otherwise — exactly like
+  `replay_action` re-dispatches the recorded call. Destructive steps
+  therefore challenge the consent gate on their own
+  `{caller, tool, args_hash}` binding, are audited, and land in action
+  history; consent granted to `plugin_run`'s caller never covers a step.
+  A manifest that wants to thread a challenge token through declares a
+  `consent_token` string param and references `${consent_token}` in the
+  step args.
+- Steps run in manifest order and execution **stops on the first failing
+  step**. A step's `isError` result surfaces as `-32017 PluginStepError`;
+  a step's JSON-RPC error keeps its own code — a `-32015 ConsentRequired`
+  from a destructive step passes through intact (with `plugin`, `step`,
+  and `step_tool` added to `data`) so the client can retry with the
+  challenge token.
+- Steps can only name real catalog tools — `plugin_*` tools are rejected
+  at manifest load, so plugins cannot compose into unbounded macro
+  recursion.
+- `plugin_run` calls are themselves recorded in action history and are
+  replayable like any non-meta tool.
+
+**Returns**: `text` containing JSON:
+
+```json
+{
+  "plugin": "focus-firefox",
+  "steps_run": 1,
+  "results": [
+    { "step": 0, "tool": "window_control", "result": "focus applied to 0x5f3a21c0 (\"ultranix-mcp — Mozilla Firefox\")" }
+  ]
+}
+```
+
+Per-step `result` text is truncated to 200 chars (the action-history
+`result_summary` convention).
+
+**Errors**: `InvalidParams` (unknown plugin name, missing required param,
+undeclared param supplied, wrong param type, a step referencing an
+unsupplied optional param), `PluginStepError` (step `isError`), plus any
+JSON-RPC error a step raises (e.g. `ConsentRequired`,
+`ProviderUnavailable`).
+
+### `plugin_reload`
+
+Rescan `~/.ultranix-mcp/plugins/` and report what loaded and what was
+skipped. Scanning is always live — this tool exists to surface the
+diagnostics, not to flush state. Shipped at v1.2.0.
+
+**inputSchema**
+
+```json
+{ "type": "object", "properties": {}, "additionalProperties": false }
+```
+
+**Returns**: `text` containing JSON:
+
+```json
+{
+  "loaded": 1,
+  "plugins": [ { "name": "focus-firefox", "version": "1.0.0", "description": "…", "params": {}, "steps": 1 } ],
+  "skipped": [
+    { "file": "/home/user/.ultranix-mcp/plugins/broken.json", "error": "invalid name \"Bad_Name\": must match ^[a-z][a-z0-9-]{0,63}$" }
+  ]
+}
+```
+
+**Errors**: `InvalidParams` (any argument supplied).
+
+---
+
+## Clipboard Tools
+
+Clipboard tools read and write the desktop clipboard through
+`ClipboardProvider` (shipped at v1.2.0). The backend ladder is
+`wl-copy`/`wl-paste` (the `wl-clipboard` package) on Wayland sessions —
+with `xclip` (+ `xsel` for `clear`) as the XWayland rung behind it — and
+`xclip`/`xsel` on X11 sessions. Helpers are spawned through the pinned,
+env-scrubbed whitelist path (`wl-copy`, `wl-paste`, `xclip`, `xsel` are
+provider-internal pins — `system_command` cannot invoke them); write
+payloads are fed over **stdin, never argv**, so copied secrets cannot leak
+through the process list.
+
+Reads are **text-first by design**: `clipboard_get` surfaces UTF-8 text
+only — binary MIME payloads never cross the provider boundary. A
+non-text or empty clipboard reads as `text: null`.
+
+When no clipboard backend resolved (headless session, or no helper pinned
+at startup) all three tools return `-32010 ProviderUnavailable` with
+`data.provider = "ClipboardProvider"`.
+
+### `clipboard_get`
+
+Read the clipboard's text, or enumerate the MIME types the clipboard owner
+currently offers.
+
+**inputSchema**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "mime": {
+      "type": "string", "default": "text/plain", "minLength": 1, "maxLength": 256,
+      "description": "MIME type to read — \"text/plain\" (default), another text/* type or X11 text atom (UTF8_STRING, STRING, TEXT, COMPOUND_TEXT), or \"list\" to enumerate offered types"
+    }
+  },
+  "additionalProperties": false
+}
+```
+
+`mime` is a selection/validation surface, not a decoder: the provider
+contract is text-first, so every accepted text type reads the same text
+channel. Non-`text/*` values (e.g. `image/png`) are rejected —
+use `"list"` to see what is offered.
+
+**Returns**: `text` containing JSON — `{"mime": "text/plain", "text": "…"}`
+(`"text": null` when the clipboard is empty or holds no text), or
+`{"mimes": ["text/plain", "UTF8_STRING", …]}` for `mime: "list"`.
+
+**Errors**: `InvalidParams` (empty/unsupported `mime`, unknown fields),
+`ProviderUnavailable`.
+
+### `clipboard_set`
+
+Overwrite the clipboard with the given text (max **1 MiB** of UTF-8).
+This is a destructive, consent-gated action — see
+[Destructive-Action Consent](#destructive-action-consent): the first call
+without `consent_token` returns `-32015 ConsentRequired`; retry the
+identical call with the returned token.
+
+**inputSchema**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "text": {
+      "type": "string", "maxLength": 1048576,
+      "description": "Text to place on the clipboard (max 1 MiB)"
+    },
+    "consent_token": {
+      "type": "string",
+      "description": "Challenge token from a prior -32015 ConsentRequired response"
+    }
+  },
+  "required": ["text"],
+  "additionalProperties": false
+}
+```
+
+**Returns**: `text` — `"Copied <n> bytes to clipboard"`.
+
+**Errors**: `InvalidParams` (missing `text`, payload over 1 MiB),
+`ConsentRequired`, `ProviderUnavailable`.
+
+### `clipboard_clear`
+
+Clear the clipboard entirely (drop the selection so subsequent reads
+report empty). Destructive and consent-gated like `clipboard_set`.
+
+**inputSchema**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "consent_token": {
+      "type": "string",
+      "description": "Challenge token from a prior -32015 ConsentRequired response"
+    }
+  },
+  "additionalProperties": false
+}
+```
+
+**Returns**: `text` — `"Clipboard cleared"`.
+
+**Errors**: `ConsentRequired`, `ProviderUnavailable`. On the X11 rung
+the real clear primitive is `xsel --clipboard --clear`; when `xsel` was
+absent at pin time the call falls back to an `xclip -i` empty write and
+still succeeds — `xclip` cannot disown a selection, so the fallback
+leaves an empty-string owner and subsequent reads report an empty
+clipboard.
+
+---
+
+## Plugin Manifests
+
+Plugins are **declarative tool-macros**, not code: a JSON manifest in
+`~/.ultranix-mcp/plugins/` (i.e. `<state-root>/plugins/*.json`) declaring
+an ordered list of calls to real catalog tools with `${param}`
+placeholders in string arguments. The `plugin_*` tools (above) list, run,
+and diagnose them. Scanning is strictly read-only — no directory is
+created and no file is written — and happens fresh on every `plugin_*`
+call. Duplicate `name`s across files resolve to the first file in lexical
+filename order; later duplicates are skipped.
+
+**Manifest shape**
+
+```json
+{
+  "name": "focus-firefox",
+  "version": "1.0.0",
+  "description": "Focus the Firefox window",
+  "params": {
+    "title": { "type": "string", "required": true, "description": "title substring" }
+  },
+  "steps": [
+    { "tool": "window_control", "args": { "action": "focus", "window": "${title}" } }
+  ]
+}
+```
+
+**Validation** — every rule failure skips the file with a `tracing::warn`
+(never fatal; `plugin_reload` reports the skip):
+
+- `manifest_version` (optional, unsigned integer) declares the manifest
+  schema revision. Absent means `1` — the only revision this server
+  reads. Any other value skips the file with a warning: format
+  versioning is fail-closed, so a future-format manifest is never
+  interpreted under a schema it did not declare.
+- `name` must match `^[a-z][a-z0-9-]{0,63}$` and must not collide with a
+  catalog tool name (a plugin named `sleep` would shadow the real tool).
+- `version` is semver-ish: `MAJOR.MINOR.PATCH` with optional
+  `-prerelease` / `+build` suffixes.
+- `params` keys match `^[a-z][a-z0-9_]{0,63}$`; each declares a `type`
+  (`string` | `number` | `boolean`), `required` (default `false`), and an
+  optional `description`. Cap: 64 params.
+- `steps` is non-empty, capped at **32 steps** (each step is a full
+  secured dispatch + audit record — the cap keeps one `plugin_run`
+  bounded).
+- `step.tool` must be a real catalog tool; `plugin_*` names are rejected
+  so plugins cannot compose into unbounded macro recursion.
+- Every `${ref}` inside a step's string args must reference a declared
+  param.
+
+**Template rules** (`${…}` in `args` string values, at any depth):
+
+- A string that is *exactly* `${name}` substitutes the typed JSON value —
+  a `number`/`boolean` param lands as a JSON number/bool, so
+  `"ms": "${ms}"` feeds `sleep` a real number. Inside a larger string the
+  value is stringified.
+- `$$` escapes a literal `$`, so `$${x}` renders as `${x}`; a lone `$`
+  not followed by `$`/`{` is literal text.
+- Referencing a declared-but-unsupplied (optional) param is a run-time
+  `InvalidParams` — manifests cannot declare defaults.
+- Supplied params not declared by the manifest are **rejected** (strict —
+  mirrors `deny_unknown_fields` across the tool surface).
+
 ---
 
 ## Maturity Phases
@@ -1695,6 +2138,7 @@ cleared by this tool. This is a destructive, consent-gated action (see
 | 3 — Vision + CDP | ONNX models, browser bridge | `find_text_on_screen`, `find_icon`, `web_query` |
 | 4 — Enterprise | HTTP auth surface (`uxcp_*` enforcement on `:3010`, fail-closed bind), rate limiting, AES-256-GCM history, replay, metrics; opt-in Sentry via `ULTRANIX_MCP_SENTRY_DSN` (wired at v1.1.0) | `metrics`, `get_action_history`, `replay_action`, `clear_action_history` |
 | 5 — Portability | Non-Hyprland backends (KDE/GNOME via portal+uinput; X11 via `scrot`/`xdotool`/`wmctrl` — shipped at v1.1.0; portal RemoteDesktop→PipeWire capture — v1.1.0) | no new tools — widens where existing ones work |
+| 6 — v1.2.0 breadth wave | Clipboard providers (wl-clipboard/xclip), plugin tool-macros (`<state>/plugins/*.json`), bounded recording, compositor breadth (sway IPC window provider; KDE/GNOME portal routing; `kdotool` window provider on KDE), per-backend cargo features | `screen_record`; `plugin_list`, `plugin_run`, `plugin_reload`; `clipboard_get`, `clipboard_set`, `clipboard_clear` |
 
 Tools advertised in `tools/list` always reflect the *currently available*
 providers: a Phase-2 tool on a system without an AT-SPI bus is still listed

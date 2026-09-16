@@ -4,7 +4,7 @@
 //! The compositor lifecycle — spawn, `HYPRLAND_INSTANCE_SIGNATURE`/
 //! `wayland-*` socket discovery, teardown — is inherently shell-shaped,
 //! so it lives in `scripts/nested-test.sh` together with the JSON-RPC
-//! stdio driver (initialize → `tools/list` == 32 → `get_windows` →
+//! stdio driver (initialize → `tools/list` == 39 → `get_windows` →
 //! `screen_info` → `screenshot` PNG-magic → `get_ui_tree` → EOF
 //! shutdown). This file is the cargo-facing entry point.
 //!
@@ -159,8 +159,8 @@ fn drive_readonly_flow(client: &mut StdioClient, expect_providers: bool) {
         .unwrap_or_else(|| panic!("tools/list reply: {r}"));
     assert_eq!(
         tools.len(),
-        32,
-        "tools/list must advertise exactly 32 tools"
+        39,
+        "tools/list must advertise exactly 39 tools"
     );
 
     for (id, name) in [(3, "get_windows"), (4, "screen_info"), (5, "screenshot")] {
@@ -206,7 +206,7 @@ fn drive_readonly_flow(client: &mut StdioClient, expect_providers: bool) {
 }
 
 /// Hermetic Tier-1 stdio smoke: spawn `ultranix-mcp --mock`, drive the
-/// JSON-RPC handshake + read-only calls, assert 32 tools and a PNG.
+/// JSON-RPC handshake + read-only calls, assert 39 tools and a PNG.
 /// Needs no display — runs on every `cargo test`.
 #[test]
 fn stdio_mock_transport_smoke() {

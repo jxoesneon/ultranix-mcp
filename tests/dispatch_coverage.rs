@@ -2348,7 +2348,7 @@ async fn window_control_non_close_not_gated() {
 #[test]
 fn tool_registration_and_category_filter() {
     let all = ultranix_mcp::tools::list_tools(None);
-    assert_eq!(all.len(), 32);
+    assert_eq!(all.len(), 39);
     assert!(
         all.iter()
             .all(|t| t.input_schema.get("type").and_then(Value::as_str) == Some("object"))

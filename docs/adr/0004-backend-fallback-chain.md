@@ -14,7 +14,9 @@ extremes were considered:
 
 1. **Single-backend assumption** — target Hyprland only, fail hard elsewhere.
    Simple, but abandons every non-wlroots session and all X11 users.
-2. **Runtime-selected backend per provider** — each of the six provider traits
+2. **Runtime-selected backend per provider** — each provider trait
+   (six at decision time; eight since v1.1.0 `OverlayProvider` and
+   v1.2.0 `ClipboardProvider` landed)
    resolves independently at startup through a probe → fallback chain, landing
    on the best available implementation or `None`.
 
@@ -46,10 +48,12 @@ Requirements:
   | -------- | ----- |
   | Capture | `wlr-screencopy-unstable-v1` (in-process) → `grim`/`slurp` → portal `Screenshot` (zbus) → `scrot`/X11 *(shipped at v1.1.0 — first rung on X11 sessions)* → `None` |
   | Input | `zwlr_virtual_pointer_v1` + `virtual-keyboard-unstable-v1` → `/dev/uinput` evdev → portal `RemoteDesktop` → `xdotool` *(shipped at v1.1.0 — first rung on X11 sessions)* → `None` |
-  | Window | `hyprctl` IPC socket → `wmctrl` (X11) *(shipped at v1.1.0)* → `None` |
+  | Window | `hyprctl` IPC socket (Hyprland) → `sway-ipc` on `$SWAYSOCK` *(v1.2.0, Sway)* → `kdotool` (`KdotoolWindow`, KDE Wayland + X11) → `wmctrl` (X11) *(shipped at v1.1.0)* → `None` |
   | UI Automation | AT-SPI2 via `atspi` → `None` |
-  | Vision | `ort` ONNX: CPU EP → OpenVINO EP → CUDA EP → `None` |
+  | Vision | `ort` ONNX: CPU EP → OpenVINO EP → CUDA EP → ROCm EP *(v1.2.0)* → `None` |
   | Browser | CDP WebSocket `127.0.0.1:9222` → `None` |
+  | Overlay | `zwlr_layer_shell_v1` (in-process, wlroots) → `None` |
+  | Clipboard | `wl-copy`/`wl-paste` (Wayland) → `xclip` (+`xsel` for clear; also serves Wayland via XWayland) → `None` *(v1.2.0 — ADR 0007)* |
 
   *Canonical chain table: [ARCHITECTURE.md](../ARCHITECTURE.md) §5 (Backend
   Detection & Fallback) — this ADR is the decision record; the architecture

@@ -38,12 +38,18 @@ const MAX_ATTEMPTS: usize = 32;
 /// the captures dir and `/tmp`.
 const DIR_PREFIX: &str = "capture-";
 
+/// Directory-name prefix for bounded screen recordings (`screen_record`)
+/// — `rec-<ulid>` sorts chronologically and greps separately from
+/// single-shot `capture-` scratch dirs.
+const REC_PREFIX: &str = "rec-";
+
 /// Create a fresh, unpredictable, owner-only (`0700`) directory for one
 /// capture's output files.
 ///
 /// Preferred base: `<state-dir>/captures` where `<state-dir>` resolves
 /// per [`crate::state::StateDir::resolve_root`] (`ULTRANIX_MCP_STATE_DIR`
-/// → `XDG_STATE_HOME/ultranix-mcp` → `~/.ultranix-mcp` → `./.ultranix-mcp`).
+/// → `~/.ultranix-mcp` → `./.ultranix-mcp`; `XDG_STATE_HOME` is
+/// deliberately *not* consulted — see state.rs module docs).
 /// The state root and the `captures/` leaf are created/tightened to
 /// `0700` as needed.
 ///
@@ -76,6 +82,45 @@ fn fresh_capture_dir_at(preferred: &Path, fallback: &Path) -> anyhow::Result<Pat
         .with_context(|| format!("create capture dir under {}", fallback.display()))
 }
 
+/// Create a fresh, unpredictable, owner-only (`0700`) directory for one
+/// bounded screen recording's frame files (`screen_record`). Same
+/// preferred-`<state-dir>/captures`-then-`/tmp` flow as
+/// [`fresh_capture_dir`]; the leaf is `rec-<ULID>` — time-sortable, and
+/// the ULID's 80 random bits serve the same anti-symlink-preplacement
+/// role as the capture-dir suffix. Unlike `capture-` dirs, recording
+/// dirs are **kept** after the tool returns (the frames are the result).
+pub fn fresh_recording_dir() -> anyhow::Result<PathBuf> {
+    let preferred = preferred_captures_base();
+    match fresh_recording_dir_at(&preferred, Path::new("/tmp")) {
+        Ok(dir) => Ok(dir),
+        Err(err) => Err(err.context("no usable recording dir")),
+    }
+}
+
+/// The recording-dir create-preferred-then-fall-back flow, factored out
+/// for hermetic tests against tempdirs.
+fn fresh_recording_dir_at(preferred: &Path, fallback: &Path) -> anyhow::Result<PathBuf> {
+    match ensure_private_tree(preferred).and_then(|()| recording_leaf(preferred)) {
+        Ok(dir) => return Ok(dir),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                dir = %preferred.display(),
+                "preferred captures dir unusable — falling back to /tmp"
+            );
+        }
+    }
+    recording_leaf(fallback)
+        .with_context(|| format!("create recording dir under {}", fallback.display()))
+}
+
+/// One `rec-<ulid>` leaf inside an existing `base`, mode `0700`.
+/// `pub(crate)` so the record tool's test seam can mint a leaf under an
+/// injected base without touching the real state dir.
+pub(crate) fn recording_leaf(base: &Path) -> anyhow::Result<PathBuf> {
+    mktemp_leaf_named(base, || format!("{REC_PREFIX}{}", ulid::Ulid::new()))
+}
+
 /// `<state-dir>/captures` for the real process environment.
 fn preferred_captures_base() -> PathBuf {
     crate::state::StateDir::resolve_root(|key| std::env::var_os(key)).join("captures")
@@ -84,21 +129,42 @@ fn preferred_captures_base() -> PathBuf {
 /// Ensure `captures_base` and its parent (the state root) exist and are
 /// owner-only. Only used for the *preferred* location — the `/tmp`
 /// fallback base is pre-existing system ground and must not be touched.
+///
+/// `create_dir_all`/`set_permissions` follow symlinks, so a pre-planted
+/// symlink at the base would have its *target* tightened to `0700` and
+/// then receive capture frames. `lstat` *before* creating/chmod'ing and
+/// refuse to operate through a link — the caller falls back to `/tmp`
+/// instead.
 fn ensure_private_tree(captures_base: &Path) -> anyhow::Result<()> {
     if let Some(root) = captures_base.parent()
         && root != captures_base
     {
         create_private_dir(root)?;
     }
-    create_private_dir(captures_base)
+    if let Ok(meta) = fs::symlink_metadata(captures_base) {
+        anyhow::ensure!(
+            !meta.file_type().is_symlink(),
+            "captures dir {} is a symlink — refusing to follow",
+            captures_base.display()
+        );
+    }
+    create_private_dir(captures_base)?;
+    Ok(())
 }
 
 /// Create a fresh `capture-<128-bit-hex>` directory inside an existing
-/// `base`, mode `0700`. `create_dir` (non-recursive) fails on `EEXIST`,
-/// giving the atomic create-or-collide semantics `mktemp` relies on.
+/// `base`, mode `0700`.
 fn mktemp_leaf(base: &Path) -> anyhow::Result<PathBuf> {
+    mktemp_leaf_named(base, || format!("{DIR_PREFIX}{}", random_suffix()))
+}
+
+/// Create a fresh `name()`-named directory inside an existing `base`,
+/// mode `0700`. `create_dir` (non-recursive) fails on `EEXIST`, giving
+/// the atomic create-or-collide semantics `mktemp` relies on; `name` is
+/// re-invoked per attempt so retries get a fresh candidate.
+fn mktemp_leaf_named(base: &Path, mut name: impl FnMut() -> String) -> anyhow::Result<PathBuf> {
     for _ in 0..MAX_ATTEMPTS {
-        let candidate = base.join(format!("{DIR_PREFIX}{}", random_suffix()));
+        let candidate = base.join(name());
         match create_dir_0700(&candidate) {
             Ok(()) => {
                 // Tighten unconditionally: a permissive umask cannot widen
@@ -263,6 +329,25 @@ mod tests {
     }
 
     #[test]
+    fn symlinked_base_is_rejected_not_followed() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        // A planted link at the captures base pointing at an attacker-
+        // controlled dir: ensure must refuse, not chmod+use the target.
+        let real = tmp.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let preferred = tmp.path().join("captures");
+        symlink(&real, &preferred).unwrap();
+
+        assert!(ensure_private_tree(&preferred).is_err());
+        // …and the full flow falls back rather than writing into `real`.
+        let fallback = tempfile::tempdir().unwrap();
+        let dir = fresh_capture_dir_at(&preferred, fallback.path()).unwrap();
+        assert!(dir.starts_with(fallback.path()), "must land under fallback");
+        assert!(fs::read_dir(&real).unwrap().next().is_none());
+    }
+
+    #[test]
     fn falls_back_when_preferred_unusable() {
         let tmp = tempfile::tempdir().unwrap();
         // A regular file where the preferred base should be — mkdir fails.
@@ -292,6 +377,59 @@ mod tests {
         let file_base = tmp.path().join("file");
         fs::write(&file_base, b"x").unwrap();
         assert!(mktemp_leaf(&file_base).is_err());
+    }
+
+    // ---- recording dirs ------------------------------------------------
+
+    #[test]
+    fn recording_leaf_is_fresh_0700_rec_ulid() {
+        let base = tempfile::tempdir().unwrap();
+        let d1 = recording_leaf(base.path()).unwrap();
+        let d2 = recording_leaf(base.path()).unwrap();
+        assert_ne!(d1, d2, "fresh dir per recording — never reused");
+        for d in [&d1, &d2] {
+            assert!(d.is_dir());
+            assert_eq!(mode_of(d), 0o700);
+            let name = d.file_name().unwrap().to_str().unwrap();
+            let ulid = name.strip_prefix(REC_PREFIX).expect("rec- prefix");
+            assert_eq!(ulid.len(), 26, "ULID is 26 Crockford-Base32 chars");
+            ulid.parse::<ulid::Ulid>().expect("suffix parses as a ULID");
+        }
+    }
+
+    #[test]
+    fn recording_dir_prefers_state_captures_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let preferred = tmp.path().join("state").join("captures");
+        let fallback = tempfile::tempdir().unwrap();
+
+        let dir = fresh_recording_dir_at(&preferred, fallback.path()).unwrap();
+        assert!(dir.starts_with(&preferred), "must land under preferred");
+        assert_eq!(mode_of(&dir), 0o700);
+        assert_eq!(mode_of(&preferred), 0o700);
+    }
+
+    #[test]
+    fn recording_dir_falls_back_when_preferred_unusable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let preferred = tmp.path().join("not-a-dir");
+        fs::write(&preferred, b"x").unwrap();
+        let fallback = tempfile::tempdir().unwrap();
+
+        let dir = fresh_recording_dir_at(&preferred, fallback.path()).unwrap();
+        assert!(dir.starts_with(fallback.path()), "must land under fallback");
+        assert_eq!(mode_of(&dir), 0o700);
+    }
+
+    #[test]
+    fn recording_dir_errors_when_both_locations_fail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let preferred = tmp.path().join("not-a-dir");
+        fs::write(&preferred, b"x").unwrap();
+        let fallback = tmp.path().join("also-not-a-dir");
+        fs::write(&fallback, b"x").unwrap();
+
+        assert!(fresh_recording_dir_at(&preferred, &fallback).is_err());
     }
 
     // ---- open_nofollow --------------------------------------------------

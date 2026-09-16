@@ -21,6 +21,11 @@
 //! screen-size parsers ([`parse_screen_size`], [`screen_size_from_env`],
 //! [`parse_monitors_extent`]).
 
+// Every consumer of this module is feature-gated (`wayland`, `uinput`,
+// `a11y`, `vision`), so under `--no-default-features` nothing uses it —
+// dead-code warnings there are feature-shape artifacts, not real drift.
+#![allow(dead_code)]
+
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};

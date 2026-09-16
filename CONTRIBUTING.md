@@ -25,7 +25,8 @@ respectful, inclusive, and constructive.
 - **Session tools** used by backends and `system_command`: `hyprctl`,
   `grim`, `slurp`
 - **Optional**:
-  - `wl-copy` — post-v1 clipboard tools only; not a current dependency
+  - `wl-clipboard` (`wl-copy`/`wl-paste`) — clipboard tools on Wayland
+    (v1.2.0+); `xclip`/`xsel` — clipboard tools on X11/XWayland
   - `xdg-desktop-portal-hyprland` — portal fallback backend
   - `/dev/uinput` access (udev rule granting the dedicated
     `ultranix-input` group — never the broad `input` group) — uinput/evdev
@@ -193,9 +194,10 @@ ultranix-mcp/
 ├── src/
 │   ├── main.rs            # binary entry: transports, CLI flags, bootstrap
 │   ├── server.rs          # rmcp server wiring, tool dispatch
-│   ├── traits.rs          # the six provider traits
+│   ├── traits.rs          # the eight provider traits
 │   ├── providers/         # backend implementations (wlroots, uinput, portal…)
-│   ├── tools/             # one module per tool category
+│   ├── tools/             # one module per tool category (+ clipboard, plugin, record)
+│   ├── plugins.rs         # plugin tool-macro manifest store (v1.2.0)
 │   └── security/          # auth, rate limiting, sanitization, audit, history
 ├── tests/                 # integration + live-session tests
 ├── docs/

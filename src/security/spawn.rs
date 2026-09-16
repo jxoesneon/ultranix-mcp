@@ -60,13 +60,68 @@ pub fn command(bin: &Path, args: &[&str]) -> tokio::process::Command {
     cmd
 }
 
-/// `cmd.output()` bounded by `dur`; on expiry the child is killed
-/// (`kill_on_drop`) and an error is returned.
+/// `cmd` spawned with both streams piped, drained *while* the child
+/// runs, and bounded by `dur`. Same contract as [`std_output_within`]:
+/// stdout and stderr are capped at [`MAX_STDOUT`] each (a giant
+/// `wl-paste` selection cannot OOM the server) but drained to EOF so
+/// the child never blocks on a full pipe and deadlocks the wait. On
+/// expiry the child is killed (`kill_on_drop`) and an error is
+/// returned.
 pub async fn output_within(cmd: &mut tokio::process::Command, dur: Duration) -> Result<Output> {
-    match tokio::time::timeout(dur, cmd.output()).await {
-        Err(_) => bail!("subprocess timed out after {dur:?}"),
-        Ok(result) => result.context("spawn subprocess"),
+    use tokio::io::AsyncRead;
+
+    /// Read `stream` to EOF keeping at most [`MAX_STDOUT`] bytes — the
+    /// drain must outlast the cap or a chatty child wedges on write.
+    async fn drain_capped(mut stream: impl AsyncRead + Unpin) -> Vec<u8> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) if buf.len() < MAX_STDOUT => {
+                    let keep = (MAX_STDOUT - buf.len()).min(n);
+                    buf.extend_from_slice(&chunk[..keep]);
+                }
+                Ok(_) => {} // discard beyond the cap, keep draining
+            }
+        }
+        buf
     }
+
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("spawn subprocess")?;
+    let out = tokio::spawn(drain_capped(child.stdout.take().expect("stdout is piped")));
+    let err = tokio::spawn(drain_capped(child.stderr.take().expect("stderr is piped")));
+    let status = match tokio::time::timeout(dur, child.wait()).await {
+        Err(_) => {
+            let _ = child.kill().await;
+            bail!("subprocess timed out after {dur:?}");
+        }
+        Ok(result) => result.context("wait subprocess")?,
+    };
+    // The child has exited, so both pipes are at EOF — the join awaits
+    // return promptly. Bound the join anyway: a pipe-holding grandchild
+    // could otherwise leave this "bounded" wait hanging indefinitely.
+    const DRAIN_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+    Ok(Output {
+        status,
+        stdout: tokio::time::timeout(DRAIN_JOIN_TIMEOUT, out)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default(),
+        stderr: tokio::time::timeout(DRAIN_JOIN_TIMEOUT, err)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default(),
+    })
 }
 
 /// `bin args…` as a blocking [`std::process::Command`] under the scrubbed
@@ -127,7 +182,9 @@ pub fn std_output_within(cmd: &mut std::process::Command, dur: Duration) -> Opti
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stdout = rx.recv().unwrap_or_default();
+                // Bound the EOF join: a leaked pipe-holding grandchild
+                // must not leave this "bounded" wait open.
+                let stdout = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
                 return Some(Output {
                     status,
                     stdout,
@@ -171,6 +228,33 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn tokio_output_is_capped_without_deadlock() {
+        // 8 MiB of stdout is far beyond both the pipe buffer and the
+        // 4 MiB cap: an undrained child would block on write and hit the
+        // timeout; an uncapped buffer would retain all 8 MiB.
+        let mut cmd = command(Path::new("/bin/sh"), &["-c", "head -c 8388608 /dev/zero"]);
+        let out = output_within(&mut cmd, SUBPROCESS_TIMEOUT)
+            .await
+            .expect("chatty child completes");
+        assert!(out.status.success());
+        assert_eq!(out.stdout.len(), MAX_STDOUT);
+    }
+
+    #[tokio::test]
+    async fn tokio_stderr_is_captured() {
+        let mut cmd = command(
+            Path::new("/bin/sh"),
+            &["-c", "echo out; echo err >&2; exit 3"],
+        );
+        let out = output_within(&mut cmd, SUBPROCESS_TIMEOUT)
+            .await
+            .expect("sh runs");
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(out.stdout, b"out\n");
+        assert_eq!(out.stderr, b"err\n");
     }
 
     #[test]

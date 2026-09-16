@@ -27,7 +27,8 @@
 //!
 //! The prebuilt ONNX Runtime pulled in by `ort/download-binaries` is
 //! CPU-only: `ep::CPU` is always registered last so unsupported ops fall
-//! back. Building with `--features vision-openvino` / `vision-cuda`
+//! back. Building with `--features vision-openvino` / `vision-cuda` /
+//! `vision-rocm`
 //! prepends the matching EP (implies `ort/load-dynamic`; point
 //! `ORT_DYLIB_PATH` at an ORT build containing the EP). If EP registration
 //! fails the session is retried CPU-only.
@@ -252,6 +253,8 @@ fn execution_providers() -> Vec<ExecutionProviderDispatch> {
         ort::ep::OpenVINO::default().build(),
         #[cfg(feature = "vision-cuda")]
         ort::ep::CUDA::default().build(),
+        #[cfg(feature = "vision-rocm")]
+        ort::ep::ROCm::default().build(),
         ort::ep::CPU::default().build(),
     ]
 }

@@ -1,4 +1,4 @@
-//! Admin & observability tools (7) — `WindowProvider` for windowing;
+//! Admin & observability tools (10) — `WindowProvider` for windowing;
 //! history tools run on the AES-256-GCM [`HistoryStore`]; `metrics`
 //! serves the live Prometheus exposition.
 
@@ -20,12 +20,20 @@ use crate::traits::{WindowInfo, WindowProvider};
 const HISTORY_ERROR: i32 = -32014;
 
 /// History tools that can never be replayed (recursion + no-op guards,
-/// docs/TOOLS.md `replay_action`).
+/// docs/TOOLS.md `replay_action`) — and, sharing the list, tools that
+/// are never *recorded* at all: replaying them is meaningless and
+/// recording them is noise.
 pub(super) const NON_REPLAYABLE: &[&str] = &[
     "metrics",
     "get_action_history",
     "replay_action",
     "clear_action_history",
+    // Meta plugin tools: read-only catalog/rescan operations — nothing
+    // to replay, and recording them is noise. `plugin_run` IS recorded
+    // (it's a real action) and replays only when its params redaction
+    // leaves nothing to hide.
+    "plugin_list",
+    "plugin_reload",
 ];
 
 /// `-32014` with the `data.kind` discriminator — store faults (decrypt,
@@ -502,23 +510,20 @@ async fn get_action_history(
     }
     let needle = p.action.as_deref().map(str::to_lowercase);
     // When filtering, read the full retained window first so the limit
-    // applies to *matching* records, not the newest `limit` prefix.
-    let budget = if needle.is_some() {
-        store.len()
-    } else {
-        p.limit as usize
+    // applies to *matching* records, not the newest `limit` prefix —
+    // `list_filtered` filters inside the lock and clones only matches.
+    let actions: Vec<Value> = match needle.as_deref() {
+        Some(n) => store
+            .list_filtered(n, p.limit as usize)
+            .iter()
+            .map(record_json)
+            .collect(),
+        None => store
+            .list(p.limit as usize)
+            .iter()
+            .map(record_json)
+            .collect(),
     };
-    let actions: Vec<Value> = store
-        .list(budget)
-        .iter()
-        .filter(|r| {
-            needle
-                .as_deref()
-                .is_none_or(|n| r.tool.to_lowercase().contains(n))
-        })
-        .take(p.limit as usize)
-        .map(record_json)
-        .collect();
     Ok(json_result(&json!({
         "count": actions.len(),
         "actions": actions,

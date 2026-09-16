@@ -1,6 +1,6 @@
 [package]
 name = "ultranix-mcp"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Rust MCP server for Linux desktop automation — Wayland/Hyprland-first"
@@ -26,35 +26,41 @@ rand = "0.10"
 libc = "0.2"
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-wayland-client = "0.31.15"
-wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
-wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
-xkbcommon = "0.9"
+wayland-client = { version = "0.31.15", optional = true }
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"], optional = true }
+wayland-protocols-misc = { version = "0.3.12", features = ["client"], optional = true }
+xkbcommon = { version = "0.9", optional = true }
 image = { version = "0.25.9", default-features = false, features = ["png"] }
-tempfile = "3.27.0"
-atspi = { version = "0.30", default-features = false, features = ["connection", "proxies", "tokio", "zbus"] }
+# Real-code use is wayland-gated only (shm pool / keymap files in
+# wlr_capture / wlr_input / overlay); tests use it unconditionally via
+# [dev-dependencies].
+tempfile = { version = "3.27.0", optional = true }
+atspi = { version = "0.30", default-features = false, features = ["connection", "proxies", "tokio", "zbus"], optional = true }
 # default-features=false drops the `udev` feature (libudev): Builder::default()
 # then opens /dev/uinput directly, matching the provider's probe semantics.
-uinput = { version = "0.1.3", default-features = false }
+uinput = { version = "0.1.3", default-features = false, optional = true }
 # CDP bridge: WebSocket JSON-RPC client (+ server side for the hermetic
 # test stub). default-features=false keeps TLS stacks out — the endpoint is
 # loopback-only ws://, so `connect` is the whole surface we need.
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
-# SinkExt/StreamExt for the WebSocket message pump.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"], optional = true }
+# SinkExt/StreamExt for the WebSocket message pump (cdp_browser),
+# stream adapters in the a11y/portal providers, and `join_all` in the
+# ungated kdotool_window provider — stays unconditional.
 futures-util = { version = "0.3", features = ["sink"] }
 # Phase 3 vision backend (ADR 0005): ONNX Runtime via `ort`. The
 # `download-binaries` feature fetches a prebuilt CPU ONNX Runtime at build
 # time; model weights are never bundled — they are downloaded on first use
 # into the state dir (see src/providers/onnx_vision.rs). `ndarray` is left
 # off: tensors are built from `(shape, Vec)` tuples.
-ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "tracing", "download-binaries", "copy-dylibs", "tls-native", "api-27"] }
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "tracing", "download-binaries", "copy-dylibs", "tls-native", "api-27"], optional = true }
 # Blocking client only — model downloads run on `spawn_blocking` threads.
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
 # CLIP BPE tokenizer for OWL-ViT text queries. `fancy-regex` is pure Rust
 # (avoids a C oniguruma build) and covers the CLIP pre-tokenizer split.
-tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
-# Phase 4 action history: AES-256-GCM whole-file encryption of
-# <state>/history.json (src/security/history.rs).
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"], optional = true }
+# Phase 4 action history: AES-256-GCM per-frame encryption of the
+# UNXHIST2 framed append log at <state>/history.json
+# (src/security/history.rs, ADR 0008) — not a whole-file mode.
 aes-gcm = "0.10"
 # ULID record ids — 26-char Crockford Base32, lexically time-sortable.
 ulid = "1"
@@ -72,21 +78,56 @@ sentry = { version = "0.49", default-features = false, features = [
     "ureq",
     "rustls",
     "tracing",
-] }
+], optional = true }
 # PipeWire stream consumer for the portal capture path: when the
 # Screenshot portal is absent but RemoteDesktop is present, frames are
 # pulled from the granted PipeWire fd (src/providers/portal_capture.rs).
-pipewire = "0.10"
+pipewire = { version = "0.10", optional = true }
 blake3 = "1.8.7"
-dashmap = "6.2.1"
+dashmap = { version = "6.2.1", optional = true }
 
 [features]
-default = []
+# Per-backend feature split (v1.2.0): every backend group is default-on so
+# `cargo install` is unchanged; `--no-default-features` builds the lean core
+# (mock + subprocess providers: grim/scrot/xdotool/wmctrl/hyprctl). Detected
+# backends whose feature is off simply don't register — tools then answer
+# ProviderUnavailable honestly.
+default = ["wayland", "uinput", "a11y", "pipewire", "vision", "browser", "sentry"]
+# Native Wayland providers: wlr-screencopy capture, virtual-pointer/keyboard
+# input, layer-shell overlay.
+wayland = [
+    "dep:wayland-client",
+    "dep:wayland-protocols-wlr",
+    "dep:wayland-protocols-misc",
+    "dep:xkbcommon",
+    "dep:tempfile",
+]
+# /dev/uinput evdev fallback input provider (US-layout evdev table —
+# no xkb keymap at this level, so no dep:xkbcommon).
+uinput = ["dep:uinput"]
+# AT-SPI2 UI automation + the D-Bus portal providers (atspi re-exports zbus).
+a11y = ["dep:atspi"]
+# PipeWire stream consumption inside the portal capture path (needs zbus
+# from `a11y`).
+pipewire = ["dep:pipewire", "a11y"]
+# ONNX vision backend (ort + model fetch + tokenizer + result cache).
+vision = ["dep:ort", "dep:tokenizers", "dep:reqwest", "dep:dashmap"]
+# CDP browser bridge.
+browser = ["dep:tokio-tungstenite"]
+# Optional Sentry error reporting (ULTRANIX_MCP_SENTRY_DSN).
+sentry = ["dep:sentry"]
 # ADR 0005 EP ladder: the prebuilt ONNX Runtime is CPU-only. These features
 # register the accelerated EPs and imply `ort/load-dynamic`, so a matching
 # ONNX Runtime build must be provided via `ORT_DYLIB_PATH`.
-vision-cuda = ["ort/cuda", "ort/load-dynamic"]
-vision-openvino = ["ort/openvino", "ort/load-dynamic"]
+vision-cuda = ["vision", "ort/cuda", "ort/load-dynamic"]
+vision-openvino = ["vision", "ort/openvino", "ort/load-dynamic"]
+vision-rocm = ["vision", "ort/rocm", "ort/load-dynamic"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
+# Test code uses tempdirs unconditionally (unit + integration tests,
+# all feature combos).
+tempfile = "3.27.0"
+# HTTP-gate integration tests drive the server over reqwest::blocking —
+# dev-dep (not feature-gated) so `cargo test --no-default-features` builds.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }

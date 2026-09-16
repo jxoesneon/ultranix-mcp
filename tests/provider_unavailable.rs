@@ -16,7 +16,7 @@ const HISTORY_ERROR: i32 = -32014;
 const COMMAND_NOT_WHITELISTED: i32 = -32003;
 const INVALID_PARAMS: i32 = -32602;
 
-/// The 25 provider-backed tools must each return -32010 when their backend
+/// The 29 provider-backed tools must each return -32010 when their backend
 /// slot is `None`.
 #[tokio::test]
 async fn provider_backed_tools_return_provider_unavailable() {
@@ -31,8 +31,8 @@ async fn provider_backed_tools_return_provider_unavailable() {
         assert_error_code(&res, &[PROVIDER_UNAVAILABLE], name);
     }
     assert_eq!(
-        covered, 25,
-        "catalog drift: expected 25 provider-backed tools"
+        covered, 29,
+        "catalog drift: expected 29 provider-backed tools"
     );
 }
 

@@ -21,8 +21,8 @@ frozen per server release); the protocol version moves independently and is
 always the *highest mutually supported* version from the `initialize`
 handshake.
 
-**Current versions:** server `1.1.0` · tool surface `2.0`
-(32 tools) · protocol negotiated per MCP spec.
+**Current versions:** server `1.2.0` · tool surface `2.0`
+(39 tools) · protocol negotiated per MCP spec.
 
 Tool-surface `2.0` (at server `1.1.0`): `find_element` and
 `wait_for_ui_element` changed response **structure** — the single-match
@@ -31,10 +31,23 @@ now the multi-match envelope
 `{found, count, matches: [{name, role, states, bounds, center}], …}` —
 a MAJOR bump per the matrix below.
 
+Server `1.2.0` is a purely additive MINOR wave against surface `2.0`:
+seven new tools (`clipboard_get`/`clipboard_set`/`clipboard_clear`,
+`plugin_list`/`plugin_run`/`plugin_reload`, `screen_record`), one new
+category (`clipboard`), and one new error code (`-32017 PluginStepError`)
+— no existing name, schema, response shape, or code/kind set changed, so
+the tool-surface identifier stays `"2.0"`.
+
 ## Versioning Scheme
 
 **Format**: `MAJOR.MINOR.PATCH` (tool-surface version drops `PATCH` — schema
 fixes ship as server PATCH releases without changing the surface identifier).
+
+**The `toolSurfaceVersion` identifier tracks *breaking* surface changes
+only** (MAJOR semantics). Additive MINOR/PATCH waves — new tools,
+categories, or error codes — bump the *server* version while the surface
+identifier holds: `toolSurfaceVersion` stayed `"2.0"` across the
+`1.1.0` → `1.2.0` wave despite seven new tools.
 
 - **MAJOR**: breaking changes to the tool surface (see matrix)
 - **MINOR**: new tools or backwards-compatible additions
@@ -138,8 +151,9 @@ tool groups are registered:
 - The **default** category set (all categories enabled) is part of the stable
   contract: removing a tool from the default set is a removal (MAJOR); adding
   one is MINOR.
-- `--category` accepts the five groups used in TOOLS.md: `mouse`,
-  `keyboard`, `vision`, `automation`, `admin`.
+- `--category` accepts the six groups used in TOOLS.md: `mouse`,
+  `keyboard`, `vision`, `automation`, `admin`, `clipboard` (added at
+  server `1.2.0` — a MINOR change to the default category set).
 
 ## Capability Negotiation
 
@@ -152,17 +166,19 @@ publishes an extension block:
   "id": 0,
   "result": {
     "protocolVersion": "2025-06-18",
-    "serverInfo": { "name": "ultranix-mcp", "version": "1.1.0" },
+    "serverInfo": { "name": "ultranix-mcp", "version": "1.2.0" },
     "capabilities": {
-      "tools": { "listChanged": true },
-      "ultranix": {
-        "toolSurfaceVersion": "2.0",
-        "categories": ["mouse", "keyboard", "vision", "automation", "admin"],
-        "providers": ["wlr-screencopy", "wlr-virtual-input", "atspi2", "hyprctl", "ort", "cdp"],
-        "features": {
-          "spatialFocus": true,
-          "actionHistory": true,
-          "imageContent": true
+      "tools": {},
+      "extensions": {
+        "ultranix": {
+          "toolSurfaceVersion": "2.0",
+          "categories": ["mouse", "keyboard", "vision", "automation", "admin", "clipboard"],
+          "providers": ["wlr-screencopy", "wlr-virtual-input", "atspi2", "hyprctl", "ort", "cdp", "wl-clipboard"],
+          "features": {
+            "spatialFocus": true,
+            "actionHistory": true,
+            "imageContent": true
+          }
         }
       }
     }
@@ -175,7 +191,7 @@ Rules:
 - `protocolVersion` in the response is the negotiated version — the server's
   highest version ≤ the client's request, or the server's minimum when the
   client asks for something older; clients MUST honour the returned value.
-- `capabilities.ultranix` is additive-only within a MAJOR line: new keys may
+- `capabilities.extensions.ultranix` is additive-only within a MAJOR line: new keys may
   appear in MINOR releases; existing keys never change type or disappear.
 - `providers` reports which backends actually initialised — clients can
   pre-flight `find_element` by checking for `atspi2` rather than catching
@@ -183,9 +199,9 @@ Rules:
 - `features.spatialFocus` is `true` at v1.0.0 — `set_spatial_focus` installs a
   process-global rect that scopes `screenshot`/`find_text_on_screen`/
   `find_icon` (never persisted; see docs/TOOLS.md §Spatial Focus).
-- When the enabled tool set changes at runtime (future dynamic loading), the
-  server emits `notifications/tools/list_changed` (`listChanged: true`
-  advertises support).
+- The server does not advertise `tools.listChanged`; dynamic tool-list updates
+  are not supported. The only supported runtime change to the advertised tool
+  surface is the static `--category` filter at startup.
 
 ## Version Detection
 
@@ -197,10 +213,10 @@ assert_eq!(info.server_info.name, "ultranix-mcp");
 
 ```bash
 # Binary
-ultranix-mcp --version        # ultranix-mcp 1.1.0
+ultranix-mcp --version        # ultranix-mcp 1.2.0
 
 # HTTP transport
-curl -s http://127.0.0.1:3010/health | jq .version   # "1.1.0"
+curl -s http://127.0.0.1:3010/health | jq .version   # "1.2.0"
 
 # Package metadata
 cargo info ultranix-mcp | head -1
@@ -253,7 +269,7 @@ All `tools/call` results carry server identity in `result._meta`:
 {
   "_meta": {
     "server": "ultranix-mcp",
-    "serverVersion": "1.1.0",
+    "serverVersion": "1.2.0",
     "toolSurfaceVersion": "2.0",
     "protocolVersion": "2025-06-18"
   }

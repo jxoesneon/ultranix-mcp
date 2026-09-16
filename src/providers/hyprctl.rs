@@ -61,7 +61,10 @@ impl HyprctlWindow {
     /// `PATH` instead of the process-wide snapshot.
     pub fn with_pins(pins: &crate::security::whitelist::PinnedBins) -> Option<Self> {
         let his = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
-        if his.is_empty() {
+        // The signature is joined into a socket path below — an absolute
+        // or `..`-bearing value would escape the `…/hypr/` dir, so only
+        // the real signature shape is accepted.
+        if !valid_instance_signature(&his) {
             return None;
         }
         for path in socket_candidates(&his) {
@@ -157,6 +160,13 @@ impl WindowProvider for HyprctlWindow {
 
 // ---------- transports ----------
 
+/// Real instance signatures are `[A-Za-z0-9_]+`; anything else (a path,
+/// a `..` segment, whitespace) must never reach the socket-path join.
+fn valid_instance_signature(his: &std::ffi::OsStr) -> bool {
+    his.to_str()
+        .is_some_and(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+}
+
 /// Candidate socket paths: `$XDG_RUNTIME_DIR/hypr/<HIS>/` first, then the
 /// `/tmp/hypr/<HIS>/` fallback Hyprland uses when the runtime dir is unset.
 fn socket_candidates(his: &std::ffi::OsStr) -> Vec<PathBuf> {
@@ -182,8 +192,11 @@ async fn socket_request(path: &Path, request: &str) -> Result<String> {
         let mut stream = tokio::net::UnixStream::connect(path).await?;
         stream.write_all(request.as_bytes()).await?;
         stream.shutdown().await?;
+        // Bound the reply size: an unresponsive/misbehaving compositor
+        // must not grow an unbounded buffer.
+        const MAX_REPLY: u64 = 64 * 1024 * 1024;
         let mut reply = String::new();
-        stream.read_to_string(&mut reply).await?;
+        stream.take(MAX_REPLY).read_to_string(&mut reply).await?;
         Ok::<String, anyhow::Error>(reply)
     };
     tokio::time::timeout(IPC_TIMEOUT, fut)
@@ -195,10 +208,14 @@ async fn socket_request(path: &Path, request: &str) -> Result<String> {
 /// and return the captured output, bounded by [`IPC_TIMEOUT`].
 async fn hyprctl_output(bin: &Path, argv: &[&str]) -> Result<std::process::Output> {
     let mut cmd = crate::security::spawn::command(bin, argv);
-    tokio::time::timeout(IPC_TIMEOUT, cmd.output())
-        .await
-        .context("hyprctl timed out")?
-        .with_context(|| format!("failed to spawn {}", bin.display()))
+    // `spawn::output_within` drains incrementally with a 4 MiB cap per
+    // stream, replacing the old unbounded `cmd.output()`.
+    tokio::time::timeout(
+        IPC_TIMEOUT,
+        crate::security::spawn::output_within(&mut cmd, IPC_TIMEOUT),
+    )
+    .await
+    .context("hyprctl timed out")?
 }
 
 /// `hyprctl <argv>` → stdout, failing on non-zero exit.
@@ -527,6 +544,59 @@ mod tests {
     #[test]
     fn dispatch_rejects_unknown_action() {
         assert!(dispatch_request("explode", "0x55817de410c0", &json!({})).is_err());
+    }
+
+    // ---------- HYPRLAND_INSTANCE_SIGNATURE gate ----------
+
+    #[test]
+    fn instance_signature_accepts_only_real_shapes() {
+        use std::ffi::OsStr;
+        for good in ["abcdef_1234567890", "v1_2", "_", "0"] {
+            assert!(
+                valid_instance_signature(OsStr::new(good)),
+                "{good:?} must be accepted"
+            );
+        }
+        // Anything that escapes or alters the `…/hypr/<HIS>/` join —
+        // absolute paths, `..`, separators, whitespace, dots, dashes.
+        for bad in [
+            "",
+            "..",
+            "../evil",
+            "/abs/path",
+            "a/b",
+            "sig name",
+            "sig.sock",
+            "sig-name",
+        ] {
+            assert!(
+                !valid_instance_signature(OsStr::new(bad)),
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn with_pins_rejects_hostile_signature() {
+        use std::os::unix::fs::PermissionsExt;
+        // A pinned `hyprctl` is present — the signature gate must still
+        // reject before the socket join or the binary fallback matter.
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("hyprctl");
+        std::fs::write(&bin, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin, perms).unwrap();
+        let pins = crate::security::whitelist::PinnedBins::resolve_in(&[dir.path().to_path_buf()]);
+        assert!(pins.get("hyprctl").is_some());
+
+        let saved = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE");
+        unsafe { std::env::set_var("HYPRLAND_INSTANCE_SIGNATURE", "../../etc") };
+        assert!(HyprctlWindow::with_pins(&pins).is_none());
+        match saved {
+            Some(v) => unsafe { std::env::set_var("HYPRLAND_INSTANCE_SIGNATURE", v) },
+            None => unsafe { std::env::remove_var("HYPRLAND_INSTANCE_SIGNATURE") },
+        }
     }
 
     /// Live smoke test — needs a running Hyprland session; read-only

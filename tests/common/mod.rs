@@ -6,7 +6,7 @@ use rmcp::model::{CallToolResult, ErrorData};
 use serde_json::{Map, Value, json};
 use ultranix_mcp::providers::Providers;
 
-/// The frozen catalog: `(tool_name, category)` — 32 entries, order matches
+/// The frozen catalog: `(tool_name, category)` — 39 entries, order matches
 /// the Tool Summary table in docs/TOOLS.md.
 pub const TOOLS: &[(&str, &str)] = &[
     // mouse (7)
@@ -20,7 +20,7 @@ pub const TOOLS: &[(&str, &str)] = &[
     // keyboard (2)
     ("type_text", "keyboard"),
     ("key_control", "keyboard"),
-    // vision (12)
+    // vision (13)
     ("screenshot", "vision"),
     ("screen_info", "vision"),
     ("screen_highlight", "vision"),
@@ -33,12 +33,13 @@ pub const TOOLS: &[(&str, &str)] = &[
     ("find_icon", "vision"),
     ("wait_for_ui_element", "vision"),
     ("invoke_element", "vision"),
+    ("screen_record", "vision"),
     // automation (4)
     ("sleep", "automation"),
     ("mouse_move_path", "automation"),
     ("system_command", "automation"),
     ("web_query", "automation"),
-    // admin (7)
+    // admin (10)
     ("window_control", "admin"),
     ("get_windows", "admin"),
     ("get_active_window", "admin"),
@@ -46,6 +47,13 @@ pub const TOOLS: &[(&str, &str)] = &[
     ("get_action_history", "admin"),
     ("replay_action", "admin"),
     ("clear_action_history", "admin"),
+    ("plugin_list", "admin"),
+    ("plugin_run", "admin"),
+    ("plugin_reload", "admin"),
+    // clipboard (3)
+    ("clipboard_get", "clipboard"),
+    ("clipboard_set", "clipboard"),
+    ("clipboard_clear", "clipboard"),
 ];
 
 pub const ALL_TOOL_NAMES: &[&str] = &[
@@ -81,12 +89,20 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     "get_action_history",
     "replay_action",
     "clear_action_history",
+    "plugin_list",
+    "plugin_run",
+    "plugin_reload",
+    "clipboard_get",
+    "clipboard_set",
+    "clipboard_clear",
+    "screen_record",
 ];
 
 /// Tools implemented by a provider backend (per the Tool Summary "Backend"
 /// column). Server-core tools (`sleep`, `set_spatial_focus`,
 /// `system_command`, `metrics`, `get_action_history`, `replay_action`,
-/// `clear_action_history`) are excluded — they never produce -32010.
+/// `clear_action_history`, `plugin_*`) are excluded — they never produce
+/// -32010.
 pub fn is_provider_backed(name: &str) -> bool {
     !matches!(
         name,
@@ -97,15 +113,23 @@ pub fn is_provider_backed(name: &str) -> bool {
             | "get_action_history"
             | "replay_action"
             | "clear_action_history"
+            | "plugin_list"
+            | "plugin_run"
+            | "plugin_reload"
     )
 }
 
 /// Tools that are consent-gated (docs/TOOLS.md §Destructive-Action Consent):
-/// `system_command`, `replay_action`, `clear_action_history`, and
-/// `window_control` only for `action:"close"`.
+/// `system_command`, `replay_action`, `clear_action_history`,
+/// `clipboard_set`/`clipboard_clear` (they overwrite/drop user clipboard
+/// state), and `window_control` only for `action:"close"`.
 pub fn is_consent_gated(name: &str, args: &Map<String, Value>) -> bool {
     match name {
-        "system_command" | "replay_action" | "clear_action_history" => true,
+        "system_command"
+        | "replay_action"
+        | "clear_action_history"
+        | "clipboard_set"
+        | "clipboard_clear" => true,
         "window_control" => args.get("action").and_then(Value::as_str) == Some("close"),
         _ => false,
     }
@@ -128,7 +152,7 @@ pub async fn call(
     ultranix_mcp::tools::call_tool(name, arguments, providers).await
 }
 
-/// Schema-valid arguments for each of the 32 tools (happy path).
+/// Schema-valid arguments for each of the 39 tools (happy path).
 pub fn valid_args(name: &str) -> Map<String, Value> {
     match name {
         "mouse_click" => args(json!({"x": 640, "y": 420, "button": "left"})),
@@ -171,6 +195,13 @@ pub fn valid_args(name: &str) -> Map<String, Value> {
         "get_action_history" => args(json!({"limit": 5})),
         "replay_action" => args(json!({"index": 0})),
         "clear_action_history" => args(json!({})),
+        "plugin_list" => args(json!({})),
+        "plugin_run" => args(json!({"name": "no-such-plugin"})),
+        "plugin_reload" => args(json!({})),
+        "clipboard_get" => args(json!({})),
+        "clipboard_set" => args(json!({"text": "hi"})),
+        "clipboard_clear" => args(json!({})),
+        "screen_record" => args(json!({"duration_ms": 100, "interval_ms": 100})),
         other => panic!("no valid_args fixture for unknown tool {other}"),
     }
 }
@@ -238,6 +269,16 @@ pub fn invalid_args(name: &str) -> Map<String, Value> {
         // neither selector present (anyOf fails)
         "replay_action" => args(json!({})),
         "clear_action_history" => args(json!({"bogus": 1})),
+        "plugin_list" => args(json!({"bogus": 1})),
+        // missing required `name`
+        "plugin_run" => args(json!({})),
+        "plugin_reload" => args(json!({"bogus": 1})),
+        "clipboard_get" => args(json!({"bogus": 1})),
+        // missing required `text`
+        "clipboard_set" => args(json!({})),
+        "clipboard_clear" => args(json!({"bogus": 1})),
+        // missing required `duration_ms`
+        "screen_record" => args(json!({"interval_ms": 100})),
         other => panic!("no invalid_args fixture for unknown tool {other}"),
     }
 }
@@ -271,6 +312,53 @@ pub fn assert_success(res: &Result<CallToolResult, ErrorData>, ctx: &str) {
 pub async fn focus_lock() -> tokio::sync::MutexGuard<'static, ()> {
     static L: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     L.lock().await
+}
+
+/// Serializes tests that mutate process env vars — parallel tests in
+/// the same binary share one environment, so mutation must hold this
+/// lock for the whole scope (see [`ScopedStateDir`]). Async-aware
+/// mutex, same rationale as [`focus_lock`].
+pub async fn env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static L: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    L.lock().await
+}
+
+/// RAII override pointing `ULTRANIX_MCP_STATE_DIR` at a test tempdir —
+/// restores the previous value on drop. Always construct under
+/// [`env_lock`].
+///
+/// Why it exists: dispatch-level calls that resolve the *ambient* state
+/// root — `screen_record`'s `rec-<ulid>` output dir, the `plugin_*`
+/// manifest scan — would otherwise write into / read from the real
+/// `~/.ultranix-mcp/` tree (or `/tmp`) during integration tests: the
+/// `#[cfg(test)]` `TEST_RECORDING_BASE` seam does not exist in the lib
+/// build these tests link against. `preferred_captures_base` resolves
+/// through `StateDir::resolve_root`, so the env var is the hermetic
+/// seam.
+pub struct ScopedStateDir(Option<std::ffi::OsString>);
+
+impl ScopedStateDir {
+    /// Set `ULTRANIX_MCP_STATE_DIR` to `dir`, remembering the prior
+    /// value for restore on drop.
+    pub fn set(dir: &std::path::Path) -> Self {
+        let saved = std::env::var_os("ULTRANIX_MCP_STATE_DIR");
+        // SAFETY: callers hold env_lock() for the whole scope, so no
+        // other thread mutates the environment concurrently.
+        unsafe { std::env::set_var("ULTRANIX_MCP_STATE_DIR", dir) };
+        Self(saved)
+    }
+}
+
+impl Drop for ScopedStateDir {
+    fn drop(&mut self) {
+        // SAFETY: same env_lock scope as construction.
+        unsafe {
+            match &self.0 {
+                Some(v) => std::env::set_var("ULTRANIX_MCP_STATE_DIR", v),
+                None => std::env::remove_var("ULTRANIX_MCP_STATE_DIR"),
+            }
+        }
+    }
 }
 
 /// Assert a dispatch result is a JSON-RPC error with one of `codes`.

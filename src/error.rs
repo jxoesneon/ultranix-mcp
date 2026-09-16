@@ -17,6 +17,11 @@ pub mod codes {
     pub const PROVIDER_UNAVAILABLE: i32 = -32010;
     /// Destructive tool invoked without a valid consent token.
     pub const CONSENT_REQUIRED: i32 = -32015;
+    /// A `plugin_run` step failed at the tool level (`isError` result)
+    /// or a post-validation template fault surfaced. JSON-RPC errors
+    /// from the inner dispatch keep their own code (so `-32015
+    /// ConsentRequired` survives intact).
+    pub const PLUGIN_ERROR: i32 = -32017;
 }
 
 /// Tool-level failures that map onto MCP `CallToolResult` / JSON-RPC errors.
@@ -84,6 +89,7 @@ mod tests {
         assert_eq!(codes::SANITIZATION_REJECTED, -32006);
         assert_eq!(codes::PROVIDER_UNAVAILABLE, -32010);
         assert_eq!(codes::CONSENT_REQUIRED, -32015);
+        assert_eq!(codes::PLUGIN_ERROR, -32017);
     }
 
     #[test]

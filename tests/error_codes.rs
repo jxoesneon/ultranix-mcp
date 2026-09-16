@@ -13,6 +13,7 @@ fn codes_module_constants_match_spec() {
     assert_eq!(codes::SANITIZATION_REJECTED, -32006);
     assert_eq!(codes::PROVIDER_UNAVAILABLE, -32010);
     assert_eq!(codes::CONSENT_REQUIRED, -32015);
+    assert_eq!(codes::PLUGIN_ERROR, -32017);
 }
 
 #[test]

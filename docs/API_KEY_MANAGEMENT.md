@@ -1,6 +1,6 @@
 # API Key Management — ultranix-mcp
 
-**Status**: Implemented (v1.1.0) — describes the shipped authentication
+**Status**: Implemented (v1.2.0) — describes the shipped authentication
 design. Applies to the **streamable-HTTP transport only** (`:3010`). The
 stdio transport never requires a key — see §7 for why.
 

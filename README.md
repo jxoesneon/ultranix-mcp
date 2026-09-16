@@ -1,11 +1,11 @@
 # ultranix-mcp
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](Cargo.toml)
 [![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%28Wayland%20%2B%20Hyprland%29-lightgrey.svg)](https://hyprland.org/)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org/)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-rmcp-purple.svg)](https://github.com/modelcontextprotocol/rust-sdk)
-[![Status](https://img.shields.io/badge/status-1.1.0%20implemented-brightgreen.svg)](ROADMAP.md)
+[![Status](https://img.shields.io/badge/status-1.2.0%20implemented-brightgreen.svg)](ROADMAP.md)
 
 **ultranix-mcp is the enterprise-grade, secure Linux desktop-automation layer
 for AI agents.** It gives Model Context Protocol (MCP) clients — Claude
@@ -23,10 +23,12 @@ combine a cross-compositor fallback ladder, a full governance surface, and a
 tri-OS sibling contract — organisations can let agents control a Linux
 desktop without giving up control themselves.
 
-> **Status:** v1.1.0 implemented. Phases 0–5 of
+> **Status:** v1.2.0 implemented. Phases 0–5 of
 > [ROADMAP.md](ROADMAP.md) have shipped, plus the v1.1.0 wave (layer-shell
 > overlay, X11-native providers, PipeWire portal capture, opt-in Sentry,
-> OCR cache, additional metrics) — see
+> OCR cache, additional metrics) and the v1.2.0 breadth wave (clipboard
+> tools, plugin tool-macros, `screen_record`, sway/Wayfire/river/KDE/GNOME
+> session detection, per-backend cargo features, framed history v2) — see
 > [CHANGELOG.md](CHANGELOG.md) for per-release notes. The verified target
 > environment is **CachyOS (Arch) + Hyprland on Wayland**, PipeWire,
 > `xdg-desktop-portal-hyprland`, and a live AT-SPI2 bus, on Rust 1.98.1.
@@ -50,10 +52,20 @@ desktop without giving up control themselves.
   [docs/TOOLS.md](docs/TOOLS.md)).
 - **🪟 Window Management** — list, focus, move, resize, close, and inspect
   windows through Hyprland's `hyprctl` IPC socket (`hyprctl -j` JSON:
-  `clients`, `activewindow`, `dispatch`, `workspaces`).
+  `clients`, `activewindow`, `dispatch`, `workspaces`), sway's own IPC
+  protocol on `$SWAYSOCK`, or `wmctrl` on X11 sessions.
 - **🔍 UI Inspection** — full accessibility-tree access over AT-SPI2
   (`atspi` crate): UI-tree dumps, focused-element queries, element search,
   and wait-for-element synchronization.
+- **📋 Clipboard & Plugins** — `clipboard_get`/`clipboard_set`/
+  `clipboard_clear` over `wl-clipboard` (Wayland) or `xclip`/`xsel` (X11),
+  writes consent-gated; and declarative plugin tool-macros —
+  `~/.ultranix-mcp/plugins/*.json` manifests of catalog-tool steps run via
+  `plugin_list`/`plugin_run`/`plugin_reload`, each step re-entering the
+  secured dispatch path.
+- **🎥 Bounded Screen Recording** — `screen_record` captures a frame every
+  `interval_ms` for up to `duration_ms` into a fresh `rec-<ulid>` dir plus
+  a `manifest.json` (hard caps: 600 frames, 512 MiB).
 - **🛡️ Enterprise Security** — `uxcp_*` API-key auth on HTTP, 10 req/s token
   bucket, input sanitization, command/path whitelists, AES-256-GCM-encrypted
   action history, and JSONL audit logging. See [SECURITY.md](SECURITY.md).
@@ -80,19 +92,32 @@ tool surface testable without a Wayland session.
 | `InputProvider` | Pointer, scroll, keyboard events | `zwlr_virtual_pointer_v1` + `virtual-keyboard-unstable-v1` |
 | `UIAutomationProvider` | UI tree, focused element, element search | AT-SPI2 via `atspi` |
 | `WindowProvider` | Window list/focus/move/close | `hyprctl` IPC socket (new vs. ultrawin) |
-| `VisionProvider` | OCR, icon finding | `ort` (ONNX Runtime; CPU, OpenVINO, CUDA EPs) |
+| `VisionProvider` | OCR, icon finding | `ort` (ONNX Runtime; CPU, OpenVINO, CUDA, ROCm EPs) |
 | `BrowserProvider` | Web queries, DOM access | CDP bridge on `127.0.0.1:9222` |
 | `OverlayProvider` | `screen_highlight` overlay | `zwlr_layer_shell_v1` (Wayland-only) |
+| `ClipboardProvider` | Clipboard read/write | `wl-copy`/`wl-paste` (Wayland), `xclip`/`xsel` (X11/XWayland) |
 
 **Backend priority ladder.** At startup the server detects the session via
-`XDG_CURRENT_DESKTOP` and `HYPRLAND_INSTANCE_SIGNATURE`, then binds each
-provider to the best available backend:
+`XDG_CURRENT_DESKTOP` plus compositor signatures
+(`HYPRLAND_INSTANCE_SIGNATURE`, `SWAYSOCK`, `WAYFIRE_SOCKET`,
+`KDE_SESSION_VERSION`, …) resolving Hyprland, sway, Wayfire, river, KDE,
+GNOME, or Other — then binds each provider to the best available backend:
 
-1. **wlroots-native** — in-process Wayland protocols (Hyprland; no root)
+1. **wlroots-native** — in-process Wayland protocols (Hyprland, sway,
+   Wayfire, river, and most unknown wlroots compositors; no root)
 2. **`grim`/`slurp` (capture) + `uinput`/`evdev` (input)** — whitelisted
    helper binaries and kernel-level input for non-wlroots sessions
 3. **XDG Desktop Portal** — `Screenshot` and `RemoteDesktop` over `zbus`
-   (universal fallback, subject to portal consent)
+   (universal fallback, subject to portal consent; the *only* route on
+   KDE/GNOME Wayland, which implement neither wlr-screencopy nor the
+   wlr virtual-input protocols)
+
+Window management rides compositor IPC where it exists: `hyprctl` on
+Hyprland, sway's i3-flavoured IPC (`$SWAYSOCK`, shipped at v1.2.0) on
+sway, `kdotool` (KWin scripting — Wayland and X11 alike) on KDE, and
+`wmctrl` on other X11 sessions. Wayfire, river, and GNOME-Wayland expose
+no general window IPC we can use — the window tools honestly report
+`ProviderUnavailable` there.
 
 On X11 sessions the X11-native rungs shipped at v1.1.0 resolve instead:
 `scrot` capture, `xdotool` input (both still ahead of portal/uinput), and
@@ -118,7 +143,7 @@ graph TB
 
     subgraph "Core (rmcp + tokio)"
         SERVER[ultranix-mcp server]
-        TOOLS[32 tools · 5 categories]
+        TOOLS[39 tools · 6 categories]
     end
 
     subgraph "Providers — Option&lt;Arc&lt;dyn Trait&gt;&gt;"
@@ -128,6 +153,7 @@ graph TB
         WIN[WindowProvider]
         VIS[VisionProvider]
         BRW[BrowserProvider]
+        CLIP[ClipboardProvider]
     end
 
     subgraph "Backends — priority order"
@@ -135,9 +161,11 @@ graph TB
         UIN[uinput / evdev]
         PORTAL[XDG Desktop Portal<br/>zbus]
         HYPR[hyprctl IPC]
+        SWAY[sway IPC · SWAYSOCK]
         ATSPI[AT-SPI2 bus]
         ORT[ONNX Runtime — ort]
         CDP[CDP 127.0.0.1:9222]
+        WLC[wl-clipboard · xclip/xsel]
     end
 
     AI --> MCP
@@ -152,12 +180,15 @@ graph TB
     TOOLS --> WIN
     TOOLS --> VIS
     TOOLS --> BRW
+    TOOLS --> CLIP
     CAP --> WLR
     INP --> WLR --> UIN --> PORTAL
     WIN --> HYPR
+    WIN --> SWAY
     UIA --> ATSPI
     VIS --> ORT
     BRW --> CDP
+    CLIP --> WLC
 ```
 
 **Token efficiency.** Tool definitions cost context window. ultranix-mcp
@@ -169,8 +200,9 @@ supports `--category=` filtering so you expose only the tools you need:
 ultranix-mcp --transport stdio --category=mouse,keyboard
 ```
 
-Categories: `mouse`, `keyboard`, `vision` (capture/OCR/UI-tree),
-`automation` (misc), `admin` (window/history/metrics). Default: all.
+Categories: `mouse`, `keyboard`, `vision` (capture/OCR/UI-tree/recording),
+`automation` (misc), `admin` (window/history/metrics/plugins), `clipboard`.
+Default: all.
 
 ---
 
@@ -219,10 +251,11 @@ build-time `ort` network-fetch caveat.
 - Linux with a Wayland session — verified on **CachyOS (Arch) + Hyprland**
 - [Rust](https://rustup.rs/) 1.98+ (2024 edition; verified on 1.98.1)
 - Session tools used at runtime: `hyprctl`, `grim`, `slurp`
-  (post-v1: `wl-copy` for the planned clipboard tools)
 - Optional: `xdg-desktop-portal-hyprland` (portal fallback path), an
   AT-SPI2 accessibility bus (UI inspection), Chromium/Chrome with
-  `--remote-debugging-port=9222` (browser tools)
+  `--remote-debugging-port=9222` (browser tools), `wl-clipboard`
+  (`wl-copy`/`wl-paste` — clipboard tools on Wayland), `xclip` + `xsel`
+  (clipboard tools on X11/XWayland)
 
 **Steps:**
 
@@ -258,6 +291,38 @@ build-time `ort` network-fetch caveat.
     ```bash
     cargo test
     ```
+
+**Cargo features (v1.2.0).** Every backend group is a feature, all on by
+default so `cargo install` is unchanged:
+
+| Feature | Default | Gates |
+| --- | --- | --- |
+| `wayland` | on | Native Wayland providers: wlr-screencopy capture, virtual-pointer/keyboard input, layer-shell overlay |
+| `uinput` | on | `/dev/uinput` evdev fallback input provider |
+| `a11y` | on | AT-SPI2 UI automation + the D-Bus portal providers |
+| `pipewire` | on | PipeWire stream consumption inside the portal capture path (requires `a11y`) |
+| `vision` | on | ONNX vision backend (`ort` + model fetch + tokenizer + result cache) |
+| `browser` | on | CDP browser bridge |
+| `sentry` | on | Optional Sentry error reporting (`ULTRANIX_MCP_SENTRY_DSN`) |
+| `vision-cuda` | off | CUDA execution provider (implies `ort/load-dynamic`; point `ORT_DYLIB_PATH` at a matching ONNX Runtime build) |
+| `vision-openvino` | off | OpenVINO execution provider (same `load-dynamic` caveat) |
+| `vision-rocm` | off | ROCm execution provider (same `load-dynamic` caveat) |
+
+`--no-default-features` builds the **lean core**: mock + subprocess
+providers only (`grim`/`scrot`/`xdotool`/`wmctrl`/`hyprctl`/clipboard
+helpers). Detected backends whose feature is off simply don't register —
+tools then answer `ProviderUnavailable` honestly rather than failing to
+compile or lying. Full flag semantics live in
+[docs/PACKAGING.md](docs/PACKAGING.md) §2.
+
+### Option 3: Nix flake (unverified)
+
+A `flake.nix` ships at the repo root: `nix build` produces the package,
+`nix develop` enters a devShell with the Rust toolchain and native deps
+(pipewire, libxkbcommon, libclang for bindgen, session helper binaries),
+and `nix run` launches the server. **Note:** the flake was written by
+review and has not been evaluated in our toolchain — treat it as
+unverified; fixes and confirmations welcome.
 
 ### MCP client configuration
 
@@ -374,7 +439,8 @@ catalog (full schemas, per-tool errors, and consent semantics).*
 
 `screenshot`, `screen_info`, `screen_highlight`, `color_at`,
 `set_spatial_focus`, `get_ui_tree`, `get_focused_element`, `find_element`,
-`find_text_on_screen`, `find_icon`, `wait_for_ui_element`, `invoke_element`
+`find_text_on_screen`, `find_icon`, `wait_for_ui_element`, `invoke_element`,
+`screen_record`
 
 ### Automation (`--category=automation`)
 
@@ -383,18 +449,27 @@ catalog (full schemas, per-tool errors, and consent semantics).*
 ### Admin (`--category=admin`)
 
 `window_control`, `get_windows`, `get_active_window`, `metrics`,
-`get_action_history`, `replay_action`, `clear_action_history`
+`get_action_history`, `replay_action`, `clear_action_history`,
+`plugin_list`, `plugin_run`, `plugin_reload`
+
+### Clipboard (`--category=clipboard`)
+
+`clipboard_get`, `clipboard_set`, `clipboard_clear`
 
 ---
 
 ## 📈 Roadmap
 
-See [ROADMAP.md](ROADMAP.md) for the six-phase delivery plan — all of
-Phases 0–5 (scaffold → Hyprland I/O → AT-SPI2 → vision/CDP → enterprise →
-portability/packaging) shipped as of v1.0.0, and the v1.1.0 wave added the
+See [ROADMAP.md](ROADMAP.md) for the delivery plan — all of Phases 0–5
+(scaffold → Hyprland I/O → AT-SPI2 → vision/CDP → enterprise →
+portability/packaging) shipped as of v1.0.0, the v1.1.0 wave added the
 layer-shell `screen_highlight` overlay, X11-native providers, PipeWire
 portal capture, opt-in Sentry, the OCR result cache, and four more
-Prometheus metrics — and [CHANGELOG.md](CHANGELOG.md) for release notes.
+Prometheus metrics, and the v1.2.0 wave added clipboard tools, plugin
+tool-macros, bounded `screen_record`, sway/Wayfire/river/KDE/GNOME session
+detection with a sway window provider, per-backend cargo features, and the
+framed v2 action-history format — see [CHANGELOG.md](CHANGELOG.md) for
+release notes.
 
 ## 📚 Documentation
 

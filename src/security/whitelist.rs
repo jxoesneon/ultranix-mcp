@@ -5,6 +5,10 @@
 //! wmctrl}` is necessary but not sufficient: each member's argv is
 //! constrained here, and every binary is resolved to an absolute path at
 //! startup and pinned so a later `PATH` hijack cannot substitute a trojan.
+//! The pin set is wider than the invocable set — provider-internal
+//! helpers (`xrandr`, `xprop`, `wl-copy`, `wl-paste`, `xclip`, `xsel`,
+//! `kdotool`) are resolved-and-spawned by providers but have no
+//! `validate_command` arm, so `system_command` can never reach them.
 //!
 //! `busctl`/`gdbus` are deliberately absent — generic D-Bus clients are
 //! arbitrary-exec primitives (THREAT_MODEL.md §4.10); D-Bus work happens
@@ -17,11 +21,13 @@ use crate::security::paths;
 use crate::security::sanitize::{SanitizeError, sanitize_arg};
 
 /// Binaries that may ever be spawned by `system_command`.
-/// Pin set — includes provider-internal helpers (`xrandr`, `xprop`) that
-/// are resolved-and-spawned by X11 providers but have no `validate_command`
-/// arm, so `system_command` cannot invoke them.
+/// Pin set — includes provider-internal helpers (`xrandr`, `xprop`,
+/// `wl-copy`, `wl-paste`, `xclip`, `xsel`, `kdotool`) that are
+/// resolved-and-spawned by X11/clipboard/compositor providers but have
+/// no `validate_command` arm, so `system_command` cannot invoke them.
 pub const WHITELIST: &[&str] = &[
-    "grim", "slurp", "hyprctl", "scrot", "xdotool", "wmctrl", "xrandr", "xprop",
+    "grim", "slurp", "hyprctl", "scrot", "xdotool", "wmctrl", "xrandr", "xprop", "wl-copy",
+    "wl-paste", "xclip", "xsel", "kdotool",
 ];
 
 /// Schema-level cap on argv length (docs/TOOLS.md `system_command.args.maxItems`).
@@ -811,6 +817,49 @@ mod tests {
             .validate_command("hyprctl", &s(&["clients"]), false, None)
             .unwrap_err();
         assert!(matches!(err, WhitelistError::NotWhitelisted(_)));
+    }
+
+    #[test]
+    fn kdotool_is_pin_only_never_invocable() {
+        // `kdotool` is a WHITELIST member (providers may pin+spawn it
+        // internally) but has no `validate_command` arm — same contract
+        // as `xrandr`/`xprop` — so `system_command` must reject it as
+        // NotWhitelisted even though the pin resolves.
+        assert!(WHITELIST.contains(&"kdotool"));
+        let pins = pins_all(Path::new("/pinned"));
+        assert!(pins.is_available("kdotool"));
+        for args in [
+            s(&[]),
+            s(&["search", "--class", "firefox"]),
+            s(&["windowactivate", "1"]),
+        ] {
+            let err = pins
+                .validate_command("kdotool", &args, true, None)
+                .unwrap_err();
+            assert!(
+                matches!(err, WhitelistError::NotWhitelisted(_)),
+                "kdotool {args:?} must be NotWhitelisted, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_helpers_are_pin_only_never_invocable() {
+        // `wl-copy`/`wl-paste`/`xclip`/`xsel` are WHITELIST members —
+        // the clipboard providers pin+spawn them internally — but none
+        // has a `validate_command` arm (same contract as `xrandr`/
+        // `xprop`/`kdotool`), so `system_command` must reject every one
+        // as NotWhitelisted even though the pins resolve.
+        let pins = pins_all(Path::new("/pinned"));
+        for cmd in ["wl-copy", "wl-paste", "xclip", "xsel"] {
+            assert!(WHITELIST.contains(&cmd), "{cmd} must be a member");
+            assert!(pins.is_available(cmd), "{cmd} must resolve a pin");
+            let err = pins.validate_command(cmd, &s(&[]), true, None).unwrap_err();
+            assert!(
+                matches!(err, WhitelistError::NotWhitelisted(_)),
+                "{cmd} must be NotWhitelisted, got {err:?}"
+            );
+        }
     }
 
     #[test]

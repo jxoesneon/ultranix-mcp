@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::traits::{
-    BrowserProvider, CaptureProvider, Detection, Frame, InputProvider, OverlayProvider, Rect,
-    UIAutomationProvider, VisionProvider, WindowInfo, WindowProvider,
+    BrowserProvider, CaptureProvider, ClipboardProvider, Detection, Frame, InputProvider,
+    OverlayProvider, Rect, UIAutomationProvider, VisionProvider, WindowInfo, WindowProvider,
 };
 
 pub struct MockCapture;
@@ -16,6 +16,7 @@ pub struct MockWindow;
 pub struct MockVision;
 pub struct MockBrowser;
 pub struct MockOverlay;
+pub struct MockClipboard;
 
 #[async_trait]
 impl CaptureProvider for MockCapture {
@@ -129,6 +130,22 @@ impl BrowserProvider for MockBrowser {
     }
     async fn ensure_ready(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+#[async_trait]
+impl ClipboardProvider for MockClipboard {
+    async fn get_text(&self) -> Result<Option<String>> {
+        Ok(Some("mock-clipboard".to_string()))
+    }
+    async fn set_text(&self, _text: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn clear(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn list_mimes(&self) -> Result<Vec<String>> {
+        Ok(vec!["text/plain".to_string(), "UTF8_STRING".to_string()])
     }
 }
 

@@ -1,10 +1,11 @@
 # Threat Model — ultranix-mcp
 
-**Version**: 1.1.0 — **Status**: Implemented (describes the shipped v1.1.0
+**Version**: 1.2.0 — **Status**: Implemented (describes the shipped v1.2.0
 system; mitigations marked *post-v1* are roadmap)
 **Scope**: ultranix-mcp as deployed on its target environment — a single-user
-Wayland/Hyprland desktop on CachyOS, consumed by a local or SSH-tunneled MCP
-client.
+Wayland/Hyprland desktop on CachyOS (v1.2.0 detection additionally covers
+sway/Wayfire/river/KDE/GNOME sessions), consumed by a local or SSH-tunneled
+MCP client.
 
 This is the security design document of record. It names the attackers we
 design against, maps STRIDE threats onto every component, dissects the
@@ -42,7 +43,9 @@ importantly — says plainly what we do **not** protect against.
                         │               │                │
                 ┌───────▼───────────────▼────────────────▼───────┐
                 │        ~/.ultranix-mcp/  (storage)             │
-                │  history.json (AES-256-GCM) · logs/audit.jsonl │
+                │  history.json (AES-256-GCM, UNXHIST2 frames)   │
+                │  logs/audit.jsonl · plugins/*.json             │
+                │  captures/rec-* (bounded screen_record output) │
                 └────────────────────────────────────────────────┘
 ```
 
@@ -119,7 +122,7 @@ not arbitrate whether a legitimate client's *intent* is good.
 | Repudiation | "The AI did it" | `audit.jsonl` records tool, `args_hash` (never raw args), `key_id`, outcome, latency; `prev_hash` chains each record to its predecessor | Low |
 | Information disclosure | Secret-bearing tool output/error strings echoed into logs | Args stored as `args_hash` only; secret-pattern redaction on recorded output strings; history encrypted | Medium — heuristics miss novel secrets, §6 R-5 |
 | DoS | Legit-looking calls at max rate starve the desktop (e.g. screenshot loop) | Token bucket; capture tools carry their own latency cost | Medium |
-| EoP | `system_command`-style tool → whitelist escape | **Arg-constrained** command whitelist `{grim, slurp, hyprctl, scrot, xdotool, wmctrl}`: `hyprctl` limited to read subcommands + a fixed `dispatch` set with `exec`/`exec-once` denied; `busctl`/`gdbus` removed; `xdotool`/`wmctrl` X11-fallback only; all binaries resolved to absolute paths and pinned at startup. Path whitelist `{$XDG_RUNTIME_DIR, /tmp, ~/.ultranix-mcp/**}` applied after canonicalization (symlink-safe) | Low — residual is semantic misuse of *allowed* args, §4.10, §6 R-2 |
+| EoP | `system_command`-style tool → whitelist escape | **Arg-constrained** command whitelist `{grim, slurp, hyprctl, scrot, xdotool, wmctrl}`: `hyprctl` limited to read subcommands + a fixed `dispatch` set with `exec`/`exec-once` denied; `busctl`/`gdbus` removed; `xdotool`/`wmctrl` X11-fallback only; all binaries resolved to absolute paths and pinned at startup. Path whitelist `{$XDG_RUNTIME_DIR, /tmp, ~/.ultranix-mcp/**}` applied after canonicalization (symlink-safe) | Low — residual is semantic misuse of *allowed* args, §4.13, §6 R-2 |
 
 ### 3.5 Backends — capture
 
@@ -141,7 +144,7 @@ not arbitrate whether a legitimate client's *intent* is good.
 | STRIDE | Threat | Mitigation | Residual |
 | ------ | ------ | ---------- | -------- |
 | Info. disclosure | **AT-SPI2 a11y tree is readable by ANY process on the session bus** — window titles, text fields, sometimes values | None available at our layer; it is the designed bus trust model. Documented loudly, §4.3 | **High, inherited** |
-| Info. disclosure | hyprctl IPC socket readable/abused by session peers | Socket lives in `$XDG_RUNTIME_DIR` (0700); we don't weaken it | Medium |
+| Info. disclosure | hyprctl IPC socket readable/abused by session peers (same class: sway's `$SWAYSOCK` since v1.2.0) | Socket lives in `$XDG_RUNTIME_DIR` (0700); we don't weaken it | Medium |
 | Spoofing | **CDP `127.0.0.1:9222`** — any local process can connect and fully control the browser profile | Loopback-only bind; documented as *the browser's own* exposure, not ours | Medium–High if user enables it, §4.7 |
 
 ### 3.8 Storage
@@ -233,6 +236,9 @@ exposure *easy to exfiltrate through an MCP client*.
 `dispatch exec`, `keyword`, window rules — from any process that can open it.
 Permissions are session-user-only by default, but: containers/flatpaks with
 `$XDG_RUNTIME_DIR` bind-mounted, or sloppy socket sharing, widen that.
+sway's `$SWAYSOCK` (v1.2.0 `SwayWindow`) is the same exposure class — a
+session-scoped, user-owned command socket; the same "never forward into
+sandboxes" guidance applies.
 
 **Mitigations.**
 
@@ -297,7 +303,84 @@ cookies/page content, and execute JS in the profile.
   profile/user.
 - Cannot be fully mitigated by us — flagged §6 R-4.
 
-### 4.8 Prompt-injection abusing `type_text` / `system_command`
+### 4.8 Clipboard tools (v1.2.0) — read exposure & write consent
+
+**Risk.** `clipboard_get` returns whatever the session clipboard holds —
+which routinely includes copied credentials, tokens, and private text —
+to any caller that clears TB-1. `clipboard_set`/`clipboard_clear` can
+poison or destroy the user's clipboard state (e.g. swapping a copied
+address for an attacker's).
+
+**Mitigations.**
+
+- Text-first contract: only text MIME payloads cross the provider
+  boundary; `mime: "list"` enumerates offered types without pulling
+  binary blobs — image/binary data stays inside the helper process.
+- `clipboard_set` payload capped at 1 MiB UTF-8; fed to `wl-copy`/`xclip`
+  over stdin, never argv (the payload does not appear in `/proc/*/cmdline`
+  of the helper).
+- `clipboard_set`/`clipboard_clear` joined the destructive consent class —
+  `-32015 ConsentRequired` challenge on first call (§4.11 gate). `clipboard_get`
+  is ungated, matching the read-tools policy: the exposure is the ambient
+  same-session readability of the clipboard, which we make auditable but
+  cannot create or remove.
+- Helpers are startup-pinned absolute binaries spawned with a scrubbed
+  environment and bounded execution; they are provider-internal — no
+  `validate_command` arm, so `system_command` cannot invoke them.
+
+**Residual.** Medium: an authorized/injected client can read clipboard
+contents and exfiltrate them through its own channel — the same residual
+class as `screenshot` (§6 R-2). The gate covers writes; reads are
+audited like every other call.
+
+### 4.9 Plugin tool-macros (v1.2.0) — declarative, not code
+
+**Risk.** `<state-root>/plugins/*.json` manifests define named macros an
+agent can run by `plugin_run`. A tampered or hostile manifest could chain
+destructive tools into a single call — laundering several gated actions
+behind one innocuous name.
+
+**Mitigations.**
+
+- Manifests are **data, not code**: a plugin is an ordered list of
+  catalog-tool calls with `${param}` templating. There is no eval, no
+  shell, no new binary on the path — a plugin can reach nothing that is
+  not already a registered tool.
+- Validation is strict: `name` `^[a-z][a-z0-9-]{0,63}$` and must not
+  collide with a catalog tool name; semver-ish `version`; typed params
+  (`string`/`number`/`boolean`, ≤64); 1–32 steps; `step.tool` must be a
+  real catalog tool and **`plugin_*` steps are rejected** — plugins cannot
+  compose into unbounded recursion.
+- **Per-step secured dispatch**: each step re-enters the normal tool
+  pipeline — consent re-challenge, audit, history, and metrics apply per
+  step. Consent for `plugin_run` does **not** authorize a destructive
+  step; a step's `-32015` passes through annotated with
+  `plugin`/`step`/`step_tool` so the operator sees *which* step asked.
+- Scanning is read-only and fresh on every call — no cached manifest can
+  go stale-evil between calls; `plugin_reload` surfaces loaded-vs-skipped
+  diagnostics so rejected manifests are visible, not silent.
+- The manifest directory lives under the `0700` state root — writing a
+  plugin requires the same-UID filesystem access that already grants
+  `history.json` and the audit log.
+
+**Residual.** Medium: a same-UID attacker can already edit the manifest
+dir, and a *valid* manifest still chains semantically-powerful tools —
+bounded by per-step consent and audit, same residual class as §6 R-2.
+
+### 4.10 Bounded `screen_record` output (v1.2.0)
+
+**Risk.** A recording tool writes frames to disk — an attacker-controlled
+output path or unbounded run could fill the disk or overwrite files.
+
+**Mitigations.** Output goes to a fresh server-owned `rec-<ulid>` `0700`
+dir under the captures root (`<state>/captures` preferred, `/tmp`
+fallback — never a caller-chosen path), hard-capped at 600 frames and
+512 MiB written with a `manifest.json` audit of every frame; the call
+runs to its bound (no mid-record cancellation) and is not consent-gated
+because nothing caller-chosen is written. Residual: low — same disk-write
+class as the §4.6 capture-output rules.
+
+### 4.11 Prompt-injection abusing `type_text` / `system_command`
 
 **Scenario.** The agent reads a malicious page/doc; embedded instructions
 steer it to `type_text` credentials into a phishing field, attempt a
@@ -311,7 +394,8 @@ screenshot-then-describe secrets.
   `type_text` and the permitted `dispatch` set remain semantically
   powerful. **Whitelist ≠ intent filter.**
 - **Consent gate**: the destructive class (`system_command`,
-  `clear_action_history`, `replay_action`, `window_control{action:close}`)
+  `clear_action_history`, `replay_action`, `window_control{action:close}`,
+  `clipboard_set`, `clipboard_clear`)
   fails first use with `-32015 ConsentRequired` plus a short-lived (60 s),
   single-use challenge token; the client must surface it to the operator
   and re-issue with `consent_token`. Tokens are CSPRNG-generated (≥128
@@ -336,7 +420,7 @@ in §6 R-2. No technical control at our layer distinguishes a legitimate
 instruction from an injected one when both arrive over an authenticated
 channel.
 
-### 4.9 Supply chain
+### 4.12 Supply chain
 
 | Vector | Mitigation |
 | ------ | ---------- |
@@ -346,7 +430,7 @@ channel.
 | Build-tooling compromise | Reproducible-build aspirations; CI provenance via release workflow attestation (target state) |
 | rmcp/protocol-level vuln | Track upstream advisories; transport-layer fuzzing in test plan |
 
-### 4.10 Whitelisted-binary abuse and PATH hijacking
+### 4.13 Whitelisted-binary abuse and PATH hijacking
 
 Whitelist membership alone is not a bound on *what the binary will do with
 its arguments*. Each member was audited for its sharpest reachable
@@ -370,6 +454,14 @@ primitive:
   compositor-scoped virtual-input path exists instead.
 - **`scrot`** — a harmless read tool except its output path: confined to
   the path whitelist so a capture cannot overwrite a dotfile.
+- **`wl-copy` / `wl-paste` / `xclip` / `xsel` / `kdotool`** (v1.2.0) —
+  pinned at startup for the clipboard providers and the KDE window rung
+  (`KdotoolWindow`), but with **no `validate_command` arm** —
+  provider-internal only, unreachable through `system_command`. Clipboard
+  payloads travel over stdin (never argv), helpers run with a scrubbed
+  environment and bounded execution; `kdotool` dispatches are built from
+  a closed action set (`kwinscript` arbitrary-JS is unreachable) and
+  window ids are shape-validated before reuse.
 - **PATH hijacking** — if whitelist members were invoked by bare name, a
   writable directory earlier in `PATH` (or a modified environment) could
   substitute a trojaned `hyprctl`. **All whitelisted binaries are resolved
@@ -457,6 +549,8 @@ bottom line.**
 | **R-11** | Supply-chain compromise despite pinning/audit | Low–Medium | Audit catches *known* CVEs, not zero-day malicious releases | `cargo deny` sources; minimal dep tree; checksum-pinned models |
 | **R-12** | History plaintext exposed in memory while running | Low | Necessary for operation | FDE + standard memory-hygiene; accepted |
 | **R-13** | `invoke_element` and pointer-class UI-interaction tools can activate privileged dialogs (polkit "Authenticate", `systemd-ask-password`) | Medium–High | UI-interaction tools are physical-input-equivalent — the same residual class as any input injector (R-7); the consent gate deliberately does not cover that class, since a per-call challenge adds friction, not a boundary | Trusted-session deployment only; full `args_hash` audit trail; keep `--allow-destructive` off unattended deployments; prefer the compositor-scoped Wayland virtual-input backend over uinput |
+| **R-14** | Same-UID attacker writes a hostile `plugins/*.json` manifest chaining semantically-powerful tools under one innocuous name | Medium | Requires the same-UID state-dir access that already reaches `history.json`; manifests are data (no code exec), `plugin_*` recursion is rejected, and every step re-enters consent/audit — but a *valid* macro can still chain real tools | Keep `~/.ultranix-mcp/` `0700` (default); review `plugin_reload` diagnostics; per-step consent stays on (`--allow-destructive` off unattended) |
+| **R-15** | `clipboard_get` exfiltrates clipboard-held secrets to an authorized/injected client | Medium | Ambient same-session readability of the clipboard — reads are audited, not gated (consistent with `screenshot`); writes/clears are consent-gated | Treat clipboard contents as sensitive; audit `clipboard_get` frequency; scope client keys |
 
 ### Explicitly out of scope
 
@@ -474,7 +568,12 @@ The following MUST hold in implementation and are candidates for CI tests:
    `{grim, slurp, hyprctl, scrot, xdotool, wmctrl}`; exec-capable
    subcommands (`hyprctl dispatch exec`/`exec-once`, general D-Bus
    invocation) are denied, and every binary runs via its startup-pinned
-   absolute path. Honest carve-out: on X11-fallback sessions `xdotool`
+   absolute path. Provider-internal pins (`xrandr`, `xprop`,
+   `wl-copy`, `wl-paste`, `xclip`, `xsel`, `kdotool`, and the other
+   helper binaries) are likewise startup-pinned but have no
+   `validate_command` arm — `system_command` cannot invoke them; only
+   provider code spawns them. Honest carve-out: on X11-fallback sessions
+   `xdotool`
    retains `type`/`key` — exec-equivalent into terminals — and that is a
    flagged residual (§6 R-2). Wayland sessions deny all exec-capable
    subcommands: `xdotool`/`wmctrl` are not even registered there.
@@ -493,15 +592,24 @@ The following MUST hold in implementation and are candidates for CI tests:
 7. `~/.ultranix-mcp/` is created `0700`; key material is never persisted by
    the server.
 8. Destructive-class tools (`system_command`, `clear_action_history`,
-   `replay_action`, `window_control{action:"close"}`) never execute on a
+   `replay_action`, `window_control{action:"close"}`, `clipboard_set`,
+   `clipboard_clear`) never execute on a
    first call — they return `-32015 ConsentRequired` until a valid,
    unexpired, single-use `consent_token` bound to `{key_id/session, tool,
    args_hash}` is presented, unless `--allow-destructive` was set at
    startup (in which case startup logged the bypass). Replaying a
    destructive-class record re-challenges through the full gate; consent
    is never inherited across calls.
-9. Every `audit.jsonl` record carries `args_hash` (never raw args) and a
-   `prev_hash` equal to the hash of the preceding record.
+9. `plugin_run` never escapes the security pipeline: manifests are
+   declarative JSON (no code execution), `plugin_*` steps are rejected at
+   validation, and every step re-enters dispatch — a destructive step
+   challenges for its own `consent_token` independently of any consent
+   granted to the `plugin_run` call itself.
+10. `screen_record` writes only beneath a fresh server-owned `rec-<ulid>`
+    `0700` dir (captures root or `/tmp` fallback) and never exceeds
+    600 frames or 512 MiB of output.
+11. Every `audit.jsonl` record carries `args_hash` (never raw args) and a
+    `prev_hash` equal to the hash of the preceding record.
 
 ---
 

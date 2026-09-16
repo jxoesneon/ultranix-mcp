@@ -1,6 +1,6 @@
 # Headless & Remote Authentication — ultranix-mcp
 
-**Status**: Implemented (v1.1.0) — everything here describes shipped behaviour
+**Status**: Implemented (v1.2.0) — everything here describes shipped behaviour
 except the Unix-socket listener, which remains a planned hardening option.
 **Audience**: operators running ultranix-mcp over SSH, on a headless box, or
 under `systemd --user` without an active graphical seat.

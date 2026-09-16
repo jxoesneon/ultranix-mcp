@@ -22,8 +22,10 @@ ultranix-mcp must decide its tool surface. Requirements:
 - **Stable contract:** names are part of the MCP public API — churn breaks
   saved agent workflows, golden fixtures, and the `replay_action` history.
 
-The full approved catalog (32 tools, 5 categories — canonical catalog in
-[TOOLS.md](../TOOLS.md); this table records the decision):
+The full approved catalog (32 tools, 5 categories at decision time —
+canonical catalog in [TOOLS.md](../TOOLS.md); this table records the
+decision; see the addendum below for the v1.2.0 extension to 39 tools in
+6 categories):
 
 | Category | Tools |
 | -------- | ----- |
@@ -48,7 +50,7 @@ Alternatives considered:
   contract; the catalog above is frozen as the Phase 0–5 target.
 - The binary accepts **`--category=<name>`** (repeatable / comma-separated) to
   restrict `tools/list` to the selected categories at startup; omitting the flag
-  exposes all 32 tools.
+  exposes all 32 tools (39 as of v1.2.0 — see addendum).
 - Category membership is static and versioned with the tool catalog; `metrics`,
   `get_action_history`, `replay_action`, and `clear_action_history` live in
   `admin` so minimal-agent deployments can exclude them entirely.
@@ -85,3 +87,21 @@ Alternatives considered:
   (categories: mouse,keyboard)`.
 - Golden `tools/list` fixtures per category combination exercised in CI (see
   TESTING_STRATEGY.md) to prevent accidental schema/name drift.
+
+## Addendum (v1.2.0)
+
+The v1.2.0 breadth wave extended the frozen catalog under the same
+conventions — additive MINOR changes per API_VERSIONING.md, no renames or
+moves:
+
+- New **`clipboard` category** (3 tools): `clipboard_get`,
+  `clipboard_set`, `clipboard_clear`.
+- **`screen_record`** joined `vision` (now 13 tools).
+- **`plugin_list`/`plugin_run`/`plugin_reload`** joined `admin` (now 10
+  tools).
+
+Current surface: **39 tools in 6 categories** — `--category` accepts
+`clipboard` as a sixth group; the static-membership and
+naming-convention decisions above are unchanged (plugin names reuse the
+same `snake_case`/`category_verb` convention and are validated not to
+collide with catalog tool names).

@@ -6,9 +6,12 @@ drive a Linux desktop. Adapted from `ultramac/docs/ENTERPRISE_PLAN.md`; the
 primitives (audit JSONL, encrypted history, Prometheus, key auth) are shared
 across the Ultra\* family so operators see one control model on every OS.
 
-**Status: v1.1.0 shipped.** The core governance surface (key auth, consent
+**Status: v1.2.0 shipped.** The core governance surface (key auth, consent
 gate, audit JSONL, AES-256-GCM history, rate limiting, Prometheus metrics,
-opt-in Sentry) is implemented; items still tagged *post-v1* below are the
+opt-in Sentry) is implemented; the v1.2.0 wave extended it — clipboard
+writes joined the consent-gated class, `plugin_run` steps re-enter the
+secured dispatch per step, and history moved to the framed `UNXHIST2`
+append format. Items still tagged *post-v1* below are the
 planned policy roadmap, not shipped features.
 
 ---
@@ -56,13 +59,14 @@ no external dependencies.
   root. Reusing the `input` group is explicitly rejected — it grants read
   of real input devices, i.e. a keylogger permission.
 - **Consent gate** — destructive tools (`system_command`,
-  `clear_action_history`, `replay_action`, `window_control` `close`)
+  `clear_action_history`, `replay_action`, `window_control` `close`,
+  `clipboard_set`, `clipboard_clear`)
   return `-32015 ConsentRequired` plus a single-use challenge token; the
   client retries with `consent_token` attached. `--allow-destructive`
   bypasses the gate as an operator opt-out, announced at startup and in
   the audit log.
-- **Tool-category gating** — `--category=mouse,keyboard,vision,automation,admin`
-  at process start defines the maximum capability surface across the 32
+- **Tool-category gating** — `--category=mouse,keyboard,vision,automation,admin,clipboard`
+  at process start defines the maximum capability surface across the 39
   snake_case tools; a client cannot enumerate tools outside the served set.
 
 ### 2.2 Audit trail — `~/.ultranix-mcp/logs/audit.jsonl`
@@ -78,7 +82,7 @@ extends the canonical record (`timestamp`, `tool`, `args_hash`, `outcome`,
 | `event_id` | string (UUIDv7) | Unique, time-ordered event ID. |
 | `session_id` | string | MCP session; ties N calls to one client connection. |
 | `tool` | string | Tool name, e.g. `mouse_click`. |
-| `category` | string | `mouse` \| `keyboard` \| `vision` \| `automation` \| `admin`. |
+| `category` | string | `mouse` \| `keyboard` \| `vision` \| `automation` \| `admin` \| `clipboard`. |
 | `args_hash` | string (SHA-256) | Hash of canonicalized arguments — enables correlation without storing secrets/typed text. |
 | `args_summary` | object | Redacted argument summary (coordinates, window id, selector kind — never raw typed strings). |
 | `outcome` | string | `ok` \| `error` \| `denied`. |
@@ -140,7 +144,7 @@ copy exists for reader convenience and must not diverge:
 | `ultranix_mcp_action_history_size` | Gauge | — | Records retained in encrypted history |
 | `ultranix_mcp_ocr_cache_entries` | Gauge | — | Live entries in the OCR/icon result cache (shipped at v1.1.0) |
 
-`/readyz` doubles as a governance surface: it reports which of the seven
+`/readyz` doubles as a governance surface: it reports which of the eight
 providers resolved to `Some`, so monitoring can detect unexpected backend
 degradation (e.g. `CaptureProvider` falling from `WlrCapture` to portal
 or `None`).
@@ -296,7 +300,7 @@ Shipped controls vs. planned policy surface:
 | --- | --- | --- |
 | `--category=` tool filtering | **Shipped (v1.0.0)** | Startup capability cap; the primary policy lever today. |
 | Input sanitization + arg-constrained whitelists | **Shipped (v1.0.0)** | Security scaffolding: keysym whitelist, bounds checks, selector-injection rejection, the six-binary `system_command` whitelist with absolute binary pinning (`hyprctl` denies `dispatch exec`/`exec-once`; `xdotool`/`wmctrl` X11-only), and the path whitelist (`$XDG_RUNTIME_DIR`, `/tmp`, `~/.ultranix-mcp/**`). |
-| Consent gate | **Shipped (v1.0.0)** | Destructive tools (`system_command`, `clear_action_history`, `replay_action`, `window_control` `close`) return `-32015 ConsentRequired` + challenge token; retry with `consent_token`; `--allow-destructive` bypass. |
+| Consent gate | **Shipped (v1.0.0)** | Destructive tools (`system_command`, `clear_action_history`, `replay_action`, `window_control` `close`, `clipboard_set`/`clipboard_clear` since v1.2.0) return `-32015 ConsentRequired` + challenge token; retry with `consent_token`; `plugin_run` steps re-challenge per step; `--allow-destructive` bypass. |
 | Audit skeleton (JSONL append + schema) | **Shipped (v1.0.0)** | `audit.jsonl` with `key_id`/`args_hash`/`prev_hash` chaining. |
 | API-key auth + disable flag | **Shipped (v1.0.0)** | The HTTP-transport auth surface (`uxcp_*` key check, `X-API-Key`/`Bearer` headers, key files, rotation overlap, auth audit events). Fail-closed bind semantics are intrinsic — the server refuses to bind `:3010` without a key unless `ULTRANIX_MCP_DISABLE_AUTH=true`. |
 | Rate limiting (10 req/s token bucket per client identity) | **Shipped (v1.0.0)** | HTTP-transport feature; `/metrics` and health endpoints exempt; env-tunable budget. |

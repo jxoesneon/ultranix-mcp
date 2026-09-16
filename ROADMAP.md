@@ -2,9 +2,11 @@
 
 ultranix-mcp's delivery plan for **v1.0.0** and beyond. Work proceeded in six
 phases, each with concrete deliverables, exit criteria, dependencies, and
-risk callouts — **Phases 0–5 are delivered as of v1.0.0, and the v1.1.0 wave
-shipped the post-v1 items that had a real implementation path** (see
-[CHANGELOG.md](CHANGELOG.md) and [v1.1.0 — Post-v1 Wave](#v110--post-v1-wave-shipped)
+risk callouts — **Phases 0–5 are delivered as of v1.0.0, the v1.1.0 wave
+shipped the post-v1 items that had a real implementation path, and the
+v1.2.0 breadth wave landed the rest** (see
+[CHANGELOG.md](CHANGELOG.md), [v1.1.0 — Post-v1 Wave](#v110--post-v1-wave-shipped),
+and [v1.2.0 — Breadth Wave](#v120--breadth-wave-shipped)
 below). This is a living document — update it as direction shifts.
 
 Legend: `[x]` done · `[ ]` planned · phases are strictly ordered; a phase's
@@ -14,10 +16,12 @@ exit criteria gate the next.
 PipeWire, `xdg-desktop-portal-hyprland`, live AT-SPI2 bus, Rust 1.98.1.
 Installed session tools: `hyprctl`, `grim`, `slurp`. X11 sessions use the
 shipped `scrot`/`xdotool`/`wmctrl` rungs (`xrandr`/`xprop` are pinned as
-provider-internal helpers, not `system_command`-invocable). Post-v1/optional:
-`wl-copy` (planned clipboard tools). Not required: `gdbus`/`busctl` —
-removed from the command whitelist. Absent by design: `wtype`, `ydotool`,
-`tesseract` — ultranix-mcp does not depend on them.
+provider-internal helpers, not `system_command`-invocable). Optional:
+`wl-clipboard` (`wl-copy`/`wl-paste` — clipboard tools on Wayland),
+`xclip`/`xsel` (clipboard tools on X11/XWayland; all four are likewise
+provider-internal pins, unreachable by `system_command`). Not required:
+`gdbus`/`busctl` — removed from the command whitelist. Absent by design:
+`wtype`, `ydotool`, `tesseract` — ultranix-mcp does not depend on them.
 
 ---
 
@@ -353,25 +357,64 @@ path — all delivered:
       char or ≥100 ms, plus post-loop
 - [x] **`server.json` registry manifest** — `mcp-publisher validate`-clean
 
-Still open from the original backlog: `wait_for_ui_element` repeats a full
-AT-SPI scan per poll (no element cache yet).
+## v1.2.0 — Breadth Wave (shipped)
+
+The rest of the post-v1 backlog with a real implementation path — the tool
+surface grew from 32 to **39 tools in 6 categories**:
+
+- [x] **Clipboard tools** — `clipboard_get`/`clipboard_set`/
+      `clipboard_clear` over a new `ClipboardProvider`: `wl-copy`/
+      `wl-paste` on Wayland (backend `"wl-clipboard"`), `xclip` + `xsel`
+      on X11/XWayland (`"xclip"`). Text-first reads (`mime: "list"`
+      enumerates), 1 MiB write cap, payloads over stdin; `set`/`clear`
+      are consent-gated destructive actions
+- [x] **Plugin tool-macros** — `plugin_list`/`plugin_run`/`plugin_reload`
+      over declarative `<state>/plugins/*.json` manifests (`${param}`
+      templating, `$$` escape, typed string/number/boolean params, 1–32
+      steps). Steps re-enter the secured dispatch — per-step consent,
+      audit, history, metrics; `plugin_*` steps rejected (no macro
+      recursion); new `-32017 PluginStepError`
+- [x] **Bounded screen recording** — `screen_record` (vision): one frame
+      per `interval_ms` up to `duration_ms`, 600-frame + 512 MiB caps,
+      `rec-<ulid>` output dir + `manifest.json`; not consent-gated
+- [x] **Compositor breadth** — `SessionKind` detects Hyprland, sway,
+      Wayfire, river, KDE, GNOME, Other; wlroots family shares the
+      `wlr-*` rungs, KDE/GNOME route to portal backends; `SwayWindow`
+      (`sway-ipc` over `$SWAYSOCK`) is the sway window provider; a
+      `KdotoolWindow` (`kdotool` subprocess) is the KDE window provider —
+      it drives KWin on Wayland and X11 alike
+- [x] **Per-backend cargo features** — `wayland`/`uinput`/`a11y`/
+      `pipewire`/`vision`/`browser`/`sentry` (all default-on);
+      `--no-default-features` builds a lean core that reports
+      `ProviderUnavailable` honestly; `vision-rocm` joins the EP ladder
+- [x] **Nix flake** — `flake.nix` (package + devShell + app).
+      **Unverified** — written by review, never evaluated; contributions
+      welcome
+- [x] **History v2** — `UNXHIST2` framed append format: O(1) encrypted
+      appends; full rewrite only on FIFO eviction or v1→v2 migration
+- [x] **AT-SPI scan cache** — `wait_for_ui_element` & friends reuse a
+      cached `TreeScan` (300 ms TTL) instead of re-walking the tree every
+      250 ms poll; staleness bounded by TTL + one poll
 
 ## Post-v1 Ideas
 
 Exploration backlog — not committed, priority by demand.
 
-- **KDE/GNOME native backends** — KWin scripting and Mutter RemoteDesktop /
-  gnome-shell providers behind the existing traits
-- **GPU EP acceleration** — extend `ort` beyond CPU to CUDA/OpenVINO/ROCm
-  for interactive-latency icon finding
-- **Broader wlroots coverage** — Sway, Wayfire, river via the same
-  compositor protocols
-- **Streaming capture** — continuous/region capture for remote-control UX
+- **GNOME native window backend** — a Mutter / gnome-shell provider
+  behind `WindowProvider` (the KDE side shipped: `KdotoolWindow` drives
+  KWin via `kdotool`)
+- **Wayfire/river window backends** — no general window IPC exists today
+  (Wayfire's IPC is plugin-scoped; `riverctl` manages layout, not client
+  windows) — needs upstream capability or a protocol-level approach
+- **GPU EP acceleration** — CUDA/OpenVINO/ROCm features are wired
+  (`ort/load-dynamic` + `ORT_DYLIB_PATH`); remaining work is validated
+  EP-packaged ONNX Runtime builds in CI/packaging
+- **Streaming capture** — `screen_record` shipped the bounded version;
+  true continuous/live streaming for remote-control UX remains open
 - **Headless operation** — running under a nested or headless compositor for
   CI and server-side automation
-- **Clipboard tools** — `wl-copy`-backed clipboard read/write (post-v1)
-- **Plugin tools** — third-party tool registration against the same typed
-  schema contract
+- **Dynamic tool registration** — plugins shipped as manifest macros over
+  the fixed catalog; third-party tools with their own schemas remain open
 
 ---
 
