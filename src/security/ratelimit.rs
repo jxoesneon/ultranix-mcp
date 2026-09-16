@@ -1,18 +1,18 @@
-//! Per-identity token-bucket rate limiter — SECURITY.md "Request
+//! Per-identity token-bucket rate limiter - SECURITY.md "Request
 //! pipeline" layer 2 and API_KEY_MANAGEMENT.md §5.
 //!
 //! One bucket per caller identity: the `key_id` of the authenticated
 //! API key on HTTP (one key = one budget), or the remote socket address
 //! as the defense-in-depth fallback. Default shape: **10 req/s**
-//! sustained refill with a **20-token** burst capacity. Override the
+//! sustained refill with a **20-token**burst capacity. Override the
 //! rate with `ULTRANIX_MCP_RATE_LIMIT` (requests/second, float ok); the
 //! burst floor stays 20, or `2 × rps` when the configured rate exceeds
 //! that.
 //!
 //! Implementation notes:
-//! - Monotonic clock ([`Instant`]) — wall-clock changes cannot refill
+//! - Monotonic clock ([`Instant`]) - wall-clock changes cannot refill
 //!   or freeze buckets.
-//! - `Mutex<HashMap>` — a single short critical section per check; no
+//! - `Mutex<HashMap>` - a single short critical section per check; no
 //!   `DashMap` dependency.
 //! - The map is bounded: stale buckets (idle > 10 min) are evicted by
 //!   periodic GC, and a hard cap evicts the least-recently-active
@@ -29,7 +29,7 @@ pub const ENV_RATE_LIMIT: &str = "ULTRANIX_MCP_RATE_LIMIT";
 pub const DEFAULT_RPS: f64 = 10.0;
 /// Spec default burst capacity ("burst ~20").
 pub const DEFAULT_BURST: f64 = 20.0;
-/// Buckets idle longer than this are evicted — an inactive identity's
+/// Buckets idle longer than this are evicted - an inactive identity's
 /// next request simply starts with a fresh full bucket.
 const EVICT_AFTER: Duration = Duration::from_secs(600);
 /// Hard bound on tracked identities; past it the least-recently-active
@@ -49,7 +49,7 @@ struct Bucket {
 #[derive(Debug)]
 struct Inner {
     buckets: HashMap<String, Bucket>,
-    /// Total `check` calls — drives the periodic GC cadence.
+    /// Total `check` calls - drives the periodic GC cadence.
     ops: u64,
 }
 
@@ -92,7 +92,7 @@ impl RateLimiter {
         Self::from_env_lookup(|k| std::env::var_os(k))
     }
 
-    /// [`Self::from_env`] with an injected env lookup — for tests.
+    /// [`Self::from_env`] with an injected env lookup - for tests.
     pub fn from_env_lookup(get: impl Fn(&str) -> Option<OsString>) -> Self {
         match get(ENV_RATE_LIMIT).filter(|v| !v.is_empty()) {
             None => Self::default(),
@@ -105,7 +105,7 @@ impl RateLimiter {
                     _ => {
                         tracing::warn!(
                             value = %s,
-                            "invalid {ENV_RATE_LIMIT} — expected a positive number \
+                            "invalid {ENV_RATE_LIMIT} - expected a positive number \
                              (requests/second); using {DEFAULT_RPS} req/s"
                         );
                         Self::default()
@@ -117,7 +117,7 @@ impl RateLimiter {
 
     /// Admit one request for `identity`. Refills the caller's bucket
     /// against the monotonic clock, then consumes one token if
-    /// available. `false` = over budget — the caller should reject and
+    /// available. `false` = over budget - the caller should reject and
     /// emit `ratelimit.exceeded`.
     pub fn check(&self, identity: &str) -> bool {
         let now = Instant::now();
@@ -150,7 +150,7 @@ impl RateLimiter {
         self.burst
     }
 
-    /// Number of identities currently tracked — diagnostics/tests.
+    /// Number of identities currently tracked - diagnostics/tests.
     pub fn tracked_identities(&self) -> usize {
         self.inner
             .lock()
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn refill_math_is_exact() {
         let now = Instant::now();
-        // 5 tokens left, 1 s idle at 10 rps → 15 available; one spend → 14.
+        // 5 tokens left, 1 s idle at 10 rps -> 15 available; one spend -> 14.
         let mut b = Bucket {
             tokens: 5.0,
             last: now - Duration::from_secs(1),
@@ -363,13 +363,13 @@ mod tests {
         }
         assert!(rl.check("new-arrival"));
         assert!(rl.tracked_identities() <= MAX_IDENTITIES);
-        // The just-admitted identity is freshest — it survives eviction.
+        // The just-admitted identity is freshest - it survives eviction.
         assert!(rl.inner.lock().unwrap().buckets.contains_key("new-arrival"));
     }
 
     #[test]
     fn evicted_identity_restarts_with_full_bucket() {
-        // After eviction an old identity is indistinguishable from new —
+        // After eviction an old identity is indistinguishable from new -
         // it gets a fresh burst, never negative credit.
         let rl = RateLimiter::new(1.0, 2.0);
         {

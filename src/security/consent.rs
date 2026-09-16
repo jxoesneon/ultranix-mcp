@@ -1,4 +1,4 @@
-//! Consent gate for the destructive tool class — SECURITY.md "Consent gate
+//! Consent gate for the destructive tool class - SECURITY.md "Consent gate
 //! for destructive-class tools" and docs/TOOLS.md "Destructive-Action
 //! Consent".
 //!
@@ -7,7 +7,7 @@
 //!
 //! Token semantics implemented here:
 //! - CSPRNG, ≥128-bit (16 bytes), base64url-encoded, no padding.
-//! - Single-use: consumed on the first `verify` attempt, pass or fail —
+//! - Single-use: consumed on the first `verify` attempt, pass or fail -
 //!   a mismatched token returns `-32015` again with a *fresh* challenge.
 //! - 60 s TTL (monotonic clock).
 //! - Bound to `{caller_id, tool, args_hash}` where `caller_id` is the
@@ -16,7 +16,7 @@
 //!   whitespace removed, `consent_token` itself excluded).
 //! - For calls whose target is resolved at execution time
 //!   (`window_control{action:"close"}` with `window` omitted), the resolved
-//!   target is folded into the token scope at challenge time — a change of
+//!   target is folded into the token scope at challenge time - a change of
 //!   the resolved target between challenge and retry invalidates the token.
 //! - `--allow-destructive` bypass: `verify` then accepts anything; callers
 //!   still stamp `"consent": "bypassed"` on the audit record.
@@ -58,9 +58,9 @@ struct TokenRecord {
 pub struct ConsentGate {
     /// `--allow-destructive` operator opt-out.
     allow_destructive: bool,
-    /// Token TTL — a constant in production, tunable for tests.
+    /// Token TTL - a constant in production, tunable for tests.
     ttl: Duration,
-    /// token string → scope record. Bounded: entries are pruned on every
+    /// token string -> scope record. Bounded: entries are pruned on every
     /// mutation and self-expire after `ttl`.
     tokens: Mutex<HashMap<String, TokenRecord>>,
 }
@@ -71,7 +71,7 @@ impl ConsentGate {
         Self::with_ttl(allow_destructive, Duration::from_millis(EXPIRES_IN_MS))
     }
 
-    /// Constructor with an explicit TTL — for tests and exotic deployments.
+    /// Constructor with an explicit TTL - for tests and exotic deployments.
     pub fn with_ttl(allow_destructive: bool, ttl: Duration) -> Self {
         Self {
             allow_destructive,
@@ -87,8 +87,8 @@ impl ConsentGate {
     }
 
     /// Issue a challenge bound to `{caller, tool, args_hash}` with no
-    /// resolved-target scope — for calls whose target is fully described by
-    /// `args` (e.g. `window_control{action:"close", window:"0x…"}`).
+    /// resolved-target scope - for calls whose target is fully described by
+    /// `args` (e.g. `window_control{action:"close", window:"0x..."}`).
     pub fn challenge(
         &self,
         key_id: Option<&str>,
@@ -99,7 +99,7 @@ impl ConsentGate {
         self.challenge_inner(key_id, session_id, tool, args, None)
     }
 
-    /// Issue a challenge additionally bound to `resolved_target` — for
+    /// Issue a challenge additionally bound to `resolved_target` - for
     /// calls whose target is resolved at execution time (e.g.
     /// `window_control{action:"close"}` with `window` omitted resolving to
     /// the *current* active window's address).
@@ -123,7 +123,7 @@ impl ConsentGate {
         resolved_target: Option<&str>,
     ) -> Challenge {
         let mut tokens = self.tokens.lock().expect("consent gate poisoned");
-        // Opportunistic GC — keeps the map bounded under challenge spam.
+        // Opportunistic GC - keeps the map bounded under challenge spam.
         let ttl = self.ttl;
         tokens.retain(|_, r| r.issued.elapsed() <= ttl);
 
@@ -146,11 +146,11 @@ impl ConsentGate {
 
     /// Consume and check `token` against the full scope. Single-use: the
     /// token is removed on *any* attempt, so an expired/mismatched token
-    /// can never be retried — the client gets a fresh challenge instead.
+    /// can never be retried - the client gets a fresh challenge instead.
     ///
     /// `resolved_target` must be `Some(_)` iff the challenge was issued via
     /// [`challenge_for_target`](Self::challenge_for_target), and must be the
-    /// same value — a resolved-target change between challenge and retry
+    /// same value - a resolved-target change between challenge and retry
     /// invalidates the token.
     ///
     /// When `allow_destructive` is set, always returns `true` (the bypass
@@ -188,7 +188,7 @@ fn caller_id<'a>(key_id: Option<&'a str>, session_id: &'a str) -> &'a str {
     key_id.unwrap_or(session_id)
 }
 
-/// Fresh stdio session id — CSPRNG, generated once at server start and
+/// Fresh stdio session id - CSPRNG, generated once at server start and
 /// bound into consent-token caller identity (docs/TOOLS.md token binding).
 pub fn new_session_id() -> String {
     generate_token()
@@ -201,7 +201,7 @@ fn generate_token() -> String {
     base64url(&bytes)
 }
 
-/// base64url (RFC 4648 §5), no padding — avoids a dependency for 16-byte
+/// base64url (RFC 4648 §5), no padding - avoids a dependency for 16-byte
 /// inputs.
 fn base64url(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -224,7 +224,7 @@ fn base64url(data: &[u8]) -> String {
 
 /// SHA-256 (hex) over the canonical JSON serialization of `args`:
 /// sorted object keys at every depth, UTF-8, insignificant whitespace
-/// removed, and the top-level `consent_token` member excluded — it carries
+/// removed, and the top-level `consent_token` member excluded - it carries
 /// the challenge answer, not part of the consented-to call.
 ///
 /// Also used by the audit layer so the record's `args_hash` matches exactly
@@ -237,7 +237,7 @@ pub fn args_hash(args: &Value) -> String {
 }
 
 /// Canonical-JSON writer: object keys sorted, `,`/`:` without whitespace.
-/// `strip_consent` applies only at the top level — a `consent_token` key
+/// `strip_consent` applies only at the top level - a `consent_token` key
 /// nested deeper in the structure is data, not the gate's parameter.
 fn write_canonical(v: &Value, out: &mut Vec<u8>, strip_consent: bool) {
     match v {
@@ -305,7 +305,7 @@ mod tests {
             &json!({"command":"slurp"}),
         );
         assert_eq!(c.expires_in_ms, EXPIRES_IN_MS);
-        // 16 bytes → 22 base64url chars, URL-safe alphabet only.
+        // 16 bytes -> 22 base64url chars, URL-safe alphabet only.
         assert_eq!(c.token.len(), 22);
         assert!(
             c.token
@@ -350,7 +350,7 @@ mod tests {
             &args,
             None
         ));
-        // Second attempt — token spent.
+        // Second attempt - token spent.
         assert!(!gate.verify(
             &c.token,
             Some("key1"),
@@ -423,7 +423,7 @@ mod tests {
             &json!({"command": "grim"}),
             None
         ));
-        // wrong session (key_id absent → session is the caller id)
+        // wrong session (key_id absent -> session is the caller id)
         let c5 = gate2.challenge(None, SESSION, "system_command", &args);
         assert!(!gate2.verify(
             &c5.token,
@@ -489,7 +489,7 @@ mod tests {
         let gate = ConsentGate::new(false);
         let args = json!({"action": "close"}); // window omitted
         let c = gate.challenge_for_target(None, SESSION, "window_control", &args, "0xaaa");
-        // same resolved target → ok
+        // same resolved target -> ok
         assert!(gate.verify(
             &c.token,
             None,
@@ -498,7 +498,7 @@ mod tests {
             &args,
             Some("0xaaa")
         ));
-        // changed target → rejected
+        // changed target -> rejected
         let c2 = gate.challenge_for_target(None, SESSION, "window_control", &args, "0xaaa");
         assert!(!gate.verify(
             &c2.token,
@@ -508,10 +508,10 @@ mod tests {
             &args,
             Some("0xbbb")
         ));
-        // target dropped → rejected
+        // target dropped -> rejected
         let c3 = gate.challenge_for_target(None, SESSION, "window_control", &args, "0xaaa");
         assert!(!gate.verify(&c3.token, None, SESSION, "window_control", &args, None));
-        // target added to an unscoped challenge → rejected
+        // target added to an unscoped challenge -> rejected
         let c4 = gate.challenge(None, SESSION, "window_control", &args);
         assert!(!gate.verify(
             &c4.token,
@@ -553,7 +553,7 @@ mod tests {
     fn allow_destructive_bypasses() {
         let gate = ConsentGate::new(true);
         assert!(gate.allow_destructive());
-        // Any token verifies — the bypass is real.
+        // Any token verifies - the bypass is real.
         assert!(gate.verify(
             "no-such-token",
             None,

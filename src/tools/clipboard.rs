@@ -1,16 +1,16 @@
-//! Clipboard tools (3) — `ClipboardProvider` injection: `clipboard_get`
+//! Clipboard tools (3) - `ClipboardProvider` injection: `clipboard_get`
 //! reads text (or enumerates MIME types), `clipboard_set`/`clipboard_clear`
 //! overwrite or drop the user's clipboard.
 //!
 //! `clipboard_set` and `clipboard_clear` are in the destructive consent
-//! class — overwriting a clipboard destroys user state and can inject
+//! class - overwriting a clipboard destroys user state and can inject
 //! hostile content into the next paste. The gate lives upstream in
 //! `super::is_destructive` (`call_tool_secured` challenges before
 //! dispatch); by the time a call reaches this module the token is already
 //! verified, and the params only carry `consent_token` so the challenged
 //! schema matches what the client retries with.
 //!
-//! Reads are text-only by design — binary MIME payloads never move
+//! Reads are text-only by design - binary MIME payloads never move
 //! through the provider boundary (see [`crate::traits::ClipboardProvider`]).
 
 use rmcp::model::{CallToolResult, ErrorData, Tool};
@@ -24,11 +24,11 @@ use super::{
 use crate::providers::Providers;
 use crate::traits::ClipboardProvider;
 
-/// `clipboard_set` payload cap — 1 MiB of UTF-8 (bytes). Bounds both the
+/// `clipboard_set` payload cap - 1 MiB of UTF-8 (bytes). Bounds both the
 /// MCP payload and what a pasted-secret sized blob can occupy.
 const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 
-/// X11 selection atoms that mean "text" — accepted in `clipboard_get`'s
+/// X11 selection atoms that mean "text" - accepted in `clipboard_get`'s
 /// `mime` alongside real `text/*` types (an X11 TARGETS list speaks
 /// atoms, not MIME strings).
 const X11_TEXT_ATOMS: &[&str] = &["UTF8_STRING", "STRING", "TEXT", "COMPOUND_TEXT"];
@@ -36,7 +36,7 @@ const X11_TEXT_ATOMS: &[&str] = &["UTF8_STRING", "STRING", "TEXT", "COMPOUND_TEX
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ClipboardGetParams {
-    /// MIME type to read — "text/plain" (default), another text/* type
+    /// MIME type to read - "text/plain" (default), another text/* type
     /// or X11 text atom, or "list" to enumerate offered types
     #[serde(default = "default_mime")]
     #[schemars(length(min = 1, max = 256))]
@@ -64,7 +64,7 @@ struct ClipboardClearParams {
     consent_token: Option<String>,
 }
 
-/// The category's `tools/list` entries — registered via
+/// The category's `tools/list` entries - registered via
 /// `super::all_tools`/`CATALOG` under the `clipboard` category.
 pub(super) fn tools() -> Vec<Tool> {
     vec![
@@ -96,7 +96,7 @@ pub(super) async fn dispatch(
     })
 }
 
-/// `None` slot → `-32010 ProviderUnavailable` (headless session, or no
+/// `None` slot -> `-32010 ProviderUnavailable` (headless session, or no
 /// clipboard helper pinned at startup).
 fn clipboard_provider(p: &Providers) -> Result<&dyn ClipboardProvider, ErrorData> {
     p.clipboard
@@ -107,7 +107,7 @@ fn clipboard_provider(p: &Providers) -> Result<&dyn ClipboardProvider, ErrorData
 /// Whether `mime` names the text read channel: any `text/*` type or an
 /// X11 text atom ([`X11_TEXT_ATOMS`]), case-insensitive. The provider
 /// contract is text-first, so every accepted value reads the same
-/// channel — `mime` is a selection/validation surface, not a decoder.
+/// channel - `mime` is a selection/validation surface, not a decoder.
 fn is_text_mime(mime: &str) -> bool {
     mime.len() <= 256
         && (mime
@@ -131,7 +131,7 @@ async fn clipboard_get(
     }
     if !is_text_mime(&p.mime) {
         return Err(invalid_params(format!(
-            "clipboard_get: unsupported mime {:?} — use \"list\" or a text/* type",
+            "clipboard_get: unsupported mime {:?} - use \"list\" or a text/* type",
             p.mime
         )));
     }
@@ -151,7 +151,7 @@ async fn clipboard_set(
             p.text.len()
         )));
     }
-    // Consent is enforced upstream by `call_tool_secured` — the token is
+    // Consent is enforced upstream by `call_tool_secured` - the token is
     // already spent by the time dispatch reaches this leg.
     let _ = &p.consent_token;
     let clipboard = clipboard_provider(providers)?;
@@ -167,7 +167,7 @@ async fn clipboard_clear(
     providers: &Providers,
 ) -> Result<CallToolResult, ErrorData> {
     let p: ClipboardClearParams = parse_args("clipboard_clear", args)?;
-    // Consent enforced upstream — see clipboard_set.
+    // Consent enforced upstream - see clipboard_set.
     let _ = &p.consent_token;
     let clipboard = clipboard_provider(providers)?;
     backend!(clipboard.clear().await);

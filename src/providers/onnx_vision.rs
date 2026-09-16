@@ -1,14 +1,14 @@
-//! ONNX Runtime vision backend — the Phase 3 implementation of ADR 0005.
+//! ONNX Runtime vision backend - the Phase 3 implementation of ADR 0005.
 //!
 //! Two capabilities behind one inference stack:
 //!
-//! - **OCR** ([`VisionProvider::recognize_text`]) — a PaddleOCR-style
+//! - **OCR**([`VisionProvider::recognize_text`]) - a PaddleOCR-style
 //!   detection + recognition pipeline. The DB text detector
 //!   (`ch_PP-OCRv4_det_infer.onnx`, RapidOCR export) produces a probability
 //!   map which we turn into word boxes via connected components + unclip
 //!   expansion; each box is then run through the CRNN/CTC recognizer
 //!   (`ch_PP-OCRv4_rec_infer.onnx`) and decoded with `ppocr_keys_v1.txt`.
-//! - **Zero-shot icon finding** ([`VisionProvider::find_icon`]) —
+//! - **Zero-shot icon finding**([`VisionProvider::find_icon`]) -
 //!   `onnx-community/owlvit-base-patch32-ONNX` (the transformers.js export
 //!   of `google/owlvit-base-patch32`), quantized uint8 build for CPU. The
 //!   natural-language query is CLIP-BPE-tokenized (`tokenizer.json` via the
@@ -18,9 +18,9 @@
 //! ## Model management
 //!
 //! No weights are bundled. Every artifact is listed in [`MODELS`] with a
-//! pinned URL + SHA-256, downloaded on **first use** (never in [`new`],
-//! never in tests) into `<state>/models/` — `~/.ultranix-mcp/models/` or
-//! the `ULTRANIX_MCP_STATE_DIR` override — verified against the checksum
+//! pinned URL + SHA-256, downloaded on **first use**(never in [`new`],
+//! never in tests) into `<state>/models/` - `~/.ultranix-mcp/models/` or
+//! the `ULTRANIX_MCP_STATE_DIR` override - verified against the checksum
 //! and written `0600`. A corrupted cache entry is re-downloaded.
 //!
 //! ## Execution providers
@@ -35,14 +35,14 @@
 //!
 //! ## Testing
 //!
-//! All pre/post-processing is pure (resize/normalize, component → box
+//! All pre/post-processing is pure (resize/normalize, component -> box
 //! decode, unclip, CTC greedy decode, CLIP padding, sigmoid/NMS) and
 //! unit-tested with synthetic tensors. Tests never touch the network or
 //! the model cache. The end-to-end inference test is `#[ignore]`d and
 //! additionally requires `ULTRANIX_MCP_LIVE_TESTS=1`.
 //!
 //! SAFETY: `recognize_text`/`find_icon` run inference inside
-//! `tokio::task::spawn_blocking` — ORT is blocking, and `reqwest::blocking`
+//! `tokio::task::spawn_blocking` - ORT is blocking, and `reqwest::blocking`
 //! (model downloads) must not run on a runtime worker thread.
 
 use std::fs;
@@ -66,7 +66,7 @@ use crate::state::StateDir;
 use crate::traits::{Detection, Frame, Rect, VisionProvider};
 
 // ---------------------------------------------------------------------------
-// Model manifest — pinned URL + SHA-256 for every fetched artifact.
+// Model manifest - pinned URL + SHA-256 for every fetched artifact.
 // Checksums verified against the downloaded bytes (HuggingFace LFS `oid`
 // is the SHA-256; confirmed locally for the OCR models). Sources:
 //   * SWHL/RapidOCR (HF mirror of the RapidOCR/PaddleOCR PP-OCRv4 exports)
@@ -84,7 +84,7 @@ struct ModelSpec {
 }
 
 /// PP-OCRv4 text detector (DB head), dynamic HxW input `x`, output
-/// `sigmoid_0.tmp_0` — a `[1,1,H,W]` text-probability map.
+/// `sigmoid_0.tmp_0` - a `[1,1,H,W]` text-probability map.
 const OCR_DET: ModelSpec = ModelSpec {
     file_name: "ch_PP-OCRv4_det_infer.onnx",
     url: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx",
@@ -101,7 +101,7 @@ const OCR_REC: ModelSpec = ModelSpec {
 
 /// CTC dictionary for the recognizer (one character per line; index 0 is
 /// the CTC blank, line `n` is class `n`). Pinned to a PaddleOCR commit so
-/// the byte content — and the hash — cannot drift.
+/// the byte content - and the hash - cannot drift.
 const OCR_KEYS: ModelSpec = ModelSpec {
     file_name: "ppocr_keys_v1.txt",
     url: "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/24f06d1a1b018d90c3c16bf49e966f988f55d98d/ppocr/utils/ppocr_keys_v1.txt",
@@ -173,7 +173,7 @@ const CLIP_STD: [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
 // Provider
 // ---------------------------------------------------------------------------
 
-/// `ort`-backed [`VisionProvider`]. Construction is cheap — [`new`] only
+/// `ort`-backed [`VisionProvider`]. Construction is cheap - [`new`] only
 /// verifies the ONNX Runtime library can initialize; sessions and model
 /// downloads are deferred to the first vision call.
 pub struct OnnxVision {
@@ -209,8 +209,8 @@ struct IconEngine {
 
 impl OnnxVision {
     /// Probe constructor for the fallback chain: resolves the state layout
-    /// and verifies ONNX Runtime can initialize, **without** downloading
-    /// any model. `None` → the `vision` slot stays unavailable.
+    /// and verifies ONNX Runtime can initialize, **without**downloading
+    /// any model. `None` -> the `vision` slot stays unavailable.
     pub fn new() -> Option<Self> {
         let state = StateDir::bootstrap().ok()?;
         if !ort_probe() {
@@ -237,7 +237,7 @@ fn ort_probe() -> bool {
 }
 
 /// One-time `ort` environment init. `commit()` returns `false` when an
-/// environment already exists — that's fine (defaults apply).
+/// environment already exists - that's fine (defaults apply).
 fn ensure_environment() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -245,7 +245,7 @@ fn ensure_environment() {
     });
 }
 
-/// EP registration order — ORT places each op on the first EP that claims
+/// EP registration order - ORT places each op on the first EP that claims
 /// it, so accelerated EPs precede the always-available CPU fallback.
 fn execution_providers() -> Vec<ExecutionProviderDispatch> {
     vec![
@@ -261,7 +261,7 @@ fn execution_providers() -> Vec<ExecutionProviderDispatch> {
 
 /// Build a session for `path` on the full EP ladder; if accelerated EP
 /// registration fails (feature enabled but the loaded ORT build lacks the
-/// EP), retry CPU-only — availability beats speed.
+/// EP), retry CPU-only - availability beats speed.
 fn build_session(path: &Path) -> Result<Session> {
     ensure_environment();
     let threads = std::thread::available_parallelism()
@@ -295,7 +295,7 @@ fn build_session(path: &Path) -> Result<Session> {
 // Detection-result cache (ARCHITECTURE §6): a fresh `recognize_text` /
 // `find_icon` inference costs up to ~2 s on CPU, while tools routinely
 // re-query the same frame (e.g. `find_text_on_screen` retries). Cache
-// hits are keyed on the full PNG bytes plus query params — a changed
+// hits are keyed on the full PNG bytes plus query params - a changed
 // pixel or query is always a miss. Entries expire after
 // [`OCR_CACHE_TTL`] and the map is capped at [`OCR_CACHE_CAP`] entries
 // (oldest evicted on insert).
@@ -308,12 +308,12 @@ const OCR_CACHE_CAP: usize = 64;
 
 type ResultCache = DashMap<String, (Instant, Vec<Detection>)>;
 
-/// `recognize_text` cache key — the full frame bytes.
+/// `recognize_text` cache key - the full frame bytes.
 fn ocr_cache_key(png: &[u8]) -> String {
     format!("ocr:{}", blake3::hash(png).to_hex())
 }
 
-/// `find_icon` cache key — frame bytes plus the natural-language query.
+/// `find_icon` cache key - frame bytes plus the natural-language query.
 fn icon_cache_key(png: &[u8], description: &str) -> String {
     format!("icon:{}:{}", blake3::hash(png).to_hex(), description)
 }
@@ -349,7 +349,7 @@ fn cache_put(cache: &ResultCache, key: String, dets: Vec<Detection>, now: Instan
 
 impl Inner {
     /// Lazily fetch + load the OCR pipeline. `OnceLock` memoizes failures
-    /// too — a broken cache/network doesn't retry-download per call.
+    /// too - a broken cache/network doesn't retry-download per call.
     fn ocr(&self) -> Result<&OcrEngine> {
         self.ocr
             .get_or_init(|| self.init_ocr().map_err(|e| format!("{e:#}")))
@@ -406,7 +406,7 @@ impl Inner {
         Ok(dets)
     }
 
-    /// Uncached OCR: det → boxes → rec per box → `Detection`s.
+    /// Uncached OCR: det -> boxes -> rec per box -> `Detection`s.
     fn recognize_uncached(&self, png: &[u8]) -> Result<Vec<Detection>> {
         let img = decode_png_rgb(png)?;
         let engine = self.ocr()?;
@@ -468,7 +468,7 @@ impl Inner {
         Ok(out)
     }
 
-    /// One word box through the recognizer → (text, mean char confidence).
+    /// One word box through the recognizer -> (text, mean char confidence).
     fn recognize_word(&self, engine: &OcrEngine, crop: &RgbImage) -> Result<(String, f32)> {
         let tw = rec_target_width(crop.width(), crop.height());
         let resized = image::imageops::resize(crop, tw, REC_HEIGHT, FilterType::Triangle);
@@ -552,7 +552,7 @@ impl Inner {
             _ => bail!("owlvit output shapes logits={ld:?} boxes={bd:?}"),
         };
 
-        // logits[0][q][k]: k indexes text queries; ours is a single query → 0.
+        // logits[0][q][k]: k indexes text queries; ours is a single query -> 0.
         let mut dets: Vec<Detection> = Vec::new();
         for q in 0..queries {
             let score = sigmoid(logits[q * text_q]);
@@ -659,7 +659,7 @@ fn fetch_to(url: &str, path: &Path) -> Result<()> {
     }
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
-        // Total request budget — a stalled download must not wedge the
+        // Total request budget - a stalled download must not wedge the
         // engine's OnceLock init forever.
         .timeout(std::time::Duration::from_secs(300))
         .build()
@@ -676,7 +676,7 @@ fn fetch_to(url: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Streaming SHA-256 of a file → lowercase hex.
+/// Streaming SHA-256 of a file -> lowercase hex.
 fn sha256_file(path: &Path) -> Result<String> {
     let f = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut reader = BufReader::with_capacity(1 << 16, f);
@@ -704,7 +704,7 @@ fn set_private_file(_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Load the CTC dictionary — one character per line; a line containing a
+/// Load the CTC dictionary - one character per line; a line containing a
 /// literal space is the space character, so only `\r` is trimmed.
 fn load_keys(path: &Path) -> Result<Vec<String>> {
     let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
@@ -719,7 +719,7 @@ fn load_keys(path: &Path) -> Result<Vec<String>> {
 }
 
 // ---------------------------------------------------------------------------
-// Pure pre/post-processing — unit-tested without any model.
+// Pure pre/post-processing - unit-tested without any model.
 // ---------------------------------------------------------------------------
 
 /// Decode a frame's PNG bytes to RGB8.
@@ -742,7 +742,7 @@ const fn round_up(v: u32, m: u32) -> u32 {
     v.div_ceil(m) * m
 }
 
-/// RGB8 → planar CHW f32 with `(v/255 - mean) / std` normalization.
+/// RGB8 -> planar CHW f32 with `(v/255 - mean) / std` normalization.
 fn rgb_to_chw_f32(img: &RgbImage, mean: [f32; 3], std: [f32; 3]) -> Vec<f32> {
     let (w, h) = (img.width() as usize, img.height() as usize);
     let mut out = vec![0.0f32; 3 * w * h];
@@ -782,7 +782,7 @@ struct Component {
 }
 
 /// 4-connected component labeling over `prob > thresh`. Returns bounding
-/// box, pixel count and summed probability per component — the inputs the
+/// box, pixel count and summed probability per component - the inputs the
 /// box filter/unclip stage needs.
 fn prob_map_components(prob: &[f32], w: u32, h: u32, thresh: f32) -> Vec<Component> {
     let (w, h) = (w as usize, h as usize);
@@ -832,7 +832,7 @@ fn prob_map_components(prob: &[f32], w: u32, h: u32, thresh: f32) -> Vec<Compone
 }
 
 /// DB post-process: threshold the probability map, take component bounding
-/// boxes, drop low-score/tiny ones, then "unclip" — expand each box by
+/// boxes, drop low-score/tiny ones, then "unclip" - expand each box by
 /// `area * unclip_ratio / perimeter` per side (axis-aligned approximation
 /// of PP-OCR's polygon offset, since we skip contour extraction).
 ///
@@ -865,7 +865,7 @@ fn det_boxes(
         let (x0, y0) = (c.x0.saturating_sub(d), c.y0.saturating_sub(d));
         let x1 = (c.x1 + d).min(map_w - 1);
         let y1 = (c.y1 + d).min(map_h - 1);
-        // Map cell → resized image → original frame coordinates.
+        // Map cell -> resized image -> original frame coordinates.
         let to_orig = |mx: u32, my: u32| -> (i32, i32) {
             (
                 ((mx * cell_w) as f32 * scale_x) as i32,
@@ -950,7 +950,7 @@ fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
-/// OWL-ViT normalized `[cx, cy, w, h]` → pixel-space `Rect`.
+/// OWL-ViT normalized `[cx, cy, w, h]` -> pixel-space `Rect`.
 fn cxcywh_to_rect(cx: f32, cy: f32, w: f32, h: f32, img_w: u32, img_h: u32) -> Rect {
     let (iw, ih) = (img_w as f32, img_h as f32);
     let x0 = ((cx - w / 2.0) * iw) as i32;
@@ -1019,7 +1019,7 @@ mod tests {
     fn det_resize_caps_long_edge_and_rounds_to_stride() {
         let (w, h) = det_resize_dims(1920, 1080);
         assert_eq!(w, 960); // 1920*0.5 already a multiple of 32
-        assert_eq!(h, 544); // 540 → 544
+        assert_eq!(h, 544); // 540 -> 544
         let (w, h) = det_resize_dims(100, 50);
         assert_eq!((w, h), (128, 64)); // small frame: scale=1, rounded up to stride
         let (w, h) = det_resize_dims(1, 1);
@@ -1027,7 +1027,7 @@ mod tests {
         // Extreme aspect: the long edge still caps at DET_MAX_SIDE.
         let (w, h) = det_resize_dims(4000, 30);
         assert_eq!(w, 960);
-        assert_eq!(h, 32); // 30*0.24 → 7 → rounded up to one stride
+        assert_eq!(h, 32); // 30*0.24 -> 7 -> rounded up to one stride
         // Portrait orientation scales the same way.
         let (w, h) = det_resize_dims(30, 4000);
         assert_eq!((w, h), (32, 960));
@@ -1076,7 +1076,7 @@ mod tests {
 
     #[test]
     fn det_boxes_filters_and_scales_to_frame() {
-        // 32x32 map with a strong blob → one expanded box in frame coords.
+        // 32x32 map with a strong blob -> one expanded box in frame coords.
         let (w, h) = (32u32, 32u32);
         let mut m = vec![0.0f32; (w * h) as usize];
         for y in 8..12 {
@@ -1084,24 +1084,24 @@ mod tests {
                 m[(y * w + x) as usize] = 0.9;
             }
         }
-        // identity mapping: cell 1x, scale 1x → boxes are map-space pixels.
+        // identity mapping: cell 1x, scale 1x -> boxes are map-space pixels.
         let boxes = det_boxes(&m, w, h, 1, 1, 1.0, 1.0);
         assert_eq!(boxes.len(), 1);
         let (r, score) = &boxes[0];
         assert!(*score > 0.8);
-        // Unclip expands the 16x4 blob by ~1.6*64/40 = 2.56 → 2 px/side.
+        // Unclip expands the 16x4 blob by ~1.6*64/40 = 2.56 -> 2 px/side.
         assert!(r.x <= 4 && r.y <= 8 && r.x + r.w >= 20 && r.y + r.h >= 12);
 
         // Weak blob below DET_BOX_THRESH is dropped.
         let weak = vec![0.4f32; (w * h) as usize];
         assert!(det_boxes(&weak, w, h, 1, 1, 1.0, 1.0).is_empty());
-        // All-zero map → nothing.
+        // All-zero map -> nothing.
         let zero = vec![0.0f32; (w * h) as usize];
         assert!(det_boxes(&zero, w, h, 1, 1, 1.0, 1.0).is_empty());
         // A strong but sub-DET_MIN_EDGE speck is dropped before unclip.
         let mut speck = vec![0.0f32; (w * h) as usize];
         speck[(4 * w + 4) as usize] = 0.95;
-        speck[(4 * w + 5) as usize] = 0.95; // 2x1 — under the 3px minimum
+        speck[(4 * w + 5) as usize] = 0.95; // 2x1 - under the 3px minimum
         assert!(det_boxes(&speck, w, h, 1, 1, 1.0, 1.0).is_empty());
     }
 
@@ -1114,12 +1114,12 @@ mod tests {
                 m[(y * w + x) as usize] = 0.95;
             }
         }
-        // cell 1, scale 4 → a 16px map covering a 64px frame.
+        // cell 1, scale 4 -> a 16px map covering a 64px frame.
         let boxes = det_boxes(&m, w, w, 1, 1, 4.0, 4.0);
         assert_eq!(boxes.len(), 1);
         let r = boxes[0].0;
         assert!(r.w >= 16 && r.h >= 16);
-        assert!(r.x <= 16); // blob starts at map x=4 → frame ~16
+        assert!(r.x <= 16); // blob starts at map x=4 -> frame ~16
     }
 
     #[test]
@@ -1135,7 +1135,7 @@ mod tests {
     #[test]
     fn ctc_decodes_collapses_repeats_and_drops_blanks() {
         let keys: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
-        // 6 steps x 4 classes: blank,a,a,blank,b,b → "ab"
+        // 6 steps x 4 classes: blank,a,a,blank,b,b -> "ab"
         let mut logits = vec![0.0f32; 6 * 4];
         let set = |t: usize, i: usize, v: f32, l: &mut Vec<f32>| l[t * 4 + i] = v;
         set(0, 0, 0.9, &mut logits);
@@ -1161,11 +1161,11 @@ mod tests {
     #[test]
     fn ctc_skips_classes_outside_the_dictionary() {
         // 2 steps x 4 classes with a 2-entry dictionary: class 3 wins
-        // step 0 (no key → dropped), class 1 wins step 1.
+        // step 0 (no key -> dropped), class 1 wins step 1.
         let keys: Vec<String> = vec!["a".to_string(), "b".to_string()];
         let logits = [
-            0.0, 0.1, 0.2, 0.9, // step 0: class 3 — beyond `keys`
-            0.0, 0.8, 0.2, 0.1, // step 1: class 1 → "a"
+            0.0, 0.1, 0.2, 0.9, // step 0: class 3 - beyond `keys`
+            0.0, 0.8, 0.2, 0.1, // step 1: class 1 -> "a"
         ];
         let (text, conf) = ctc_greedy_decode(&logits, 2, 4, &keys);
         assert_eq!(text, "a");
@@ -1193,11 +1193,11 @@ mod tests {
 
     #[test]
     fn clip_pad_empty_and_exact_fit() {
-        // Empty encoding → all padding, all masked out.
+        // Empty encoding -> all padding, all masked out.
         let (ids, mask) = clip_pad_ids(&[], 4);
         assert_eq!(ids, [OWL_PAD_ID; 4]);
         assert_eq!(mask, [0; 4]);
-        // Exactly `len` tokens → no padding needed, full mask.
+        // Exactly `len` tokens -> no padding needed, full mask.
         let (ids, mask) = clip_pad_ids(&[1, 2, 3, 4], 4);
         assert_eq!(ids, [1, 2, 3, 4]);
         assert_eq!(mask, [1; 4]);
@@ -1232,7 +1232,7 @@ mod tests {
             h: 10,
         };
         let b = Rect {
-            x: 1, // IoU(a,b) ≈ 0.68 — above the 0.5 NMS threshold
+            x: 1, // IoU(a,b) ≈ 0.68 - above the 0.5 NMS threshold
             y: 1,
             w: 10,
             h: 10,
@@ -1256,7 +1256,7 @@ mod tests {
         assert!((kept[0].confidence - 0.9).abs() < 1e-6);
         assert_eq!(kept[1].rect, c);
 
-        // Touching-but-not-overlapping edges → IoU 0, both kept.
+        // Touching-but-not-overlapping edges -> IoU 0, both kept.
         let d = Rect {
             x: 10,
             y: 0,
@@ -1289,7 +1289,7 @@ mod tests {
     #[test]
     fn crop_clamps_to_image() {
         let img = RgbImage::from_pixel(10, 10, image::Rgb([7, 7, 7]));
-        // -5..7 horizontally, 0..20 vertically → clamped to 0..7 x 0..10.
+        // -5..7 horizontally, 0..20 vertically -> clamped to 0..7 x 0..10.
         let r = Rect {
             x: -5,
             y: 0,
@@ -1329,7 +1329,7 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    // --- download / verification (file:// only — no network in tests) ---
+    // --- download / verification (file:// only - no network in tests) ---
 
     #[test]
     fn sha256_file_matches_content() {
@@ -1361,7 +1361,7 @@ mod tests {
                 0o600
             );
         }
-        // Second call is a cache hit — same path, no re-copy needed.
+        // Second call is a cache hit - same path, no re-copy needed.
         assert_eq!(ensure_model(&dir.join("models"), &s).unwrap(), dest);
         // Temp file cleaned up.
         assert!(!dir.join("models").join(".m.onnx.part").exists());
@@ -1415,7 +1415,7 @@ mod tests {
     fn build_session_errors_on_missing_or_garbage_model() {
         if !ort_probe() {
             // ORT unavailable in this environment (e.g. load-dynamic
-            // with no ORT_DYLIB_PATH) — nothing to exercise.
+            // with no ORT_DYLIB_PATH) - nothing to exercise.
             return;
         }
         let dir = tmp_dir("sess");
@@ -1538,7 +1538,7 @@ mod tests {
 
     #[test]
     fn recognize_and_find_icon_serve_cache_hits() {
-        // A pre-warmed cache short-circuits before any engine init —
+        // A pre-warmed cache short-circuits before any engine init -
         // the OnceLocks stay untouched and no model is fetched.
         let dir = tmp_dir("cache-hit");
         let inner = Inner {

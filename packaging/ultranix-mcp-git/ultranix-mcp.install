@@ -2,7 +2,7 @@ post_install() {
   cat <<'EOF'
 ==> ultranix-mcp installed. Binary: /usr/bin/ultranix-mcp
 
-    Optional — uinput/evdev input fallback (NOT needed on Hyprland/wlroots,
+    Optional - uinput/evdev input fallback (NOT needed on Hyprland/wlroots,
     where the compositor-native backends require no elevated permissions).
     The packaged udev rule is opt-in: it does nothing until the dedicated
     group exists and the service user joins it. See
@@ -17,7 +17,7 @@ post_install() {
     Then re-login so group membership takes effect.
 
     For HTTP daemon mode (:3010) the user unit is packaged at
-    /usr/lib/systemd/user/ultranix-mcp.service — configure
+    /usr/lib/systemd/user/ultranix-mcp.service - configure
     %h/.config/ultranix-mcp/env with ULTRANIX_MCP_API_KEY first, then:
 
       systemctl --user daemon-reload

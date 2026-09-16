@@ -1,9 +1,9 @@
-//! Clipboard backends — `wl-clipboard` (`wl-copy`/`wl-paste`) on Wayland,
+//! Clipboard backends - `wl-clipboard` (`wl-copy`/`wl-paste`) on Wayland,
 //! `xclip` (plus `xsel` for clearing) on X11/XWayland.
 //!
 //! [`WlClipboard`] is the Wayland rung of the clipboard fallback ladder;
 //! it constructs only when `WAYLAND_DISPLAY` is set and both helpers were
-//! pinned on `PATH` at startup. [`XclipClipboard`] is the X11 rung — the
+//! pinned on `PATH` at startup. [`XclipClipboard`] is the X11 rung - the
 //! primary backend under `XDG_SESSION_TYPE=x11` and the XWayland fallback
 //! behind `WlClipboard` on Wayland sessions; it constructs only when
 //! `DISPLAY` is set (mirroring [`super::x11_capture::X11Capture`]).
@@ -11,16 +11,16 @@
 //! All spawns go through [`crate::security::spawn`]: the canonicalized
 //! absolute paths pinned by [`crate::security::whitelist`] at
 //! construction, a scrubbed environment, and [`spawn::SUBPROCESS_TIMEOUT`]
-//! per spawn — a `PATH` hijack after construction cannot substitute a
+//! per spawn - a `PATH` hijack after construction cannot substitute a
 //! trojan, and a wedged child cannot hang a call.
 //!
 //! Reads are text-first: `get_text` never surfaces binary payloads. A
 //! non-zero read exit is the helpers' "empty/no-text selection" signal
 //! (`wl-paste` exits 1 with "Nothing is copied"; `xclip -o` fails with
-//! "target STRING not available") and maps to `Ok(None)` — a dead session
+//! "target STRING not available") and maps to `Ok(None)` - a dead session
 //! still surfaces as an error on the write paths, which check exit status.
 //!
-//! Writes feed the payload over stdin — never argv — so copied secrets
+//! Writes feed the payload over stdin - never argv - so copied secrets
 //! cannot leak through the process list, and so `sanitize_arg` never has
 //! to bless arbitrary text. `wl-copy`/`xclip -i` daemonize to serve the
 //! selection; their stdout/stderr are set to null because an inherited or
@@ -40,18 +40,18 @@ use crate::traits::ClipboardProvider;
 /// Clipboard via `wl-copy`/`wl-paste` (the `wl-clipboard` package),
 /// Wayland-only.
 pub struct WlClipboard {
-    /// Pinned `wl-copy` — `set_text` (stdin payload) and `clear`.
+    /// Pinned `wl-copy` - `set_text` (stdin payload) and `clear`.
     wl_copy: PathBuf,
-    /// Pinned `wl-paste` — `get_text` and `list_mimes`.
+    /// Pinned `wl-paste` - `get_text` and `list_mimes`.
     wl_paste: PathBuf,
 }
 
 /// Clipboard via `xclip` (`xsel` for `clear` when pinned), X11-only.
 pub struct XclipClipboard {
-    /// Pinned `xclip` — `-selection clipboard -o`/`-i` and the TARGETS
+    /// Pinned `xclip` - `-selection clipboard -o`/`-i` and the TARGETS
     /// target query for `list_mimes`.
     xclip: PathBuf,
-    /// Pinned `xsel` — `clear` path (`xclip` cannot disown a selection,
+    /// Pinned `xsel` - `clear` path (`xclip` cannot disown a selection,
     /// only overwrite it); `None` when `xsel` was absent at pin time.
     xsel: Option<PathBuf>,
 }
@@ -76,7 +76,7 @@ fn x11_display() -> Option<()> {
     (!d.is_empty()).then_some(())
 }
 
-/// Pinned `<bin> <args>` → the full `Output`; the caller decides what a
+/// Pinned `<bin> <args>` -> the full `Output`; the caller decides what a
 /// non-zero exit means (read paths map it to an empty clipboard, write
 /// paths map it to an error).
 async fn run_status(bin: &Path, args: &[&str]) -> Result<Output> {
@@ -86,7 +86,7 @@ async fn run_status(bin: &Path, args: &[&str]) -> Result<Output> {
         .with_context(|| format!("spawn {}", bin.display()))
 }
 
-/// [`run_status`] + the usual "non-zero exit is an error" contract —
+/// [`run_status`] + the usual "non-zero exit is an error" contract -
 /// the write paths (`wl-copy --clear`, `xsel --clear`).
 async fn run(bin: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = run_status(bin, args).await?;
@@ -97,7 +97,7 @@ async fn run(bin: &Path, args: &[&str]) -> Result<Vec<u8>> {
 }
 
 /// Pinned `<bin> <args>` with `input` fed to stdin; non-zero exit is an
-/// error. Stdout/stderr are null — the copy helpers daemonize to serve
+/// error. Stdout/stderr are null - the copy helpers daemonize to serve
 /// the selection, and a captured fd held by the daemon child would keep
 /// the wait open until the timeout.
 async fn run_stdin(bin: &Path, args: &[&str], input: &[u8]) -> Result<()> {
@@ -135,7 +135,7 @@ async fn run_stdin(bin: &Path, args: &[&str], input: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// `--list-types`/TARGETS output → MIME list: one entry per line,
+/// `--list-types`/TARGETS output -> MIME list: one entry per line,
 /// blanks dropped.
 fn parse_mimes(text: &str) -> Vec<String> {
     text.lines()
@@ -147,7 +147,7 @@ fn parse_mimes(text: &str) -> Vec<String> {
 
 impl WlClipboard {
     /// Available iff `WAYLAND_DISPLAY` is set (non-empty) and both
-    /// `wl-copy` and `wl-paste` were pinned on `PATH` at construction —
+    /// `wl-copy` and `wl-paste` were pinned on `PATH` at construction -
     /// reads need `wl-paste`, writes need `wl-copy`, and a half-installed
     /// package is a broken backend either way.
     pub fn new() -> Option<Self> {
@@ -156,7 +156,7 @@ impl WlClipboard {
     }
 
     /// [`Self::new`] against a caller-supplied pin set, minus the
-    /// `WAYLAND_DISPLAY` session gate — the testable seam: hermetic
+    /// `WAYLAND_DISPLAY` session gate - the testable seam: hermetic
     /// tests resolve a fresh `PinnedBins` over a tempdir `PATH` and
     /// exercise the real spawn paths without mutating process env.
     pub fn with_pins(pins: &whitelist::PinnedBins) -> Option<Self> {
@@ -169,7 +169,7 @@ impl WlClipboard {
 
 #[async_trait]
 impl ClipboardProvider for WlClipboard {
-    /// `wl-paste --no-newline --type text` → text; a non-zero exit or
+    /// `wl-paste --no-newline --type text` -> text; a non-zero exit or
     /// empty stdout reads as `Ok(None)` (empty/no-text selection).
     async fn get_text(&self) -> Result<Option<String>> {
         let out = run_status(&self.wl_paste, &["--no-newline", "--type", "text"]).await?;
@@ -179,7 +179,7 @@ impl ClipboardProvider for WlClipboard {
         Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
     }
 
-    /// `wl-copy` with the text on stdin — the helper daemonizes to serve
+    /// `wl-copy` with the text on stdin - the helper daemonizes to serve
     /// the selection; the foreground spawn exits once the copy is taken.
     async fn set_text(&self, text: &str) -> Result<()> {
         run_stdin(&self.wl_copy, &[], text.as_bytes()).await
@@ -190,7 +190,7 @@ impl ClipboardProvider for WlClipboard {
         run(&self.wl_copy, &["--clear"]).await.map(|_| ())
     }
 
-    /// `wl-paste --list-types` → offered MIME types; an empty selection
+    /// `wl-paste --list-types` -> offered MIME types; an empty selection
     /// yields an empty list, not an error.
     async fn list_mimes(&self) -> Result<Vec<String>> {
         let out = run_status(&self.wl_paste, &["--list-types"]).await?;
@@ -204,14 +204,14 @@ impl ClipboardProvider for WlClipboard {
 impl XclipClipboard {
     /// Available iff `DISPLAY` is set (non-empty) and `xclip` was pinned
     /// on `PATH` at construction. `xsel` is an optional extra pinned the
-    /// same way — it supplies the real `clear` primitive.
+    /// same way - it supplies the real `clear` primitive.
     pub fn new() -> Option<Self> {
         x11_display()?;
         Self::with_pins(&whitelist::resolve_binaries())
     }
 
     /// [`Self::new`] against a caller-supplied pin set, minus the
-    /// `DISPLAY` session gate — the testable seam (see
+    /// `DISPLAY` session gate - the testable seam (see
     /// [`WlClipboard::with_pins`]).
     pub fn with_pins(pins: &whitelist::PinnedBins) -> Option<Self> {
         Some(Self {
@@ -223,7 +223,7 @@ impl XclipClipboard {
 
 #[async_trait]
 impl ClipboardProvider for XclipClipboard {
-    /// `xclip -selection clipboard -o` → text; a non-zero exit
+    /// `xclip -selection clipboard -o` -> text; a non-zero exit
     /// ("target STRING not available" on an empty/non-text selection)
     /// reads as `Ok(None)`.
     async fn get_text(&self) -> Result<Option<String>> {
@@ -234,7 +234,7 @@ impl ClipboardProvider for XclipClipboard {
         Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
     }
 
-    /// `xclip -selection clipboard -i` with the text on stdin — xclip
+    /// `xclip -selection clipboard -i` with the text on stdin - xclip
     /// daemonizes to serve the selection.
     async fn set_text(&self, text: &str) -> Result<()> {
         run_stdin(
@@ -246,7 +246,7 @@ impl ClipboardProvider for XclipClipboard {
     }
 
     /// `xsel --clipboard --clear` when `xsel` was pinned (the real
-    /// clear); otherwise the xclip approximation — installing empty
+    /// clear); otherwise the xclip approximation - installing empty
     /// content. `xclip` cannot disown a selection, so the fallback leaves
     /// an empty-string owner: reads still report an empty clipboard.
     async fn clear(&self) -> Result<()> {
@@ -256,7 +256,7 @@ impl ClipboardProvider for XclipClipboard {
         }
     }
 
-    /// `xclip -selection clipboard -o -t TARGETS` → offered target atoms;
+    /// `xclip -selection clipboard -o -t TARGETS` -> offered target atoms;
     /// an empty selection yields an empty list, not an error.
     async fn list_mimes(&self) -> Result<Vec<String>> {
         let out = run_status(
@@ -299,7 +299,7 @@ mod tests {
         std::fs::rename(&tmp, &path).unwrap();
     }
 
-    /// Fake `wl-copy`: keeps the "clipboard" in `<dir>/clip` — `wl-copy`
+    /// Fake `wl-copy`: keeps the "clipboard" in `<dir>/clip` - `wl-copy`
     /// stores stdin, `wl-copy --clear` removes the file.
     fn wl_copy_script(dir: &Path) -> String {
         format!(
@@ -391,7 +391,7 @@ mod tests {
         let pins = whitelist::PinnedBins::resolve_in(&[dir.path().to_path_buf()]);
         assert!(WlClipboard::with_pins(&pins).is_none());
 
-        // Half the package is not a backend — writes would be dead.
+        // Half the package is not a backend - writes would be dead.
         write_exe(dir.path(), "wl-copy", &wl_copy_script(dir.path()));
         let pins = whitelist::PinnedBins::resolve_in(&[dir.path().to_path_buf()]);
         assert!(WlClipboard::with_pins(&pins).is_none());
@@ -412,12 +412,12 @@ mod tests {
         let pins = whitelist::PinnedBins::resolve_in(&[dir.path().to_path_buf()]);
         let cb = XclipClipboard::with_pins(&pins).expect("xclip pin resolves");
         assert!(cb.xclip.is_absolute());
-        assert!(cb.xsel.is_none()); // optional — absent here
+        assert!(cb.xsel.is_none()); // optional - absent here
     }
 
     #[test]
     fn new_is_none_without_session_vars() {
-        // SAFETY: test-only env mutation, restored before returning —
+        // SAFETY: test-only env mutation, restored before returning -
         // the same pattern the sibling gate tests in x11_capture.rs /
         // wlr_capture.rs use.
         let saved_w = std::env::var_os("WAYLAND_DISPLAY");
@@ -470,7 +470,7 @@ mod tests {
         let pins = whitelist::PinnedBins::resolve_in(&[dir.path().to_path_buf()]);
         let cb = WlClipboard::with_pins(&pins).unwrap();
 
-        // Payloads with newlines/metacharacters cross stdin untouched —
+        // Payloads with newlines/metacharacters cross stdin untouched -
         // they never pass through argv or a shell.
         let payload = "line1\nline2; rm -rf / $(evil) `x` 'quoted' é";
         cb.set_text(payload).await.unwrap();
@@ -498,7 +498,7 @@ mod tests {
         let mimes = cb.list_mimes().await.unwrap();
         assert!(mimes.contains(&"UTF8_STRING".to_string()), "{mimes:?}");
 
-        // xsel is pinned → the real clear primitive runs.
+        // xsel is pinned -> the real clear primitive runs.
         cb.clear().await.unwrap();
         assert_eq!(cb.get_text().await.unwrap(), None);
     }
@@ -507,7 +507,7 @@ mod tests {
     async fn xclip_clear_falls_back_to_empty_write_without_xsel() {
         let dir = tempfile::tempdir().unwrap();
         write_exe(dir.path(), "xclip", &xclip_script(dir.path()));
-        // No xsel in the pin set → clear installs empty content.
+        // No xsel in the pin set -> clear installs empty content.
         let pins = whitelist::PinnedBins::resolve_in(&[dir.path().to_path_buf()]);
         let cb = XclipClipboard::with_pins(&pins).unwrap();
 

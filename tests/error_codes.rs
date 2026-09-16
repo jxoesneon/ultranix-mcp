@@ -1,4 +1,4 @@
-//! `UltraNixError::code()` mapping — every variant lands on the JSON-RPC
+//! `UltraNixError::code()` mapping - every variant lands on the JSON-RPC
 //! code declared by the docs/TOOLS.md error taxonomy.
 
 use anyhow::anyhow;

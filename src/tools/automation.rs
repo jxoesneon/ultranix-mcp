@@ -1,4 +1,4 @@
-//! Automation tools (4) — timing, pointer paths, arg-constrained exec,
+//! Automation tools (4) - timing, pointer paths, arg-constrained exec,
 //! and the CDP browser bridge.
 
 use std::time::Duration;
@@ -227,7 +227,7 @@ async fn system_command(args: &Map<String, Value>) -> Result<CallToolResult, Err
             )));
         }
     }
-    // Unsecured (Phase-0/test) path only — the secured production dispatch
+    // Unsecured (Phase-0/test) path only - the secured production dispatch
     // (`call_tool_secured`) intercepts `system_command` and performs the
     // pinned-binary exec before reaching here.
     let _ = &p.consent_token;
@@ -241,7 +241,7 @@ async fn system_command(args: &Map<String, Value>) -> Result<CallToolResult, Err
 }
 
 /// Normalise one matched DOM node into the spec element shape
-/// (`{tag, id, classes, text, bounds, attributes}` — docs/TOOLS.md
+/// (`{tag, id, classes, text, bounds, attributes}` - docs/TOOLS.md
 /// `web_query`). `rect` is accepted as an alias for `bounds` (CDP stub
 /// spelling); missing keys are filled with null/empty values.
 fn element_json(m: &Value) -> Value {
@@ -282,7 +282,7 @@ async fn web_query(
     backend!(browser.ensure_ready().await);
     let mut result = backend!(browser.query_selector(&p.selector).await);
     // Normalise to the documented {found, element?, bounds_space}
-    // envelope: providers may return a raw {"matches": [...]} payload —
+    // envelope: providers may return a raw {"matches": [...]} payload -
     // the first match becomes `element`.
     if let Some(obj) = result.as_object_mut() {
         let first = obj
@@ -298,7 +298,7 @@ async fn web_query(
             .and_then(Value::as_bool)
             .unwrap_or_else(|| obj.contains_key("element"));
         obj.insert("found".into(), Value::Bool(found));
-        // Viewport CSS pixels — no window-position mapping exists yet.
+        // Viewport CSS pixels - no window-position mapping exists yet.
         obj.entry("bounds_space")
             .or_insert_with(|| json!("viewport"));
     }

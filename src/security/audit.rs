@@ -1,21 +1,21 @@
-//! Hash-chained JSONL audit log — SECURITY.md "Storage" and
+//! Hash-chained JSONL audit log - SECURITY.md "Storage" and
 //! docs/TOOLS.md "Destructive-Action Consent" / rate-limit audit notes.
 //!
-//! Every tool invocation — accepted or rejected — is appended to
+//! Every tool invocation - accepted or rejected - is appended to
 //! `~/.ultranix-mcp/logs/audit.jsonl`. Each record carries
 //! `{timestamp, tool, args_hash, outcome, duration_ms, key_id, caller,
 //! consent?, denial_reason?, prev_hash, hmac?}` where `prev_hash` is the
 //! SHA-256 of the *previous record's serialized bytes* (the JSON line,
 //! newline excluded). The genesis record's `prev_hash` is `"0"*64`. Raw
-//! arguments are **never** persisted — only the same canonical
+//! arguments are **never**persisted - only the same canonical
 //! `args_hash` the consent gate binds to. When
 //! [`HMAC_SECRET_ENV`] is set, `hmac` carries an HMAC-SHA256 over the
 //! canonical record *without* the `hmac` field, and `prev_hash` still
 //! covers the final serialized line including it.
 //!
-//! **Rotation / retention.** `audit.jsonl` is always the live file. When
-//! the UTC day rolls over — checked on every `record` and at `open` (via
-//! the first record's timestamp) — the finished file is renamed to
+//! **Rotation / retention.**`audit.jsonl` is always the live file. When
+//! the UTC day rolls over - checked on every `record` and at `open` (via
+//! the first record's timestamp) - the finished file is renamed to
 //! `audit-YYYY-MM-DD.jsonl` under `logs/` and a fresh `audit.jsonl`
 //! starts a new chain at `GENESIS`, so every file is self-verifying.
 //! Archives older than `ULTRANIX_MCP_AUDIT_RETENTION_DAYS` (default
@@ -23,7 +23,7 @@
 //! pruned at open and after each rotation.
 //!
 //! File mode `0600`, containing dir `0700`. The chain makes silent edits
-//! detectable; per THREAT_MODEL.md R-6 there is no external anchor — a
+//! detectable; per THREAT_MODEL.md R-6 there is no external anchor - a
 //! same-UID attacker who rewrites the file can recompute the chain, so
 //! shipping records onward (journald/SIEM) is the real tamper evidence.
 
@@ -56,7 +56,7 @@ pub const RETENTION_ENV: &str = "ULTRANIX_MCP_AUDIT_RETENTION_DAYS";
 /// every record is signed with HMAC-SHA256 over its canonical JSON.
 pub const HMAC_SECRET_ENV: &str = "ULTRANIX_MCP_AUDIT_SECRET";
 
-/// One audit record — the serialized line shape. Field order is fixed by
+/// One audit record - the serialized line shape. Field order is fixed by
 /// declaration order so the chain hashes a stable encoding.
 #[derive(Debug, Serialize)]
 struct AuditRecord<'a> {
@@ -64,13 +64,13 @@ struct AuditRecord<'a> {
     timestamp: String,
     /// Tool name (e.g. `system_command`) or pipeline event id.
     tool: &'a str,
-    /// SHA-256 of canonical args — raw args are never logged.
+    /// SHA-256 of canonical args - raw args are never logged.
     args_hash: &'a str,
-    /// `ok`, an error `data.kind`, `consent.required`, …
+    /// `ok`, an error `data.kind`, `consent.required`, ...
     outcome: &'a str,
     /// Wall time of the invocation.
     duration_ms: u64,
-    /// API key id on HTTP; absent/stdio → `null`.
+    /// API key id on HTTP; absent/stdio -> `null`.
     key_id: Option<&'a str>,
     /// Caller identity the consent gate bound to: `key_id` on HTTP, the
     /// session id on stdio. `null` only when neither exists.
@@ -93,7 +93,7 @@ struct AuditRecord<'a> {
 /// Owned mirror of [`AuditRecord`] used for chain/HMAC verification. Field
 /// order must match [`AuditRecord`] exactly so re-serialization is byte
 /// identical to the canonical pre-HMAC form. `deny_unknown_fields` makes
-/// unknown JSON members a parse error — otherwise an attacker could pad
+/// unknown JSON members a parse error - otherwise an attacker could pad
 /// the *last* record with forged fields that re-serialization silently
 /// drops while its HMAC still verifies. Consequence: adding a field to
 /// `AuditRecord` requires a lockstep update here plus a verifier upgrade.
@@ -116,7 +116,7 @@ struct VerifiableRecord {
     hmac: Option<String>,
 }
 
-/// Who made the call and how consent applied — the record fields that
+/// Who made the call and how consent applied - the record fields that
 /// describe the caller rather than the call. Bundled into one struct so
 /// [`AuditLog::record`] stays under the argument-count lint.
 #[derive(Debug, Clone, Copy, Default)]
@@ -134,7 +134,7 @@ pub struct CallContext<'a> {
 
 /// Append-only, hash-chained audit sink.
 pub struct AuditLog {
-    /// Live file — always `<logs>/audit.jsonl` in production.
+    /// Live file - always `<logs>/audit.jsonl` in production.
     path: PathBuf,
     /// Archive retention in days; `None` keeps archives forever.
     retention: Option<u64>,
@@ -148,7 +148,7 @@ struct Inner {
     file: File,
     /// SHA-256 hex of the last line written (or [`GENESIS`]).
     prev_hash: String,
-    /// UTC date the live file covers — the trigger for day rotation.
+    /// UTC date the live file covers - the trigger for day rotation.
     date: NaiveDate,
 }
 
@@ -168,7 +168,7 @@ impl AuditLog {
         Self::open_with_retention(path, retention_from_env())
     }
 
-    /// [`AuditLog::open`] with an explicit retention policy — the
+    /// [`AuditLog::open`] with an explicit retention policy - the
     /// testable core (the public entry point derives it from
     /// [`RETENTION_ENV`]). `None` keeps archives forever.
     pub fn open_with_retention(path: &Path, retention: Option<u64>) -> anyhow::Result<Self> {
@@ -178,7 +178,7 @@ impl AuditLog {
                 .with_context(|| format!("create audit dir {}", dir.display()))?;
             set_mode(dir, 0o700)?;
             // A live file whose first record is from a previous day is a
-            // stale log left by an earlier process — archive it before
+            // stale log left by an earlier process - archive it before
             // appending so each file holds exactly one UTC day.
             if let Some(date) = first_record_date(path)?
                 && date != today
@@ -218,7 +218,7 @@ impl AuditLog {
     }
 
     /// Append one record. `args_hash` is the caller-computed canonical
-    /// args hash ([`crate::security::consent::args_hash`]) — this API
+    /// args hash ([`crate::security::consent::args_hash`]) - this API
     /// deliberately cannot receive raw arguments.
     pub fn record(
         &self,
@@ -270,7 +270,7 @@ impl AuditLog {
             prev_hash: &inner.prev_hash,
             hmac: None,
         };
-        // The pre-HMAC canonical serialization only exists to be signed —
+        // The pre-HMAC canonical serialization only exists to be signed -
         // skip it when no secret is configured so the common path
         // serializes each record exactly once.
         if let Some(key) = &self.hmac_key {
@@ -311,7 +311,7 @@ impl AuditLog {
     }
 }
 
-/// Standalone chain verification for a log file path — usable in tests and
+/// Standalone chain verification for a log file path - usable in tests and
 /// integrity tooling without opening an [`AuditLog`].
 pub fn verify_chain_at(path: &Path) -> anyhow::Result<bool> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
@@ -355,7 +355,7 @@ pub fn verify_hmac_at(path: &Path, secret: Option<&str>) -> anyhow::Result<bool>
             };
             let canonical = serde_json::to_string(&rec)
                 .context("re-serialize audit record for hmac verification")?;
-            // Constant-time MAC comparison on raw bytes — the hex strings
+            // Constant-time MAC comparison on raw bytes - the hex strings
             // are only the serialized form.
             type HmacSha256 = Hmac<Sha256>;
             let mut mac = HmacSha256::new_from_slice(k).expect("HMAC accepts any key length");
@@ -373,7 +373,7 @@ pub fn verify_hmac_at(path: &Path, secret: Option<&str>) -> anyhow::Result<bool>
     Ok(true)
 }
 
-/// SHA-256 hex of the last non-empty line in `file` — used to resume the
+/// SHA-256 hex of the last non-empty line in `file` - used to resume the
 /// chain on reopen. Reads only the tail (records are < 1 KiB each).
 fn last_line_hash(file: &mut File) -> anyhow::Result<Option<String>> {
     let len = file.metadata()?.len();
@@ -437,7 +437,7 @@ fn hmac_sha256_hex(key: &[u8], data: &[u8]) -> String {
     s
 }
 
-/// Open `path` for append, creating it `0600` if missing — the shared
+/// Open `path` for append, creating it `0600` if missing - the shared
 /// file-open behind [`AuditLog::open_with_retention`] and rotation.
 fn open_append(path: &Path) -> anyhow::Result<File> {
     OpenOptions::new()
@@ -449,14 +449,14 @@ fn open_append(path: &Path) -> anyhow::Result<File> {
         .with_context(|| format!("open audit log {}", path.display()))
 }
 
-/// The log's file stem (`audit` for `audit.jsonl`) — archive names and
+/// The log's file stem (`audit` for `audit.jsonl`) - archive names and
 /// pruning are both scoped to it.
 fn stem_of(path: &Path) -> &str {
     path.file_stem().and_then(|s| s.to_str()).unwrap_or("audit")
 }
 
-/// Archive retention from [`RETENTION_ENV`]: unset or unparseable →
-/// [`DEFAULT_RETENTION_DAYS`]; `0` → `None` (keep archives forever).
+/// Archive retention from [`RETENTION_ENV`]: unset or unparseable ->
+/// [`DEFAULT_RETENTION_DAYS`]; `0` -> `None` (keep archives forever).
 fn retention_from_env() -> Option<u64> {
     match std::env::var(RETENTION_ENV) {
         Ok(v) => match v.trim().parse::<u64>() {
@@ -497,8 +497,8 @@ fn first_record_date(path: &Path) -> anyhow::Result<Option<NaiveDate>> {
 }
 
 /// Rename the finished live file `path` to `<stem>-YYYY-MM-DD.jsonl`
-/// beside it. On collision (`-2`, `-3`, … suffixes) the archive is never
-/// overwritten — a duplicated name means an operator restored files by
+/// beside it. On collision (`-2`, `-3`, ... suffixes) the archive is never
+/// overwritten - a duplicated name means an operator restored files by
 /// hand, and losing either copy is worse than an extra file.
 fn rotate_file(path: &Path, date: NaiveDate) -> anyhow::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -525,7 +525,7 @@ fn rotate_file(path: &Path, date: NaiveDate) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `<stem>-YYYY-MM-DD[-N].jsonl` → its date, else `None`. The `[-N]`
+/// `<stem>-YYYY-MM-DD[-N].jsonl` -> its date, else `None`. The `[-N]`
 /// suffix (rotation-collision escape hatch) is ignored for dating.
 fn archive_date(name: &str, stem: &str) -> Option<NaiveDate> {
     let rest = name
@@ -634,7 +634,7 @@ mod tests {
     fn raw_args_never_appear_in_log() {
         let tmp = tempfile::tempdir().unwrap();
         let log = log_in(tmp.path());
-        // The API takes only a hash — feed a hash of a secret-shaped arg and
+        // The API takes only a hash - feed a hash of a secret-shaped arg and
         // confirm the raw secret isn't anywhere in the file. (Neutral tool
         // name: "system_command" itself contains the substring "command".)
         log.record("tool", "d34db33f", "ok", 1, CallContext::default(), None)
@@ -665,7 +665,7 @@ mod tests {
         }
         // Tamper: flip a byte in the middle record.
         let mut content = fs::read_to_string(&path).unwrap();
-        // Flip a byte inside the `"outcome"` value of the middle record —
+        // Flip a byte inside the `"outcome"` value of the middle record -
         // +11 lands on the first char of `"ok"`, keeping the line valid
         // JSON while breaking the hash chain.
         let pos = content
@@ -701,13 +701,13 @@ mod tests {
             }
         }
         // Drop the last line: chain still verifies for what remains, but a
-        // verifier that knows the count catches it — and appending a forged
+        // verifier that knows the count catches it - and appending a forged
         // tail fails.
         let content = fs::read_to_string(&path).unwrap();
         let truncated: String = content.lines().take(2).map(|l| format!("{l}\n")).collect();
         fs::write(&path, &truncated).unwrap();
         assert!(verify_chain_at(&path).unwrap()); // prefix still self-consistent
-        // Forge a replacement tail — prev_hash won't match.
+        // Forge a replacement tail - prev_hash won't match.
         let bad_tail = format!(
             "{truncated}{{\"timestamp\":\"t\",\"tool\":\"x\",\"args_hash\":\"y\",\"outcome\":\"ok\",\"duration_ms\":0,\"key_id\":null,\"prev_hash\":\"{GENESIS}\"}}\n"
         );
@@ -781,7 +781,7 @@ mod tests {
         assert!(verify_chain_at(&path).unwrap());
     }
 
-    /// One hand-crafted JSONL record with a fixed RFC 3339 timestamp —
+    /// One hand-crafted JSONL record with a fixed RFC 3339 timestamp -
     /// used to seed "stale" live files without waiting a day.
     fn seeded_record(ts: &str, tool: &str) -> String {
         format!(
@@ -802,7 +802,7 @@ mod tests {
         .unwrap();
 
         // Retention `None`: a 2020 archive is far outside any day
-        // window — it would be pruned the instant it is rotated.
+        // window - it would be pruned the instant it is rotated.
         let log = AuditLog::open_with_retention(&path, None).unwrap();
         // The stale file was renamed under its record date; the live
         // path is a fresh file.

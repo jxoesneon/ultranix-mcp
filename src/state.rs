@@ -1,4 +1,4 @@
-//! Runtime state directory — `~/.ultranix-mcp/` with XDG-aware overrides.
+//! Runtime state directory - `~/.ultranix-mcp/` with XDG-aware overrides.
 //!
 //! Layout:
 //! ```text
@@ -8,19 +8,19 @@
 //! <root>/history.json  encrypted action history (Phase 4)
 //! ```
 //!
-//! Root resolution precedence (spec-canonical — docs pin `~/.ultranix-mcp/`):
-//! 1. `ULTRANIX_MCP_STATE_DIR` — explicit override (tests, packaging)
-//! 2. `HOME` → `$HOME/.ultranix-mcp` — the established default, matching
+//! Root resolution precedence (spec-canonical - docs pin `~/.ultranix-mcp/`):
+//! 1. `ULTRANIX_MCP_STATE_DIR` - explicit override (tests, packaging)
+//! 2. `HOME` -> `$HOME/.ultranix-mcp` - the established default, matching
 //!    `main.rs`'s `data_dir()`
-//! 3. `./.ultranix-mcp` — last-resort relative fallback (no HOME, e.g. a
+//! 3. `./.ultranix-mcp` - last-resort relative fallback (no HOME, e.g. a
 //!    bare container)
 //!
 //! `XDG_STATE_HOME` is deliberately *not* consulted: the spec fixes the
 //! state root at `~/.ultranix-mcp/` so docs, audit paths, and key files
 //! cannot drift between two candidate locations.
 //!
-//! Every directory in the layout is created — or tightened, if it already
-//! exists — to mode `0700`: history and audit logs are sensitive and must
+//! Every directory in the layout is created - or tightened, if it already
+//! exists - to mode `0700`: history and audit logs are sensitive and must
 //! never be group/other-readable.
 
 use std::ffi::OsString;
@@ -47,14 +47,14 @@ impl StateDir {
         Ok(dir)
     }
 
-    /// A `StateDir` rooted at an explicit path. Does no IO — call
+    /// A `StateDir` rooted at an explicit path. Does no IO - call
     /// [`StateDir::ensure_layout`] to create the layout on disk.
     /// Used by tests and by callers that manage root resolution themselves.
     pub fn at(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
-    /// Pure root resolution against an arbitrary env lookup — the
+    /// Pure root resolution against an arbitrary env lookup - the
     /// unit-testable core. Empty-string values are treated as unset.
     pub fn resolve_root(get: impl Fn(&str) -> Option<OsString>) -> PathBuf {
         let non_empty = |key: &str| get(key).filter(|v| !v.is_empty());
@@ -62,7 +62,7 @@ impl StateDir {
         if let Some(dir) = non_empty("ULTRANIX_MCP_STATE_DIR") {
             return PathBuf::from(dir);
         }
-        // XDG_STATE_HOME intentionally ignored — see module docs.
+        // XDG_STATE_HOME intentionally ignored - see module docs.
         non_empty("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."))
@@ -95,28 +95,28 @@ impl StateDir {
         &self.root
     }
 
-    /// `<root>/logs` — audit + diagnostic logs.
+    /// `<root>/logs` - audit + diagnostic logs.
     pub fn logs_dir(&self) -> PathBuf {
         self.root.join("logs")
     }
 
-    /// `<root>/models` — ONNX vision models.
+    /// `<root>/models` - ONNX vision models.
     pub fn models_dir(&self) -> PathBuf {
         self.root.join("models")
     }
 
-    /// `<root>/captures` — saved capture frames.
+    /// `<root>/captures` - saved capture frames.
     pub fn captures_dir(&self) -> PathBuf {
         self.root.join("captures")
     }
 
-    /// `<root>/history.json` — the encrypted action history index
+    /// `<root>/history.json` - the encrypted action history index
     /// (Phase 4). Its parent is the root, already `0700`.
     pub fn history_path(&self) -> PathBuf {
         self.root.join("history.json")
     }
 
-    /// `<root>/logs/audit.jsonl` — the append-only audit log. Its parent is
+    /// `<root>/logs/audit.jsonl` - the append-only audit log. Its parent is
     /// `logs/`, already `0700`.
     pub fn audit_path(&self) -> PathBuf {
         self.logs_dir().join("audit.jsonl")
@@ -145,7 +145,7 @@ fn set_private_permissions(path: &Path) -> Result<()> {
 
 #[cfg(not(unix))]
 fn set_private_permissions(_path: &Path) -> Result<()> {
-    // No portable mode bits — Linux-only crate, kept for check builds.
+    // No portable mode bits - Linux-only crate, kept for check builds.
     Ok(())
 }
 
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn resolve_root_ignores_xdg_state_home() {
-        // Spec pins the state root at ~/.ultranix-mcp — XDG_STATE_HOME is
+        // Spec pins the state root at ~/.ultranix-mcp - XDG_STATE_HOME is
         // deliberately not consulted.
         let root = StateDir::resolve_root(fake_env(&[
             ("XDG_STATE_HOME", "/xdg/state"),

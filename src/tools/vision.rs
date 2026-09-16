@@ -1,4 +1,4 @@
-//! Vision & screen tools (12) — `CaptureProvider` for pixels,
+//! Vision & screen tools (12) - `CaptureProvider` for pixels,
 //! `UIAutomationProvider` for the AT-SPI2 tree, `VisionProvider` for
 //! OCR / open-vocabulary detection.
 
@@ -28,7 +28,7 @@ use crate::traits::{ElementMatch, Rect};
 static SPATIAL_FOCUS: RwLock<Option<Rect>> = RwLock::new(None);
 
 /// The active spatial-focus rect, if one is installed. Poisoned locks
-/// degrade to the inner value — a stale focus read is never fatal.
+/// degrade to the inner value - a stale focus read is never fatal.
 fn focus_rect() -> Option<Rect> {
     *SPATIAL_FOCUS
         .read()
@@ -58,7 +58,7 @@ fn offset_into_scope(r: &Rect, scope: &Rect) -> Rect {
 
 /// `(name, bounds)` for every output in a `screen_info` payload. Accepts
 /// the shapes the backends emit: a bare hyprctl monitor array,
-/// `{"monitors": […]}` (mock/portal), and `{"outputs": […]}` (wlr
+/// `{"monitors": [...]}` (mock/portal), and `{"outputs": [...]}` (wlr
 /// fallback). Missing `x`/`y` default to `0`; `width`/`height` (hyprctl
 /// spelling) or `w`/`h` are accepted. Entries without a name or a
 /// positive size are skipped.
@@ -146,10 +146,10 @@ struct HighlightParams {
     x: i32,
     /// Vertical coordinate in logical layout space
     y: i32,
-    /// Rectangle width (1..=16384 — the overlay allocates w*h*4 bytes)
+    /// Rectangle width (1..=16384 - the overlay allocates w*h*4 bytes)
     #[schemars(range(min = 1, max = 16384))]
     w: i32,
-    /// Rectangle height (1..=16384 — same SHM-allocation bound as w)
+    /// Rectangle height (1..=16384 - same SHM-allocation bound as w)
     #[schemars(range(min = 1, max = 16384))]
     h: i32,
     /// Overlay lifetime in milliseconds
@@ -309,7 +309,7 @@ pub(super) fn tools() -> Vec<Tool> {
         tool::<HighlightParams>(
             "screen_highlight",
             "Draw a translucent rectangle overlay at (x, y, w, h) for duration_ms \
-             (wlr-layer-shell); purely visual — it does not affect capture or input.",
+             (wlr-layer-shell); purely visual - it does not affect capture or input.",
         ),
         tool::<ColorAtParams>(
             "color_at",
@@ -344,7 +344,7 @@ pub(super) fn tools() -> Vec<Tool> {
         ),
         tool::<InvokeParams>(
             "invoke_element",
-            "Invoke an AT-SPI Action on the element matching `query` — no synthesized pointer event.",
+            "Invoke an AT-SPI Action on the element matching `query` - no synthesized pointer event.",
         ),
     ]
 }
@@ -371,7 +371,7 @@ pub(super) async fn dispatch(
     })
 }
 
-/// `find_element` match entry — accessibility metadata plus geometry.
+/// `find_element` match entry - accessibility metadata plus geometry.
 /// Backends that expose only bounds report `""`/`[]` for the rest.
 fn element_match_json(m: &ElementMatch) -> Value {
     json!({
@@ -424,7 +424,7 @@ async fn screenshot(
     let capture = capture_provider(providers)?;
     // Scope precedence: explicit `region` > `display` > spatial focus >
     // full layout (docs/TOOLS.md §Spatial Focus). `display` is resolved to
-    // the output's layout rect and captured as a region — the capture
+    // the output's layout rect and captured as a region - the capture
     // trait has no per-output entry point.
     let (region, scope) = if let Some(r) = &p.region {
         (
@@ -492,7 +492,7 @@ async fn screen_highlight(
             "screen_highlight: duration_ms must be between 100 and 30000",
         ));
     }
-    // `None` slot → -32010 ProviderUnavailable (compositor lacks
+    // `None` slot -> -32010 ProviderUnavailable (compositor lacks
     // layer-shell, or headless): a no-op success would be a lie.
     let overlay = providers
         .overlay
@@ -524,8 +524,8 @@ async fn color_at(
     let p: ColorAtParams = parse_args("color_at", args)?;
     let capture = capture_provider(providers)?;
     // Bounds-check against the output layout when the backend can report
-    // it (spec: "point outside layout bounds" → InvalidParams). A backend
-    // that cannot enumerate outputs simply skips the check — the screencopy
+    // it (spec: "point outside layout bounds" -> InvalidParams). A backend
+    // that cannot enumerate outputs simply skips the check - the screencopy
     // itself will fail loudly if the point is unreadable.
     if let Ok(info) = capture.screen_info().await {
         let outputs: Vec<Rect> = output_rects(&info).into_iter().map(|(_, r)| r).collect();
@@ -559,7 +559,7 @@ async fn color_at(
             )));
         }
     };
-    // A 1x1 logical region can come back larger on HiDPI outputs — sample
+    // A 1x1 logical region can come back larger on HiDPI outputs - sample
     // the centre of whatever was captured.
     let px = img.get_pixel(img.width() / 2, img.height() / 2);
     let [r, g, b, a] = px.0;
@@ -631,7 +631,7 @@ async fn find_element(
     if p.query.is_empty() || p.query.chars().count() > 256 {
         return Err(invalid_params("find_element: query must be 1..=256 chars"));
     }
-    // Spatial focus deliberately does NOT apply here — the spec exempts
+    // Spatial focus deliberately does NOT apply here - the spec exempts
     // AT-SPI tree tools (they operate on the accessibility tree, not
     // pixels; docs/TOOLS.md §Spatial Focus).
     let ui = ui_provider(providers)?;
@@ -814,7 +814,7 @@ async fn invoke_element(
     };
     // The requested action name goes through to the provider: backends
     // enumerate the AT-SPI Action interface and invoke the matching named
-    // action ("press"/"activate"…); a backend without named-action support
+    // action ("press"/"activate"...); a backend without named-action support
     // reports `action_not_supported` rather than silently pressing.
     let invoked = backend!(ui.invoke_element_action(&p.query, p.action.as_str()).await);
     Ok(json_result(&json!({
@@ -848,13 +848,13 @@ mod tests {
             }
         );
 
-        // wlr fallback: {"outputs": […]}.
+        // wlr fallback: {"outputs": [...]}.
         let wlr = json!({"backend": "wlr-screencopy", "outputs": [
             {"name": "WL-1", "x": 0, "y": 0, "width": 1280, "height": 800}
         ]});
         assert_eq!(output_rects(&wlr)[0].0, "WL-1");
 
-        // mock/portal: {"monitors": […]}, missing x/y → 0.
+        // mock/portal: {"monitors": [...]}, missing x/y -> 0.
         let mock = json!({"monitors": [{"name": "mock", "width": 1920, "height": 1080}]});
         assert_eq!(
             output_rects(&mock)[0].1,
@@ -866,7 +866,7 @@ mod tests {
             }
         );
 
-        // Unusable shapes yield an empty inventory (→ "unsupported" arm).
+        // Unusable shapes yield an empty inventory (-> "unsupported" arm).
         for bad in [json!({}), json!({"monitors": "x"}), json!([{"width": 1}])] {
             assert!(output_rects(&bad).is_empty());
         }
@@ -931,7 +931,7 @@ mod tests {
     // --- screen_highlight + find_element dispatch coverage -----------
     //
     // Inline test doubles (mock.rs stays untouched); nothing here opens
-    // a Wayland connection — `MockOverlay::highlight` is a no-op.
+    // a Wayland connection - `MockOverlay::highlight` is a no-op.
 
     use std::sync::Arc;
 
@@ -957,7 +957,7 @@ mod tests {
         }
     }
 
-    /// UI-automation double exposing only `find_element` — exercises the
+    /// UI-automation double exposing only `find_element` - exercises the
     /// trait's default `find_elements` wrapper (""/[] metadata).
     struct RectOnlyUi;
 
@@ -1035,7 +1035,7 @@ mod tests {
         let v: Value = serde_json::from_str(&text_of(&r)).unwrap();
         assert_eq!(v["found"], true);
         assert_eq!(v["count"], 1);
-        // Default find_elements: geometry-only backend → ""/[] metadata.
+        // Default find_elements: geometry-only backend -> ""/[] metadata.
         assert_eq!(v["matches"][0]["name"], "");
         assert_eq!(v["matches"][0]["role"], "");
         assert_eq!(v["matches"][0]["states"], json!([]));

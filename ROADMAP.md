@@ -1,39 +1,39 @@
 # Roadmap
 
-ultranix-mcp's delivery plan for **v1.0.0** and beyond. Work proceeded in six
+ultranix-mcp's delivery plan for **v1.0.0**and beyond. Work proceeded in six
 phases, each with concrete deliverables, exit criteria, dependencies, and
-risk callouts — **Phases 0–5 are delivered as of v1.0.0, the v1.1.0 wave
+risk callouts - **Phases 0-5 are delivered as of v1.0.0, the v1.1.0 wave
 shipped the post-v1 items that had a real implementation path, the
 v1.2.0 breadth wave landed the rest, the v1.3.0 policy-and-governance
 wave added the runtime access-control surface, and the v1.4.0 reach wave
 closed the compositor-coverage gaps (Wayfire/river/GNOME window rungs),
 shipped live `screen_stream` capture, dynamic plugin tool registration,
-and the OCI/`-bin` distribution artifacts** (see
-[CHANGELOG.md](CHANGELOG.md), [v1.1.0 — Post-v1 Wave](#v110--post-v1-wave-shipped),
-[v1.2.0 — Breadth Wave](#v120--breadth-wave-shipped),
-[v1.3.0 — Policy & Governance Wave](#v130--policy--governance-wave-shipped), and
-[v1.4.0 — Reach Wave](#v140--reach-wave-shipped)
-below). This is a living document — update it as direction shifts.
+and the OCI/`-bin` distribution artifacts**(see
+[CHANGELOG.md](CHANGELOG.md), [v1.1.0 - Post-v1 Wave](#v110--post-v1-wave-shipped),
+[v1.2.0 - Breadth Wave](#v120--breadth-wave-shipped),
+[v1.3.0 - Policy & Governance Wave](#v130--policy--governance-wave-shipped), and
+[v1.4.0 - Reach Wave](#v140--reach-wave-shipped)
+below). This is a living document - update it as direction shifts.
 
-Legend: `[x]` done · `[ ]` planned · phases are strictly ordered; a phase's
+Legend: `[x]` done - `[ ]` planned - phases are strictly ordered; a phase's
 exit criteria gate the next.
 
-**Verified target environment:** CachyOS (Arch), Hyprland on Wayland,
+**Verified target environment:**CachyOS (Arch), Hyprland on Wayland,
 PipeWire, `xdg-desktop-portal-hyprland`, live AT-SPI2 bus, Rust 1.98.1.
 Installed session tools: `hyprctl`, `grim`, `slurp`. X11 sessions use the
 shipped `scrot`/`xdotool`/`wmctrl` rungs (`xrandr`/`xprop` are pinned as
 provider-internal helpers, not `system_command`-invocable). Optional:
-`wl-clipboard` (`wl-copy`/`wl-paste` — clipboard tools on Wayland),
+`wl-clipboard` (`wl-copy`/`wl-paste` - clipboard tools on Wayland),
 `xclip`/`xsel` (clipboard tools on X11/XWayland), `kdotool` (KDE window
-rung), `riverctl` (river window rung) — all likewise provider-internal
+rung), `riverctl` (river window rung) - all likewise provider-internal
 pins, unreachable by `system_command`; the GNOME Window Calls extension
 enables the GNOME window rung. Not required:
-`gdbus`/`busctl` — removed from the command whitelist. Absent by design:
-`wtype`, `ydotool`, `tesseract` — ultranix-mcp does not depend on them.
+`gdbus`/`busctl` - removed from the command whitelist. Absent by design:
+`wtype`, `ydotool`, `tesseract` - ultranix-mcp does not depend on them.
 
 ---
 
-## Phase 0 — Scaffold & Mocks
+## Phase 0 - Scaffold & Mocks
 
 Foundation: a compiling, test-covered skeleton with the full provider-trait
 surface and zero real backends.
@@ -46,7 +46,7 @@ surface and zero real backends.
       stdio and streamable-HTTP (`:3010`) transports
 - [x] `src/traits.rs`: `CaptureProvider`, `InputProvider`,
       `UIAutomationProvider`, `WindowProvider`, `VisionProvider`,
-      `BrowserProvider` — all held as `Option<Arc<dyn Trait>>` in a provider
+      `BrowserProvider` - all held as `Option<Arc<dyn Trait>>` in a provider
       registry
 - [x] Mock implementations of all six traits; tool dispatch returns typed
       "provider unavailable" errors when a backend is `None`
@@ -77,14 +77,14 @@ surface and zero real backends.
 
 ### Risks
 
-- **Low.** The main trap is schema drift — tool schemas are the contract, so
+- **Low.**The main trap is schema drift - tool schemas are the contract, so
   they are frozen in Phase 0 and reviewed via ADR afterwards.
 
 ---
 
-## Phase 1 — Hyprland I/O
+## Phase 1 - Hyprland I/O
 
-Real capture, input, and window control on the primary compositor — no
+Real capture, input, and window control on the primary compositor - no
 root, no portals.
 
 ### Deliverables
@@ -95,14 +95,14 @@ root, no portals.
       edge cases
 - [x] `InputProvider` on `zwlr_virtual_pointer_v1` (pointer motion, buttons,
       scroll) and `virtual-keyboard-unstable-v1` (text, key states,
-      modifiers, keymap upload) — powers all `mouse_*`, `type_text`,
+      modifiers, keymap upload) - powers all `mouse_*`, `type_text`,
       `key_control`, `mouse_move_path`, `sleep`
 - [x] `WindowProvider` on the `hyprctl` IPC socket, parsing `hyprctl -j`
       JSON (`clients`, `activewindow`, `dispatch`, `workspaces`) for
       `get_windows`, `get_active_window`, `window_control`
-- [x] Backend-selection logic implementing the wlroots-native →
-      uinput/evdev → portal priority ladder
-- [x] Security scaffolding — the server ships protected from day one:
+- [x] Backend-selection logic implementing the wlroots-native ->
+      uinput/evdev -> portal priority ladder
+- [x] Security scaffolding - the server ships protected from day one:
       input sanitization (shell-metacharacter stripping, identifier
       length/charset validation); arg-constrained, absolute-path-pinned
       command whitelist for `system_command` (`grim`, `slurp`, `scrot`,
@@ -142,7 +142,7 @@ loop), `image`, Hyprland running with `HYPRLAND_INSTANCE_SIGNATURE` set
 
 ---
 
-## Phase 2 — AT-SPI2 UI Automation
+## Phase 2 - AT-SPI2 UI Automation
 
 Semantic access to application UI through the accessibility bus.
 
@@ -153,7 +153,7 @@ Semantic access to application UI through the accessibility bus.
 - [x] `get_ui_tree`, `get_focused_element`, `find_element`,
       `wait_for_ui_element`, `invoke_element`, `set_spatial_focus`
       (process-global rect scoping `screenshot`/`find_text_on_screen`/
-      `find_icon`) — `screen_highlight` validates args then returns
+      `find_icon`) - `screen_highlight` validates args then returns
       `-32010 ProviderUnavailable` when no overlay backend exists; the
       `zwlr_layer_shell_v1` `Overlay` backend landed at v1.1.0
 - [x] Focus tracking across window/app switches (`get_focused_element`
@@ -184,7 +184,7 @@ Semantic access to application UI through the accessibility bus.
 
 ---
 
-## Phase 3 — Vision & Browser
+## Phase 3 - Vision & Browser
 
 Local inference for OCR and icon finding, plus browser automation over CDP.
 
@@ -214,7 +214,7 @@ Chromium-family browser for `web_query`
 ### Risks
 
 - **ONNX model bundling size**: bundling models in the binary or repo is
-  rejected — artifacts are fetched on first use with verified checksums, and
+  rejected - artifacts are fetched on first use with verified checksums, and
   the `vision` category can be excluded via `--category=` on model-free
   installs.
 - **CPU latency for OWL-ViT**: icon finding is seconds-scale on CPU; EP
@@ -224,17 +224,17 @@ Chromium-family browser for `web_query`
 
 ---
 
-## Phase 4 — Enterprise Hardening
+## Phase 4 - Enterprise Hardening
 
 The governance surface: auth, audit completion, observability. (Sanitization,
 the arg/path whitelists, the audit skeleton, and the consent gate are Phase-1
-security scaffolding — this phase finishes the enterprise surface on top of
+security scaffolding - this phase finishes the enterprise surface on top of
 them.)
 
 ### Deliverables
 
 - [x] `uxcp_*` API-key auth middleware on HTTP (`ULTRANIX_MCP_API_KEY` or
-      `ULTRANIX_MCP_API_KEY_FILE`; fail-closed — `X-API-Key` header
+      `ULTRANIX_MCP_API_KEY_FILE`; fail-closed - `X-API-Key` header
       canonical, `Authorization: Bearer` accepted);
       `ULTRANIX_MCP_DISABLE_AUTH=true` escape hatch for dev; stdio never
       requires auth
@@ -242,15 +242,15 @@ them.)
 - [x] AES-256-GCM-encrypted action history at
       `~/.ultranix-mcp/history.json` (`ULTRANIX_MCP_HISTORY_SECRET` or a
       per-install generated secret under `~/.ultranix-mcp/`, mode `0700`)
-- [x] Full JSONL audit log at `~/.ultranix-mcp/logs/` — extends the Phase-1
+- [x] Full JSONL audit log at `~/.ultranix-mcp/logs/` - extends the Phase-1
       skeleton to every tool invocation: `key_id`, `args_hash` (never raw
       args), duration, outcome, `prev_hash` chaining; 30-day rotation
       (configurable via `ULTRANIX_MCP_AUDIT_RETENTION_DAYS`)
 - [x] Prometheus `/metrics` (4 series at v1.0.0; 8 as of v1.1.0; 10 since
-      v1.3.0 — see ARCHITECTURE.md §7); `/health` and `/readyz` endpoints;
+      v1.3.0 - see ARCHITECTURE.md §7); `/health` and `/readyz` endpoints;
       `ultranix-mcp keygen` CLI
-- [x] Optional Sentry error reporting via `ULTRANIX_MCP_SENTRY_DSN` —
-      **shipped at v1.1.0** (opt-in; the `sentry-tracing` layer attaches
+- [x] Optional Sentry error reporting via `ULTRANIX_MCP_SENTRY_DSN` -
+      **shipped at v1.1.0**(opt-in; the `sentry-tracing` layer attaches
       only when the DSN parses, malformed DSN warns and disables)
 - [x] Admin tools: `metrics`, `get_action_history`, `replay_action`,
       `clear_action_history`
@@ -275,14 +275,14 @@ streamable-HTTP transport
 
 - **Key management UX**: `ULTRANIX_MCP_HISTORY_SECRET` (or the per-install
   generated secret) needs a documented rotation path; a lost secret means
-  lost history — called out in docs.
+  lost history - called out in docs.
 - **Audit retention**: 30-day JSONL rotation is the spec'd default
   (configurable); fine-tuning rotation boundaries and shipped policy remains
   a Phase-4 hardening task.
 
 ---
 
-## Phase 5 — Portability & Packaging
+## Phase 5 - Portability & Packaging
 
 Off-Hyprland fallback paths and real distribution.
 
@@ -290,22 +290,22 @@ Off-Hyprland fallback paths and real distribution.
 
 - [x] `uinput`/`evdev` `InputProvider` fallback for non-wlroots compositors,
       with a packaged, opt-in udev rule for `/dev/uinput`
-      (`SUBSYSTEM=="uinput", MODE="0660", GROUP="ultranix-input"` — a
+      (`SUBSYSTEM=="uinput", MODE="0660", GROUP="ultranix-input"` - a
       dedicated group holding only the service user, never `input`)
 - [x] XDG Desktop Portal backend over `zbus`: `Screenshot` and
       `RemoteDesktop` portals (universal last resort). `RemoteDesktop`
       drives portal input; as of v1.1.0 the capture path also consumes the
       granted PipeWire stream when `Screenshot` is not advertised
-- [x] PipeWire stream consumption for portal `RemoteDesktop` sessions —
-      **shipped at v1.1.0** (`CreateSession → SelectSources → Start →
-      OpenPipeWireRemote` → one video buffer, BGRx/BGRA/RGBx/RGBA, 5 s
+- [x] PipeWire stream consumption for portal `RemoteDesktop` sessions -
+      **shipped at v1.1.0**(`CreateSession -> SelectSources -> Start ->
+      OpenPipeWireRemote` -> one video buffer, BGRx/BGRA/RGBx/RGBA, 5 s
       bounded grab, session always closed)
 - [x] Nested-Hyprland integration test rig for real-Wayland CI
       (`tests/nested.rs` + `scripts/nested-test.sh`, gated behind
       `ULTRANIX_MCP_LIVE_TESTS=1`)
 - [x] Packaging artifacts: AUR PKGBUILDs (`ultranix-mcp`,
       `ultranix-mcp-git`) under `packaging/`, `cargo install` support,
-      systemd user unit, GitHub release binaries via `release.yml` —
+      systemd user unit, GitHub release binaries via `release.yml` -
       AUR/crates.io submission itself is tracked in
       [docs/REGISTRY_SUBMISSION.md](docs/REGISTRY_SUBMISSION.md)
 - [x] Distro notes covering non-Arch packaging requirements
@@ -326,7 +326,7 @@ session's portal impl), `pkgbuild` tooling
 ### Risks
 
 - **uinput udev rule**: `/dev/uinput` access requires an elevated,
-  persistent system change — packaged as an explicit opt-in rule
+  persistent system change - packaged as an explicit opt-in rule
   (`GROUP="ultranix-input"`, dedicated group) with copy-paste setup
   instructions; never auto-installed.
 - **Portal consent UX**: portal backends trigger per-app consent dialogs
@@ -339,188 +339,188 @@ session's portal impl), `pkgbuild` tooling
 
 ---
 
-## v1.1.0 — Post-v1 Wave (shipped)
+## v1.1.0 - Post-v1 Wave (shipped)
 
 The items the v1.0.0 docs marked post-v1 that had a real implementation
-path — all delivered:
+path - all delivered:
 
-- [x] **Layer-shell overlay** — `OverlayProvider` on `zwlr_layer_shell_v1`
+- [x] **Layer-shell overlay**- `OverlayProvider` on `zwlr_layer_shell_v1`
       powers a real `screen_highlight` (translucent, click-through,
       per-output placement); `ProviderUnavailable` off-Wayland
-- [x] **Multi-match `find_element`** — `find_elements` returns up to 10
+- [x] **Multi-match `find_element`**- `find_elements` returns up to 10
       matches with name/role/states/bounds/center
-- [x] **X11 session support** — `scrot`/`xdotool`/`wmctrl` provider rungs
+- [x] **X11 session support**- `scrot`/`xdotool`/`wmctrl` provider rungs
       (`xrandr`/`xprop` pinned as provider-internal helpers only)
-- [x] **PipeWire stream consumption** — portal `RemoteDesktop` capture path
+- [x] **PipeWire stream consumption**- portal `RemoteDesktop` capture path
       consumes the granted PipeWire fd when `Screenshot` is absent
-- [x] **Sentry** — opt-in via `ULTRANIX_MCP_SENTRY_DSN`
-- [x] **Four additional metrics** — `auth_failures_total`,
+- [x] **Sentry**- opt-in via `ULTRANIX_MCP_SENTRY_DSN`
+- [x] **Four additional metrics**- `auth_failures_total`,
       `backend_active`, `action_history_size`, `ocr_cache_entries`
-- [x] **OCR result cache** — blake3-keyed `DashMap`, 10 s TTL, 64-entry cap
-- [x] **Parallel AT-SPI traversal** — `join_all` child-proxy builds and
+- [x] **OCR result cache**- blake3-keyed `DashMap`, 10 s TTL, 64-entry cap
+- [x] **Parallel AT-SPI traversal**- `join_all` child-proxy builds and
       per-app scans (budgets/ordering unchanged)
-- [x] **`spawn_blocking` audit/history** — blocking store work moved off
+- [x] **`spawn_blocking` audit/history**- blocking store work moved off
       the async executor
-- [x] **Throttled `type_text` focus checks** — first gap, then every 16th
+- [x] **Throttled `type_text` focus checks**- first gap, then every 16th
       char or ≥100 ms, plus post-loop
-- [x] **`server.json` registry manifest** — `mcp-publisher validate`-clean
+- [x] **`server.json` registry manifest**- `mcp-publisher validate`-clean
 
-## v1.2.0 — Breadth Wave (shipped)
+## v1.2.0 - Breadth Wave (shipped)
 
-The rest of the post-v1 backlog with a real implementation path — the tool
+The rest of the post-v1 backlog with a real implementation path - the tool
 surface grew from 32 to **39 tools in 6 categories**:
 
-- [x] **Clipboard tools** — `clipboard_get`/`clipboard_set`/
+- [x] **Clipboard tools**- `clipboard_get`/`clipboard_set`/
       `clipboard_clear` over a new `ClipboardProvider`: `wl-copy`/
       `wl-paste` on Wayland (backend `"wl-clipboard"`), `xclip` + `xsel`
       on X11/XWayland (`"xclip"`). Text-first reads (`mime: "list"`
       enumerates), 1 MiB write cap, payloads over stdin; `set`/`clear`
       are consent-gated destructive actions
-- [x] **Plugin tool-macros** — `plugin_list`/`plugin_run`/`plugin_reload`
+- [x] **Plugin tool-macros**- `plugin_list`/`plugin_run`/`plugin_reload`
       over declarative `<state>/plugins/*.json` manifests (`${param}`
-      templating, `$$` escape, typed string/number/boolean params, 1–32
-      steps). Steps re-enter the secured dispatch — per-step consent,
+      templating, `$$` escape, typed string/number/boolean params, 1-32
+      steps). Steps re-enter the secured dispatch - per-step consent,
       audit, history, metrics; `plugin_*` steps rejected (no macro
       recursion); new `-32017 PluginStepError`
-- [x] **Bounded screen recording** — `screen_record` (vision): one frame
+- [x] **Bounded screen recording**- `screen_record` (vision): one frame
       per `interval_ms` up to `duration_ms`, 600-frame + 512 MiB caps,
       `rec-<ulid>` output dir + `manifest.json`; not consent-gated
-- [x] **Compositor breadth** — `SessionKind` detects Hyprland, sway,
+- [x] **Compositor breadth**- `SessionKind` detects Hyprland, sway,
       Wayfire, river, KDE, GNOME, Other; wlroots family shares the
       `wlr-*` rungs, KDE/GNOME route to portal backends; `SwayWindow`
       (`sway-ipc` over `$SWAYSOCK`) is the sway window provider; a
-      `KdotoolWindow` (`kdotool` subprocess) is the KDE window provider —
+      `KdotoolWindow` (`kdotool` subprocess) is the KDE window provider -
       it drives KWin on Wayland and X11 alike
-- [x] **Per-backend cargo features** — `wayland`/`uinput`/`a11y`/
+- [x] **Per-backend cargo features**- `wayland`/`uinput`/`a11y`/
       `pipewire`/`vision`/`browser`/`sentry` (all default-on);
       `--no-default-features` builds a lean core that reports
       `ProviderUnavailable` honestly; `vision-rocm` joins the EP ladder
-- [x] **Nix flake** — `flake.nix` (package + devShell + app).
-      **Unverified** — written by review, never evaluated; contributions
+- [x] **Nix flake**- `flake.nix` (package + devShell + app).
+      **Unverified**- written by review, never evaluated; contributions
       welcome
-- [x] **History v2** — `UNXHIST2` framed append format: O(1) encrypted
-      appends; full rewrite only on FIFO eviction or v1→v2 migration
-- [x] **AT-SPI scan cache** — `wait_for_ui_element` & friends reuse a
+- [x] **History v2**- `UNXHIST2` framed append format: O(1) encrypted
+      appends; full rewrite only on FIFO eviction or v1->v2 migration
+- [x] **AT-SPI scan cache**- `wait_for_ui_element` & friends reuse a
       cached `TreeScan` (300 ms TTL) instead of re-walking the tree every
       250 ms poll; staleness bounded by TTL + one poll
 
-## v1.3.0 — Policy & Governance Wave (shipped)
+## v1.3.0 - Policy & Governance Wave (shipped)
 
-Runtime access control and audit hardening — the tool surface is
+Runtime access control and audit hardening - the tool surface is
 unchanged (39 tools / 6 categories); every item is an additive
 security/ops knob ([ADR 0010](docs/adr/0010-policy-controls.md)):
 
-- [x] **`policy.toml` runtime policy** — TOML file
+- [x] **`policy.toml` runtime policy**- TOML file
       (`~/.config/ultranix-mcp/policy.toml`, or `--policy=PATH`)
       declaring `default_role`, named `roles` (`readonly` /
       `allow_tools` / `deny_tools`), and a `keys` map binding API-key
       fingerprints to roles for per-key scoping on HTTP (stdio and
       unmapped keys resolve to `default_role`). Loading is fail-closed:
       a missing/malformed explicit `--policy`, misspelled TOML keys
-      (`deny_unknown_fields`), and `keys` → undefined-role references
+      (`deny_unknown_fields`), and `keys` -> undefined-role references
       all abort startup
-- [x] **`--readonly`** — restricts the default role to the 15-tool
+- [x] **`--readonly`**- restricts the default role to the 15-tool
       non-mutating preset; `allow_tools` unions with the preset, so
       operators can opt individual mutating tools back in
-- [x] **`--allow-tools` / `--deny-tools`** — per-tool lists scoped to
+- [x] **`--allow-tools` / `--deny-tools`**- per-tool lists scoped to
       `default_role` only: `--allow-tools` replaces the file's
       default-role allowlist (unioning with the preset under
       `--readonly`), `--deny-tools` adds to it; denials surface as
       `-32018 ReadOnlyMode` / `-32019 NotInToolList` with an audited
       `denial_reason`
-- [x] **Backend metrics + build info** —
+- [x] **Backend metrics + build info**-
       `ultranix_mcp_backend_calls_total{backend,outcome}` and
       `ultranix_mcp_build_info{version}` (10 shipped series); `denied`
       joined the tool-call outcome vocabulary
-- [x] **Audit HMAC** — `ULTRANIX_MCP_AUDIT_SECRET` signs every
+- [x] **Audit HMAC**- `ULTRANIX_MCP_AUDIT_SECRET` signs every
       `audit.jsonl` line (HMAC-SHA256 over the canonical record;
       `prev_hash` covers the signed line). Rollout caveat: enable on a
-      fresh/rotated log — pre-secret unsigned lines fail verification
-- [x] **Startup policy warnings** — CLI policy flags coexisting with
+      fresh/rotated log - pre-secret unsigned lines fail verification
+- [x] **Startup policy warnings**- CLI policy flags coexisting with
       named roles, a `keys` map under an unrestricted `default_role`,
       and a `keys` map on stdio/disabled auth all log loud warnings
 
-## v1.4.0 — Reach Wave (shipped)
+## v1.4.0 - Reach Wave (shipped)
 
-The last "no IPC exists" gaps re-examined for real implementation paths —
+The last "no IPC exists" gaps re-examined for real implementation paths -
 the tool surface grew from 39 to **40 tools in 6 categories**
 ([ADR 0011](docs/adr/0011-reach-wave.md)):
 
-- [x] **GNOME window backend** — `GnomeShellWindow` (`gnome-shell`) over
-      the community **Window Calls** Shell extension
+- [x] **GNOME window backend**- `GnomeShellWindow` (`gnome-shell`) over
+      the community **Window Calls**Shell extension
       (`org.gnome.Shell.Extensions.Windows`: `List`/`Activate`/`Close`/
       `Minimize`/`Move`/`Resize`/`MoveResize`/`MoveToWorkspace`).
-      Requires the extension installed (EGO 4724) — without it the rung
+      Requires the extension installed (EGO 4724) - without it the rung
       drops out and GNOME reports `ProviderUnavailable` as before.
       `org.gnome.Shell.Eval` deliberately unused (arbitrary-JS hazard).
-- [x] **Wayfire window backend** — `WayfireWindow` (`wayfire-ipc`) over
+- [x] **Wayfire window backend**- `WayfireWindow` (`wayfire-ipc`) over
       the `ipc`/`ipc-rules` plugins on `$WAYFIRE_SOCKET` (length-prefixed
       JSON): `list-views`, `get-focused-view`, `focus-view`,
       `close-view`, `configure-view`, `wm-actions/set-minimized`.
       Toplevel views only; `floating` honestly `None`.
-- [x] **river window backend (partial)** — `RiverWindow` (`riverctl`)
+- [x] **river window backend (partial)**- `RiverWindow` (`riverctl`)
       over the pinned `riverctl` subprocess: river genuinely has no
       window-list IPC, so `get_windows`/`get_active_window` return
       `ProviderUnavailable`, but `window_control` reaches the focused
       view via `window:"focused"` or an omitted selector
-      (`focused_view_selector()` bypasses list/active resolution) —
+      (`focused_view_selector()` bypasses list/active resolution) -
       `close`, and `move`/`resize` through the new relative `dx,dy`/
       `dw,dh` params; `focus`/`minimize`/absolute geometry error
       honestly (no riverctl form). `riverctl` is pin-only (no
-      `validate_command` arm — unreachable by `system_command`).
-- [x] **Live streaming capture** — `screen_stream` (vision):
+      `validate_command` arm - unreachable by `system_command`).
+- [x] **Live streaming capture**- `screen_stream` (vision):
       `start`/`status`/`latest`/`stop` lifecycle; a background task
       captures `fps` frames/s into a `stream-<ulid>` `0700` dir under
       the captures root with a rolling window (`max_frames` ≤1800,
-      `max_bytes` ≤512 MiB, oldest evicted → `dropped_frames`);
+      `max_bytes` ≤512 MiB, oldest evicted -> `dropped_frames`);
       `latest` returns the newest frame in `screenshot`'s image shape;
       `manifest.json` on every exit path; one active stream server-wide;
-      `NON_REPLAYABLE`. Rolling-window disk capture — not RTP.
-- [x] **Dynamic tool registration** — manifest `tool` sections
+      `NON_REPLAYABLE`. Rolling-window disk capture - not RTP.
+- [x] **Dynamic tool registration**- manifest `tool` sections
       (`name`/`description`/`params`) register first-class `tools/list`
       entries with generated `inputSchema`s; calls route through
       `plugin_run`'s secured dispatch with dual policy (own name +
       `plugin_run` allowed); `admin` category; no
-      `tools/list_changed` — clients re-list after `plugin_reload`.
-- [x] **Headless operation** — [docs/HEADLESS.md](docs/HEADLESS.md)
+      `tools/list_changed` - clients re-list after `plugin_reload`.
+- [x] **Headless operation**- [docs/HEADLESS.md](docs/HEADLESS.md)
       documents `SessionType::Headless` (all provider ladders empty,
       fail-closed) vs headless-compositor operation (full ladders, no
       physical outputs); detection already resolves both.
-- [x] **Distribution** — root `Dockerfile` + `.github/workflows/oci.yml`
+- [x] **Distribution**- root `Dockerfile` + `.github/workflows/oci.yml`
       publish `ghcr.io/jxoesneon/ultranix-mcp` on `v*` tags;
       `packaging/ultranix-mcp-bin/` (prebuilt package) + `.SRCINFO`
       files keep the AUR set submission-ready; `flake.nix` fixes.
 
 ## Post-v1 Ideas
 
-Exploration backlog — not committed, priority by demand. (The v1.4.0 wave
+Exploration backlog - not committed, priority by demand. (The v1.4.0 wave
 cleared most of the former list; honest residuals are noted inline.)
 
-- ~~**GNOME native window backend**~~ — **shipped at v1.4.0** via the
+- ~~**GNOME native window backend**~~ - **shipped at v1.4.0**via the
   Window Calls Shell extension (`GnomeShellWindow`, `gnome-shell`).
-  Residual: requires the extension installed — Mutter still exposes no
+  Residual: requires the extension installed - Mutter still exposes no
   native window IPC, and `Eval` stays deliberately unused.
-- ~~**Wayfire/river window backends**~~ — **shipped at v1.4.0**:
+- ~~**Wayfire/river window backends**~~ - **shipped at v1.4.0**:
   Wayfire's `ipc`/`ipc-rules` socket turned out to be a real channel
-  (`wayfire-ipc`); river is partial — `riverctl` registers the rung and
+  (`wayfire-ipc`); river is partial - `riverctl` registers the rung and
   `window_control` drives the focused view (`window:"focused"`,
   `close`, delta `move`/`resize`), but river still has no window-list
   IPC, so `get_windows`/`get_active_window` return `isError` results there
   (`ProviderUnavailable`).
-- **GPU EP acceleration** — CUDA/OpenVINO/ROCm features are wired
+- **GPU EP acceleration**- CUDA/OpenVINO/ROCm features are wired
   (`ort/load-dynamic` + `ORT_DYLIB_PATH`); remaining work is validated
   EP-packaged ONNX Runtime builds in CI/packaging. The `oci.yml`
   workflow (v1.4.0) now builds and publishes the image on tags, but it
   does not yet exercise GPU EPs.
-- ~~**Streaming capture**~~ — **shipped at v1.4.0** as `screen_stream`
+- ~~**Streaming capture**~~ - **shipped at v1.4.0**as `screen_stream`
   (rolling-window disk capture with polled `latest` frames). Residual:
   true push-style streaming (RTP/WebRTC/live feed) for remote-control UX
   remains open.
-- ~~**Headless operation**~~ — **shipped at v1.4.0**:
+- ~~**Headless operation**~~ - **shipped at v1.4.0**:
   [docs/HEADLESS.md](docs/HEADLESS.md) + `SessionType::Headless`
   detection (empty provider ladders, fail-closed) and documented
   headless-compositor operation.
-- ~~**Dynamic tool registration**~~ — **shipped at v1.4.0**: manifest
+- ~~**Dynamic tool registration**~~ - **shipped at v1.4.0**: manifest
   `tool` sections register first-class `tools/list` entries routed
   through `plugin_run`'s secured dispatch. Residual: still
   schemas-over-manifests (no new *code*); a WASM/IPC plugin runtime

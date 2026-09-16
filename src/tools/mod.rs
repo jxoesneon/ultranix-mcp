@@ -1,5 +1,5 @@
 //! Tool registry: schemas, categories, dispatch. Canonical catalog lives in
-//! docs/TOOLS.md — this module is its compiled mirror (40 tools).
+//! docs/TOOLS.md - this module is its compiled mirror (40 tools).
 
 mod admin;
 mod automation;
@@ -50,8 +50,8 @@ fn policy_denied(tool: &str, reason: &str) -> ErrorData {
     )
 }
 
-/// Frozen category → tool-name catalog (docs/TOOLS.md "Tool Summary").
-/// Names and membership are part of the stable public contract — do not
+/// Frozen category -> tool-name catalog (docs/TOOLS.md "Tool Summary").
+/// Names and membership are part of the stable public contract - do not
 /// rename without a spec change.
 const CATALOG: &[(&str, &[&str])] = &[
     (
@@ -129,7 +129,7 @@ fn all_tools() -> &'static [Tool] {
     &ALL
 }
 
-/// All category names in catalog order (`mouse`, `keyboard`, …).
+/// All category names in catalog order (`mouse`, `keyboard`, ...).
 pub fn categories() -> impl Iterator<Item = &'static str> {
     CATALOG.iter().map(|(c, _)| *c)
 }
@@ -142,7 +142,7 @@ pub(crate) fn category_of(name: &str) -> Option<&'static str> {
 }
 
 /// Metric-safe tool label: client-supplied names that aren't in the
-/// catalog collapse to `"__unknown__"` — otherwise every arbitrary name
+/// catalog collapse to `"__unknown__"` - otherwise every arbitrary name
 /// would mint a new `tool_calls_total`/`tool_duration_seconds` series
 /// (unbounded label cardinality). Returns the catalog's own `&'static`
 /// name so the metrics maps can key on `&'static str` without copying.
@@ -231,7 +231,7 @@ fn record_tool_metric(
     );
 }
 
-/// `-32601 MethodNotFound` for a tool outside the enabled category set —
+/// `-32601 MethodNotFound` for a tool outside the enabled category set -
 /// the wire shape docs/API_VERSIONING.md fixes for calls to filtered
 /// tools (`data.kind = "CategoryDisabled"`). `None` categories = all
 /// enabled; unknown names yield `None` here and fall through to
@@ -283,7 +283,7 @@ pub fn list_tools(categories: Option<&[String]>) -> Vec<Tool> {
 
 /// Dispatch a `tools/call` request into the provider layer.
 ///
-/// Every call — hit or miss — is timed and counted in the process-global
+/// Every call - hit or miss - is timed and counted in the process-global
 /// metrics registry ([`crate::metrics`]). The secured wrapper
 /// [`call_tool_secured`] bypasses this shim (it records metrics itself,
 /// including the consent-gate overhead) and adds the audit record.
@@ -336,7 +336,7 @@ async fn dispatch(
     Err(unknown_tool(name))
 }
 
-/// `dispatch` for the secured path — identical except the admin leg uses
+/// `dispatch` for the secured path - identical except the admin leg uses
 /// [`admin::dispatch_secured`], so `replay_action` re-enters
 /// [`call_tool_secured`] for the recorded call: consent re-challenge,
 /// audit record, and metric sample on its own `{caller, tool, args_hash}`
@@ -404,7 +404,7 @@ fn outcome_of(result: &Result<CallToolResult, ErrorData>) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Secured dispatch — consent gate + audit + whitelist-constrained exec.
+// Secured dispatch - consent gate + audit + whitelist-constrained exec.
 // ---------------------------------------------------------------------------
 
 /// Shared-or-borrowed [`crate::security::SecurityContext`] handle accepted
@@ -415,13 +415,13 @@ fn outcome_of(result: &Result<CallToolResult, ErrorData>) -> &'static str {
 /// audit append move onto `tokio::task::spawn_blocking` like the
 /// encrypted-history write (EFF-1). A plain `&SecurityContext`
 /// ([`SecRef::Borrowed`]) has no `'static` handle to move, so its audit
-/// records are appended inline — the record bytes are identical either
+/// records are appended inline - the record bytes are identical either
 /// way; only the executor placement differs.
 #[derive(Clone, Copy)]
 pub enum SecRef<'a> {
-    /// Borrowed context — audit appends run on the current task.
+    /// Borrowed context - audit appends run on the current task.
     Borrowed(&'a crate::security::SecurityContext),
-    /// `Arc`-shared context — audit appends run on `spawn_blocking`.
+    /// `Arc`-shared context - audit appends run on `spawn_blocking`.
     Shared(&'a Arc<crate::security::SecurityContext>),
 }
 
@@ -447,7 +447,7 @@ impl std::ops::Deref for SecRef<'_> {
     }
 }
 
-/// `-32015 ConsentRequired` — destructive call needs a challenge retry.
+/// `-32015 ConsentRequired` - destructive call needs a challenge retry.
 fn consent_required(token: &str, expires_in_ms: u64, tool: &str) -> ErrorData {
     ErrorData::new(
         ErrorCode(codes::CONSENT_REQUIRED),
@@ -467,7 +467,7 @@ fn is_destructive(name: &str, args: &Map<String, Value>) -> bool {
     match name {
         "system_command" | "clear_action_history" | "replay_action" => true,
         // Clipboard writes destroy user state (and can plant hostile
-        // paste content) — same destructive class as the other mutating
+        // paste content) - same destructive class as the other mutating
         // tools.
         "clipboard_set" | "clipboard_clear" => true,
         "window_control" => args.get("action").and_then(Value::as_str) == Some("close"),
@@ -478,7 +478,7 @@ fn is_destructive(name: &str, args: &Map<String, Value>) -> bool {
 /// Append one hash-chained audit record. On the [`SecRef::Shared`] path
 /// the <1 KiB write (+ day-rollover rotation/prune) runs on
 /// `spawn_blocking` like the encrypted-history append (EFF-1); a borrowed
-/// context records inline — identical bytes, only the executor placement
+/// context records inline - identical bytes, only the executor placement
 /// differs. Errors are swallowed: an audit sink fault must never fail a
 /// tool call.
 async fn audit_record(
@@ -496,7 +496,7 @@ async fn audit_record(
             let tool = tool.to_string();
             let args_hash = args_hash.to_string();
             let denial_reason = denial_reason.map(str::to_string);
-            // CallContext borrows caller strings — own them for the move.
+            // CallContext borrows caller strings - own them for the move.
             let key_id = ctx.key_id.map(str::to_string);
             let caller = ctx.caller.map(str::to_string);
             let consent = ctx.consent.map(str::to_string);
@@ -515,7 +515,7 @@ async fn audit_record(
                 )
             })
             .await;
-            // Audit faults must not fail the tool call — but a dropped
+            // Audit faults must not fail the tool call - but a dropped
             // record must not be silent either.
             match res {
                 Ok(Err(e)) => tracing::warn!(%e, "audit record failed"),
@@ -536,7 +536,7 @@ async fn audit_record(
 
 /// `tools/call` with the security pipeline applied: consent gate for the
 /// destructive class, real whitelist-constrained `system_command` exec,
-/// a hash-chained audit record for **every** call (accepted or rejected —
+/// a hash-chained audit record for **every**call (accepted or rejected -
 /// SECURITY.md "Audit | Every invocation"), and a
 /// `ultranix_mcp_tool_calls_total` / `_duration_seconds` metric sample.
 ///
@@ -558,7 +558,7 @@ pub async fn call_tool_secured<'a>(
     let destructive = is_destructive(name, &args);
 
     // Category gate (docs/API_VERSIONING.md "Category Filters"): a tool
-    // outside the enabled set is `MethodNotFound` — audited and metered
+    // outside the enabled set is `MethodNotFound` - audited and metered
     // like every other rejected call. Lives here (not in the server
     // handler) so `replay_action`'s re-entry enforces it too.
     if let Some(err) = category_gate(name, security.categories.as_deref()) {
@@ -613,8 +613,8 @@ pub async fn call_tool_secured<'a>(
 
     // Resolve the execution-time target for target-scoped consent:
     // window_control{close} binds the concrete window id at challenge
-    // time — the active window when `window` is absent, the unique
-    // selector match when present (docs/TOOLS.md — a target change
+    // time - the active window when `window` is absent, the unique
+    // selector match when present (docs/TOOLS.md - a target change
     // between challenge and retry invalidates the token).
     let resolved_target = if name == "window_control"
         && args.get("action").and_then(Value::as_str) == Some("close")
@@ -680,7 +680,7 @@ pub async fn call_tool_secured<'a>(
     // Bind execution to the challenged identity (S-6): substituting the
     // resolved window id for the (possibly absent) selector makes the
     // admin leg take its exact-id path, so a selector that would now
-    // match a different window — or a focus change since the challenge —
+    // match a different window - or a focus change since the challenge -
     // cannot redirect the close.
     if let Some(id) = &resolved_target {
         args.insert("window".into(), Value::String(id.clone()));
@@ -690,16 +690,15 @@ pub async fn call_tool_secured<'a>(
         exec_system_command(&args, &security).await
     } else {
         // `dispatch_secured`, not `call_tool`: the metric sample below is
-        // recorded with the full pipeline latency — routing through
-        // `call_tool` would double-count every secured call — and the
+        // recorded with the full pipeline latency - routing through
+        // `call_tool` would double-count every secured call - and the
         // admin leg must see the security context so `replay_action`
         // re-enters this same gated+audited path for the recorded call.
         dispatch_secured(name, &args, providers, security, session_id, key_id).await
     };
 
-    // Every invocation — gated or not, ok or error — emits one metric
-    // sample and one hash-chained audit record (SECURITY.md "Audit |
-    // Every invocation — accepted or rejected").
+    // Every invocation - gated or not, ok or error - emits one metric
+    // sample and one hash-chained audit record (SECURITY.md "Audit | // Every invocation - accepted or rejected").
     let elapsed = t0.elapsed();
     let outcome = outcome_of(&result);
     record_tool_metric(name, providers, elapsed, outcome);
@@ -719,14 +718,14 @@ pub async fn call_tool_secured<'a>(
     .await;
 
     // Encrypted action history: every replayable invocation appends to
-    // the context-scoped store (meta/history tools excluded — replaying
+    // the context-scoped store (meta/history tools excluded - replaying
     // them is meaningless and recording them is noise). The append does
     // blocking file + crypto work, so it runs on `spawn_blocking`
     // instead of a runtime worker (EFF-1).
     if !admin::is_unrecorded(name, &argsv)
         && let Ok(store) = security.history_arc()
     {
-        // Strip the spent consent token — the store holds replayable
+        // Strip the spent consent token - the store holds replayable
         // args, and a recorded token is dead weight (replay re-challenges
         // anyway).
         let mut recorded = argsv.clone();
@@ -759,16 +758,16 @@ pub async fn call_tool_secured<'a>(
 }
 
 /// Concrete window id for a `window_control{close}` consent binding:
-/// `None` selector → active window; `Some(sel)` → exact id match, else
+/// `None` selector -> active window; `Some(sel)` -> exact id match, else
 /// unique case-insensitive title/class substring (mirrors the admin
 /// leg's selector rules). Unresolvable or ambiguous selectors yield
-/// `None` — dispatch then reports the real error unbound.
+/// `None` - dispatch then reports the real error unbound.
 async fn resolve_close_target(
     window: &dyn WindowProvider,
     selector: Option<&str>,
 ) -> Option<String> {
     // Focused-view-only backend (river): every close targets the focused
-    // view, which cannot be identified further — bind the token to the
+    // view, which cannot be identified further - bind the token to the
     // focused selector itself.
     if let Some(fid) = window.focused_view_selector() {
         return match selector {
@@ -796,17 +795,17 @@ async fn resolve_close_target(
     }
 }
 
-/// First text block of a tool result (or the error line) — the summary
+/// First text block of a tool result (or the error line) - the summary
 /// persisted beside each action-history record. `clipboard_get` is
 /// special-cased: clipboard contents are secrets-adjacent (password
 /// managers copy through the clipboard), so the summary keeps only the
-/// MIME type and payload length — never the payload itself, the same
+/// MIME type and payload length - never the payload itself, the same
 /// threat model as the `type_text`/`clipboard_set` arg redaction.
-/// `plugin_run` — and any plugin-exposed dynamic tool — is also
+/// `plugin_run` - and any plugin-exposed dynamic tool - is also
 /// special-cased: step payloads (which may come from secret-bearing
 /// tools like `clipboard_get`) are never persisted; only the plugin name
 /// and step count are recorded. The check is on the *result shape*
-/// (`{"plugin": …, "steps_run": …}`), not the dispatch name, so exposed
+/// (`{"plugin": ..., "steps_run": ...}`), not the dispatch name, so exposed
 /// tools are covered without a registry lookup on the record path.
 fn result_summary(tool: &str, result: &Result<CallToolResult, ErrorData>) -> String {
     if let Ok(r) = result
@@ -852,8 +851,8 @@ fn result_summary(tool: &str, result: &Result<CallToolResult, ErrorData>) -> Str
     }
 }
 
-/// Real `system_command` exec: whitelist validation → pinned absolute
-/// binary → spawn, 15 s timeout, 64 KiB stdout/stderr truncation
+/// Real `system_command` exec: whitelist validation -> pinned absolute
+/// binary -> spawn, 15 s timeout, 64 KiB stdout/stderr truncation
 /// (docs/TOOLS.md contract). Never reaches a shell.
 async fn exec_system_command(
     args: &Map<String, Value>,
@@ -924,9 +923,9 @@ async fn exec_system_command(
     }
 }
 
-/// `WhitelistError` → the documented JSON-RPC code + `data.kind`
+/// `WhitelistError` -> the documented JSON-RPC code + `data.kind`
 /// (docs/TOOLS.md error taxonomy): not-whitelisted and argument
-/// constraints → `-32003`, path whitelist → `-32004`, sanitization →
+/// constraints -> `-32003`, path whitelist -> `-32004`, sanitization ->
 /// `-32006`.
 fn whitelist_error_data(e: &crate::security::whitelist::WhitelistError) -> ErrorData {
     use crate::security::whitelist::WhitelistError as W;
@@ -1008,7 +1007,7 @@ pub(super) fn invalid_params(message: impl Into<String>) -> ErrorData {
     )
 }
 
-/// `-32010 ProviderUnavailable` — the required backend slot is `None`.
+/// `-32010 ProviderUnavailable` - the required backend slot is `None`.
 pub(super) fn provider_unavailable(provider: &'static str) -> ErrorData {
     ErrorData::new(
         ErrorCode(codes::PROVIDER_UNAVAILABLE),
@@ -1017,7 +1016,7 @@ pub(super) fn provider_unavailable(provider: &'static str) -> ErrorData {
     )
 }
 
-/// `-32006 SanitizationRejected` — argument failed input sanitization.
+/// `-32006 SanitizationRejected` - argument failed input sanitization.
 pub(super) fn sanitization_rejected(message: impl Into<String>) -> ErrorData {
     let message = message.into();
     ErrorData::new(
@@ -1027,7 +1026,7 @@ pub(super) fn sanitization_rejected(message: impl Into<String>) -> ErrorData {
     )
 }
 
-/// `-32016 ElementNotFound` — action-targeted element query matched nothing.
+/// `-32016 ElementNotFound` - action-targeted element query matched nothing.
 pub(super) fn element_not_found(message: impl Into<String>) -> ErrorData {
     let message = message.into();
     ErrorData::new(
@@ -1048,13 +1047,13 @@ pub(super) fn json_result(value: &Value) -> CallToolResult {
     text_result(value.to_string())
 }
 
-/// Tool-level error (`isError: true`) — the call was valid but execution
+/// Tool-level error (`isError: true`) - the call was valid but execution
 /// failed; the caller sees this message.
 pub(super) fn tool_error(message: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message.into())])
 }
 
-/// Backend `anyhow` failure → `isError: true` result (never a JSON-RPC error).
+/// Backend `anyhow` failure -> `isError: true` result (never a JSON-RPC error).
 pub(super) fn backend_error(err: anyhow::Error) -> CallToolResult {
     tool_error(format!("backend error: {err:#}"))
 }
@@ -1073,7 +1072,7 @@ macro_rules! backend {
 }
 pub(crate) use backend;
 
-// --- provider slot accessors (None → -32010 ProviderUnavailable) ---
+// --- provider slot accessors (None -> -32010 ProviderUnavailable) ---
 
 pub(super) fn input_provider(p: &Providers) -> Result<&dyn InputProvider, ErrorData> {
     p.input
@@ -1136,7 +1135,7 @@ pub(super) fn window_json(w: &WindowInfo) -> Value {
     })
 }
 
-/// Base64 (standard alphabet, with padding) — avoids a new dependency for
+/// Base64 (standard alphabet, with padding) - avoids a new dependency for
 /// the `image` content blocks returned by capture tools.
 pub(super) fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1392,7 +1391,7 @@ mod tests {
         let sec = security_in(tmp.path());
         let providers = Providers::all_mocks();
 
-        // Non-destructive tools across categories — previously unaudited.
+        // Non-destructive tools across categories - previously unaudited.
         for (name, a) in [
             ("mouse_click", json!({"x": 1, "y": 2})),
             ("type_text", json!({"text": "hi", "delay_ms": 0})),
@@ -1456,7 +1455,7 @@ mod tests {
         .await
         .unwrap();
         let _ = call_tool_secured(
-            "replay_action", // gated → consent_required, still measured
+            "replay_action", // gated -> consent_required, still measured
             args(json!({"id": "x"})),
             &providers,
             &sec,
@@ -1529,7 +1528,7 @@ mod tests {
 
     #[tokio::test]
     async fn secured_dispatch_accepts_arc_context() {
-        // `&Arc<SecurityContext>` selects SecRef::Shared — the audit
+        // `&Arc<SecurityContext>` selects SecRef::Shared - the audit
         // append runs on `spawn_blocking`, awaited before return.
         let tmp = tempfile::tempdir().unwrap();
         let sec = std::sync::Arc::new(security_in(tmp.path()));
@@ -1681,7 +1680,7 @@ mod tests {
             p.keys.insert("key-1".to_string(), "analyst".to_string());
         });
         let providers = Providers::all_mocks();
-        // key-1 is scoped to the analyst role — type_text is denied.
+        // key-1 is scoped to the analyst role - type_text is denied.
         let err = call_tool_secured(
             "type_text",
             args(json!({"text": "x"})),

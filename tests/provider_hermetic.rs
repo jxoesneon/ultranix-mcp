@@ -1,4 +1,4 @@
-//! Hermetic provider tests — fake `grim`/`slurp`/`hyprctl` executables on a
+//! Hermetic provider tests - fake `grim`/`slurp`/`hyprctl` executables on a
 //! tempdir `PATH` plus a fake Hyprland IPC socket bound under a tempdir
 //! `XDG_RUNTIME_DIR`, so neither the real compositor nor the real binaries
 //! are required.
@@ -9,15 +9,15 @@
 //! `HYPRLAND_INSTANCE_SIGNATURE`, `XDG_RUNTIME_DIR`). Cargo runs all tests
 //! of one integration binary on threads inside a single process, so a test
 //! rewriting `PATH` would race a sibling's `which()`/`find_on_path` probe.
-//! All of them therefore serialize on [`ENV_LOCK`] — the same env_guard
+//! All of them therefore serialize on [`ENV_LOCK`] - the same env_guard
 //! precedent used by the in-process lib tests in `src/security/history.rs`
 //! and `src/state.rs`. `EnvGuard` snapshots each var it touches and restores
 //! it on drop (panic included), and is always declared *after* the lock
 //! guard so the restore still happens under the lock (drops run in reverse
 //! declaration order).
 
-// The env mutex must be held for the *entire* test — including .await
-// points — because PATH/env are process-global and a restore must not
+// The env mutex must be held for the *entire* test - including .await
+// points - because PATH/env are process-global and a restore must not
 // interleave with a sibling's mutation. There is exactly one lock and no
 // awaited code path re-acquires it, so holding a std MutexGuard across
 // awaits cannot deadlock here.
@@ -63,7 +63,7 @@ impl EnvGuard {
 
     fn set(&mut self, key: &'static str, value: impl AsRef<OsStr>) {
         self.remember(key);
-        // SAFETY: serialized by ENV_LOCK — no other thread in this test
+        // SAFETY: serialized by ENV_LOCK - no other thread in this test
         // binary touches the environment while the guard is held.
         unsafe { std::env::set_var(key, value) };
     }
@@ -155,7 +155,7 @@ fn write_exe(dir: &Path, name: &str, body: &str) -> PathBuf {
     path
 }
 
-/// `dir` prepended to the inherited `PATH` — fake binaries win the `which`
+/// `dir` prepended to the inherited `PATH` - fake binaries win the `which`
 /// probe, while script externals (`cat`) still resolve.
 fn path_with(dir: &Path) -> OsString {
     let mut p = OsString::from(dir.as_os_str());
@@ -191,7 +191,7 @@ fn grim_script() -> String {
 }
 
 /// Fake `hyprctl`: `hyprctl -j <sub>` prints `<dir>/reply-<sub>`; any other
-/// argv (`dispatch …`) prints `<dir>/dispatch` and exits 0. A `<dir>/fail`
+/// argv (`dispatch ...`) prints `<dir>/dispatch` and exits 0. A `<dir>/fail`
 /// sentinel forces exit 1 for any call; a missing reply file makes `cat`
 /// exit non-zero, covering the non-zero-exit path too.
 fn hyprctl_script(dir: &Path) -> String {
@@ -209,7 +209,7 @@ fn write_reply(dir: &Path, name: &str, body: &str) {
     std::fs::write(dir.join(format!("reply-{name}")), body).unwrap();
 }
 
-/// `hyprctl -j clients` fixture — same shape as the live capture in
+/// `hyprctl -j clients` fixture - same shape as the live capture in
 /// `src/providers/hyprctl.rs`'s unit tests.
 const CLIENTS: &str = r#"[
     {
@@ -218,7 +218,7 @@ const CLIENTS: &str = r#"[
         "size": [625, 745],
         "workspace": {"id": 2, "name": "2"},
         "class": "kitty",
-        "title": "devin: onboarding",
+        "title": "notes: onboarding",
         "focusHistoryID": 1
     },
     {
@@ -227,7 +227,7 @@ const CLIENTS: &str = r#"[
         "size": [625, 745],
         "workspace": {"id": 2, "name": "2"},
         "class": "kitty",
-        "title": "devin: planning",
+        "title": "notes: planning",
         "focusHistoryID": 0
     }
 ]"#;
@@ -238,7 +238,7 @@ const ACTIVE: &str = r#"{
     "size": [625, 745],
     "workspace": {"id": 2, "name": "2"},
     "class": "kitty",
-    "title": "devin: planning",
+    "title": "notes: planning",
     "focusHistoryID": 0
 }"#;
 
@@ -267,7 +267,7 @@ fn fake_hyprland(listener: UnixListener, replies: HashMap<String, String>) {
         if req == "bye" {
             return;
         }
-        // `HyprctlWindow::new()` probes with a connect-and-drop — an empty
+        // `HyprctlWindow::new()` probes with a connect-and-drop - an empty
         // request. Answer it by closing, and never let a write to an
         // already-dead peer kill the responder loop.
         if req.is_empty() {
@@ -308,7 +308,7 @@ async fn grim_full_capture_returns_real_png() {
     let frame = cap.capture_frame(None).await.unwrap();
     assert_eq!(&frame.png[..4], b"\x89PNG");
     assert_eq!((frame.width, frame.height), (1, 1));
-    // The bytes are the fixture verbatim — a real decode happened.
+    // The bytes are the fixture verbatim - a real decode happened.
     assert_eq!(frame.png, png_1x1());
 }
 
@@ -376,7 +376,7 @@ async fn grim_failure_and_garbage_output_are_errors() {
     let err = cap.capture_frame(None).await.unwrap_err();
     assert!(err.to_string().contains("grim exited"), "{err}");
 
-    // Exit 0 but not a PNG — the decode guard must reject it.
+    // Exit 0 but not a PNG - the decode guard must reject it.
     write_exe(
         dir.path(),
         "grim",
@@ -392,12 +392,12 @@ async fn grim_without_extras_uses_rect_geometry_and_reports_no_cursor() {
     let mut env = EnvGuard::new();
     let dir = tempfile::tempdir().unwrap();
     write_exe(dir.path(), "grim", &grim_script());
-    // PATH is only the tempdir: grim resolves, slurp/hyprctl can't — and
+    // PATH is only the tempdir: grim resolves, slurp/hyprctl can't - and
     // the builtin-only grim script still runs.
     env.set("PATH", dir.path());
 
     let cap = GrimCapture::with_pins(&PinnedBins::resolve()).unwrap();
-    // No slurp → the requested rect goes verbatim to `grim -g`.
+    // No slurp -> the requested rect goes verbatim to `grim -g`.
     let frame = cap
         .capture_frame(Some(Rect {
             x: 1,
@@ -446,13 +446,13 @@ async fn grim_cursor_and_screen_info_via_fake_hyprctl() {
 fn grim_new_returns_none_when_absent_from_path() {
     let _env = env_guard();
     let mut env = EnvGuard::new();
-    let dir = tempfile::tempdir().unwrap(); // empty — no grim anywhere
+    let dir = tempfile::tempdir().unwrap(); // empty - no grim anywhere
     env.set("PATH", dir.path());
     assert!(GrimCapture::with_pins(&PinnedBins::resolve()).is_none());
 }
 
 // ---------------------------------------------------------------------------
-// hyprctl — env probe
+// hyprctl - env probe
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -469,18 +469,18 @@ fn hyprctl_new_requires_instance_signature() {
 fn hyprctl_new_returns_none_without_socket_or_binary() {
     let _env = env_guard();
     let mut env = EnvGuard::new();
-    let bin = tempfile::tempdir().unwrap(); // empty PATH — no hyprctl
-    let rt = tempfile::tempdir().unwrap(); // empty runtime dir — no socket
+    let bin = tempfile::tempdir().unwrap(); // empty PATH - no hyprctl
+    let rt = tempfile::tempdir().unwrap(); // empty runtime dir - no socket
     env.set("HYPRLAND_INSTANCE_SIGNATURE", unique_his());
     env.set("XDG_RUNTIME_DIR", rt.path());
     env.set("PATH", bin.path());
-    // Unique HIS ⇒ /tmp/hypr/<his>/.socket.sock can't exist either —
+    // Unique HIS ⇒ /tmp/hypr/<his>/.socket.sock can't exist either -
     // and the fresh pin set over the empty PATH carries no hyprctl.
     assert!(HyprctlWindow::with_pins(&PinnedBins::resolve()).is_none());
 }
 
 // ---------------------------------------------------------------------------
-// hyprctl — binary transport
+// hyprctl - binary transport
 // ---------------------------------------------------------------------------
 
 /// Set up the `Hyprctl` (binary) transport: a fake `hyprctl` on PATH, a
@@ -538,17 +538,17 @@ async fn hyprctl_binary_transport_error_paths() {
     let rt = tempfile::tempdir().unwrap();
     let w = binary_transport(dir.path(), rt.path(), &mut env);
 
-    // Malformed JSON → parse error.
+    // Malformed JSON -> parse error.
     write_reply(dir.path(), "clients", "not json");
     let err = w.list_windows().await.unwrap_err();
     assert!(err.to_string().contains("bad JSON"), "{err}");
 
-    // Empty reply → explicit bail.
+    // Empty reply -> explicit bail.
     write_reply(dir.path(), "clients", "   ");
     let err = w.list_windows().await.unwrap_err();
     assert!(err.to_string().contains("empty reply"), "{err}");
 
-    // Empty array → Ok(empty).
+    // Empty array -> Ok(empty).
     write_reply(dir.path(), "clients", "[]");
     assert!(w.list_windows().await.unwrap().is_empty());
 
@@ -558,20 +558,20 @@ async fn hyprctl_binary_transport_error_paths() {
         "clients",
         r#"[{"title":"ghost"},{"address":"0x1","at":[0,0],"size":[1,1],"workspace":{"id":1}}]"#,
     );
-    // Second call inside list_windows queries activewindow — give it a
+    // Second call inside list_windows queries activewindow - give it a
     // "nothing focused" payload.
     write_reply(dir.path(), "activewindow", "{}");
     let windows = w.list_windows().await.unwrap();
     assert_eq!(windows.len(), 1);
     assert_eq!(windows[0].id, "0x1");
-    assert!(!windows[0].focused); // focusHistoryID absent → not focused
+    assert!(!windows[0].focused); // focusHistoryID absent -> not focused
 
-    // `activewindow` "{}" / "null" → Ok(None).
+    // `activewindow` "{}" / "null" -> Ok(None).
     assert!(w.active_window().await.unwrap().is_none());
     write_reply(dir.path(), "activewindow", "null");
     assert!(w.active_window().await.unwrap().is_none());
 
-    // Missing reply file → `cat` exits 1 → transport-level error.
+    // Missing reply file -> `cat` exits 1 -> transport-level error.
     std::fs::remove_file(dir.path().join("reply-activewindow")).unwrap();
     let err = w.active_window().await.unwrap_err();
     assert!(err.to_string().contains("failed"), "{err}");
@@ -590,7 +590,7 @@ async fn hyprctl_binary_transport_error_paths() {
 }
 
 // ---------------------------------------------------------------------------
-// hyprctl — socket transport
+// hyprctl - socket transport
 // ---------------------------------------------------------------------------
 
 /// Bind a fake Hyprland IPC socket under `rt`/hypr/<his>/ and point the env
@@ -655,15 +655,15 @@ async fn hyprctl_socket_transport_error_paths() {
     ]);
     let (w, sock, server) = socket_transport(rt.path(), &mut env, replies);
 
-    // Garbage JSON on the socket → parse error.
+    // Garbage JSON on the socket -> parse error.
     let err = w.list_windows().await.unwrap_err();
     assert!(err.to_string().contains("bad JSON"), "{err}");
 
-    // Empty reply → explicit bail.
+    // Empty reply -> explicit bail.
     let err = w.active_window().await.unwrap_err();
     assert!(err.to_string().contains("empty reply"), "{err}");
 
-    // Dispatch reply other than "ok" → compositor error surfaces.
+    // Dispatch reply other than "ok" -> compositor error surfaces.
     let err = w
         .dispatch("focus", "0x55817de410c0", &json!({}))
         .await

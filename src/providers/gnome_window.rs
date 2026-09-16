@@ -1,10 +1,10 @@
-//! GNOME Shell `WindowProvider` — the "Window Calls" extension over the
+//! GNOME Shell `WindowProvider` - the "Window Calls" extension over the
 //! session D-Bus.
 //!
 //! Mutter exposes no public compositor window-management IPC (the
 //! documented GNOME gap), and `org.gnome.Shell`'s `Eval` method is an
 //! arbitrary-JavaScript primitive that is both commonly disabled and a
-//! security hazard — it is deliberately **not** used here. The de-facto
+//! security hazard - it is deliberately **not**used here. The de-facto
 //! standard bridge is the community "Window Calls" Shell extension
 //! (<https://github.com/ickyicky/window-calls>, EGO extension 4724,
 //! <https://extensions.gnome.org/extension/4724/window-calls/>), which
@@ -19,12 +19,12 @@
 //! When the extension is absent the constructor probe declines and the
 //! ladder falls through to the next rung (or `ProviderUnavailable`).
 //!
-//! `List()` returns a JSON array — per the extension source the fields
+//! `List()` returns a JSON array - per the extension source the fields
 //! are `id` (u32), `title`, `wm_class`, `wm_class_instance`, `pid`,
 //! `frame_type`, `window_type`, `x`, `y`, `width`, `height`, `focus`
 //! (bool), `in_current_workspace` (bool) and `workspace` (i32 index,
 //! `-1` for sticky/all-workspace windows); `monitor` appears on some
-//! versions. All fields are parsed defensively — extras are ignored,
+//! versions. All fields are parsed defensively - extras are ignored,
 //! missing ones default.
 //!
 //! Dispatch mapping (all verified against the extension's
@@ -50,19 +50,19 @@
 //!
 //! Semantics notes (honest mappings):
 //!
-//! * `WindowInfo.id` is the decimal meta-window id (`u32`) — the same
+//! * `WindowInfo.id` is the decimal meta-window id (`u32`) - the same
 //!   id every method takes as `winid`.
 //! * `Activate` raises the window on its workspace and switches to that
 //!   workspace (extension calls `workspace.activate_with_focus`).
 //! * `Move`/`Resize`/`MoveResize` silently unmaximize first (extension
-//!   behavior); GNOME has no floating/tiled distinction — `floating`
+//!   behavior); GNOME has no floating/tiled distinction - `floating`
 //!   reports `None`. `fullscreen` also reports `None`: `List()` does
 //!   not carry it (`Details(winid)` does, but per-window calls would
-//!   make `list_windows` O(N) round-trips — not worth it).
+//!   make `list_windows` O(N) round-trips - not worth it).
 //! * Relative ops (`dx,dy`/`dw,dh`) anchor on the live `List()`
 //!   geometry, mirroring `sway_window`.
-//! * Everything else — `Details`, `GetTitle`, `GetFrameRect`,
-//!   `GetFrameBounds` — is reachable on the bus but unused; the trait
+//! * Everything else - `Details`, `GetTitle`, `GetFrameRect`,
+//!   `GetFrameBounds` - is reachable on the bus but unused; the trait
 //!   surface needs none of them.
 
 use std::future::Future;
@@ -82,9 +82,9 @@ const WINDOWS_PATH: &str = "/org/gnome/Shell/Extensions/Windows";
 const WINDOWS_IFACE: &str = "org.gnome.Shell.Extensions.Windows";
 const INTROSPECT_IFACE: &str = "org.freedesktop.DBus.Introspectable";
 
-/// Per-call D-Bus budget — a wedged shell must not hang a tool call.
+/// Per-call D-Bus budget - a wedged shell must not hang a tool call.
 const CALL_TIMEOUT: Duration = Duration::from_secs(2);
-/// Bound on the `List()` JSON reply — a few hundred windows serialize
+/// Bound on the `List()` JSON reply - a few hundred windows serialize
 /// to tens of KiB; the cap mirrors wayfire's 1 MiB reply bound so a
 /// hostile/buggy extension can't hand back an unbounded string.
 const MAX_LIST_BYTES: usize = 1024 * 1024;
@@ -97,7 +97,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// GNOME Shell window provider driven by the Window Calls D-Bus object.
 ///
 /// Like [`crate::providers::atspi::AtspiUi`], the `zbus::Connection`
-/// binds to the ambient tokio runtime — `new()` only *probes* (on a
+/// binds to the ambient tokio runtime - `new()` only *probes* (on a
 /// private thread), and the real connection is established lazily on
 /// first use.
 pub struct GnomeShellWindow {
@@ -113,7 +113,7 @@ const _: () = {
 impl GnomeShellWindow {
     /// Probe only: `Some` when the session bus is up and the Window
     /// Calls object introspects to `org.gnome.Shell.Extensions.Windows`
-    /// (i.e. the extension is installed *and* enabled — a disabled
+    /// (i.e. the extension is installed *and* enabled - a disabled
     /// extension unexports its object). No extension method is invoked.
     pub fn new() -> Option<Self> {
         if !windows_iface_present() {
@@ -125,7 +125,7 @@ impl GnomeShellWindow {
         })
     }
 
-    /// Construct on a pre-built connection — the test seam for faking
+    /// Construct on a pre-built connection - the test seam for faking
     /// the bus and a hook for embedders that already hold one. Skips
     /// the probe; calls surface whatever the connection yields.
     pub fn with_connection(conn: zbus::Connection) -> Self {
@@ -145,7 +145,7 @@ impl GnomeShellWindow {
     }
 
     /// One method call on the extension object; error replies surface
-    /// as `Err` (unknown `winid` included — the extension throws).
+    /// as `Err` (unknown `winid` included - the extension throws).
     async fn call<B>(&self, method: &'static str, body: &B) -> Result<()>
     where
         B: serde::ser::Serialize + zvariant::DynamicType + Sync,
@@ -163,7 +163,7 @@ impl GnomeShellWindow {
         Ok(())
     }
 
-    /// `List()` → raw JSON string.
+    /// `List()` -> raw JSON string.
     async fn list_json(&self) -> Result<String> {
         let conn = self.conn().await?;
         let reply = wc_call(conn.call_method(
@@ -188,7 +188,7 @@ impl GnomeShellWindow {
         Ok(body)
     }
 
-    /// Live rect of `winid` — the anchor for relative `dx,dy`/`dw,dh`
+    /// Live rect of `winid` - the anchor for relative `dx,dy`/`dw,dh`
     /// ops. `Err` when the id left the window list.
     async fn rect_of(&self, winid: u32) -> Result<Rect> {
         let json = self.list_json().await?;
@@ -224,7 +224,7 @@ impl WindowProvider for GnomeShellWindow {
 
     async fn dispatch(&self, action: &str, window_id: &str, args: &Value) -> Result<()> {
         let winid = parse_winid(window_id)?;
-        // Relative ops anchor on live geometry — fetched lazily so the
+        // Relative ops anchor on live geometry - fetched lazily so the
         // common paths stay single-call.
         let rect = if needs_rect(action, args) {
             Some(self.rect_of(winid).await?)
@@ -254,12 +254,12 @@ where
 }
 
 /// `true` when the extension object exists and advertises
-/// [`WINDOWS_IFACE`]. Runs on a private thread + throwaway runtime —
+/// [`WINDOWS_IFACE`]. Runs on a private thread + throwaway runtime -
 /// like `portal_name_owned`, a `zbus::Connection` made here would bind
 /// to a dead runtime and could not be reused anyway. One `Introspect`
 /// call covers every absence shape: no session bus, `org.gnome.Shell`
 /// unowned (non-GNOME session), or object not exported (extension not
-/// installed/enabled) — all surface as call errors or missing-XML.
+/// installed/enabled) - all surface as call errors or missing-XML.
 fn windows_iface_present() -> bool {
     std::thread::spawn(|| {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -297,7 +297,7 @@ fn windows_iface_present() -> bool {
 
 /// Parse a `List()` JSON payload into window records. Non-array input
 /// is an error (a violated contract, not an empty session); array
-/// entries missing `id` are skipped — every D-Bus op keys on it, so an
+/// entries missing `id` are skipped - every D-Bus op keys on it, so an
 /// id-less record is dead weight. Everything else defaults.
 fn parse_window_list(json: &str) -> Result<Vec<WindowInfo>> {
     let v: Value = serde_json::from_str(json).context("gnome-shell: bad List JSON")?;
@@ -307,7 +307,7 @@ fn parse_window_list(json: &str) -> Result<Vec<WindowInfo>> {
     Ok(arr.iter().filter_map(entry_to_info).collect())
 }
 
-/// One `List()` entry → [`WindowInfo`]. `id` is required; `class` is
+/// One `List()` entry -> [`WindowInfo`]. `id` is required; `class` is
 /// `wm_class` with the `wm_class_instance` fallback.
 fn entry_to_info(w: &Value) -> Option<WindowInfo> {
     let id = w.get("id").and_then(Value::as_u64)?;
@@ -325,7 +325,7 @@ fn entry_to_info(w: &Value) -> Option<WindowInfo> {
             .or_else(|| w.get("wm_class_instance").and_then(Value::as_str))
             .unwrap_or_default()
             .to_string(),
-        // `-1` marks sticky (all-workspaces) windows — the extension
+        // `-1` marks sticky (all-workspaces) windows - the extension
         // reports the same sentinel when `get_workspace()` yields null.
         workspace: w.get("workspace").and_then(Value::as_i64).unwrap_or(-1) as i32,
         rect: Rect {
@@ -335,7 +335,7 @@ fn entry_to_info(w: &Value) -> Option<WindowInfo> {
             h: i64_at("height"),
         },
         focused: w.get("focus").and_then(Value::as_bool).unwrap_or(false),
-        // Neither is in the List() payload — see module docs.
+        // Neither is in the List() payload - see module docs.
         floating: None,
         fullscreen: None,
         pid: w.get("pid").and_then(Value::as_i64),
@@ -345,32 +345,32 @@ fn entry_to_info(w: &Value) -> Option<WindowInfo> {
 
 // ---------- dispatch mapping ----------
 
-/// A fully-planned extension call — the unit-testable output of
+/// A fully-planned extension call - the unit-testable output of
 /// [`action_plan`]. Tuple bodies serialize as a top-level D-Bus
 /// structure (`(u,i,i)`), which GIO receivers treat identically to
-/// bare multi-arg bodies — the same convention `portal_input` uses.
+/// bare multi-arg bodies - the same convention `portal_input` uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Call {
     /// `(u)` methods: `Activate`, `Close`, `Minimize`, `Unminimize`,
     /// `Maximize`, `Unmaximize`, `MakeFullscreen`, `MakeAbove`,
     /// `UnmakeAbove`.
     Unary(&'static str, u32),
-    /// `Move(u, i, i)` — absolute position.
+    /// `Move(u, i, i)` - absolute position.
     Move(u32, i32, i32),
-    /// `Resize(u, u, u)` — width, height.
+    /// `Resize(u, u, u)` - width, height.
     Resize(u32, u32, u32),
-    /// `MoveResize(u, i, i, u, u)` — absolute position + size.
+    /// `MoveResize(u, i, i, u, u)` - absolute position + size.
     MoveResize(u32, i32, i32, u32, u32),
-    /// `MoveToWorkspace(u, u)` — workspace index.
+    /// `MoveToWorkspace(u, u)` - workspace index.
     ToWorkspace(u32, u32),
 }
 
 /// Window ids are decimal u32 (`MetaWindow::get_id`); restricting to
-/// ASCII digits keeps the id a single typed arg — there is no string
+/// ASCII digits keeps the id a single typed arg - there is no string
 /// interpolation anywhere in this backend.
 fn parse_winid(id: &str) -> Result<u32> {
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
-        bail!("gnome-shell: invalid window id '{id}' — window ids are decimal")
+        bail!("gnome-shell: invalid window id '{id}' - window ids are decimal")
     }
     id.parse()
         .map_err(|_| anyhow!("gnome-shell: window id '{id}' out of range (u32)"))
@@ -380,7 +380,7 @@ fn arg_i64(args: &Value, key: &str) -> Option<i64> {
     args.get(key)?.as_i64()
 }
 
-/// `true` when the action plan needs the window's live rect — relative
+/// `true` when the action plan needs the window's live rect - relative
 /// `move`/`resize` forms only.
 fn needs_rect(action: &str, args: &Value) -> bool {
     match action {
@@ -393,7 +393,7 @@ fn needs_rect(action: &str, args: &Value) -> bool {
     }
 }
 
-/// Map a dispatch action onto the planned extension call. Closed set —
+/// Map a dispatch action onto the planned extension call. Closed set -
 /// every other action bails.
 fn action_plan(action: &str, winid: u32, args: &Value, rect: Option<Rect>) -> Result<Call> {
     let plan = match action {
@@ -447,7 +447,7 @@ fn action_plan(action: &str, winid: u32, args: &Value, rect: Option<Rect>) -> Re
             } else if let (Some(w), Some(h)) = (arg_i64(args, "w"), arg_i64(args, "h")) {
                 Call::Resize(winid, to_u32(w, "w")?, to_u32(h, "h")?)
             } else {
-                // Relative resize — the extension takes absolute sizes
+                // Relative resize - the extension takes absolute sizes
                 // only, so anchor on live geometry like sway_window.
                 let dw = arg_i64(args, "dw").unwrap_or(0);
                 let dh = arg_i64(args, "dh").unwrap_or(0);
@@ -494,7 +494,7 @@ mod tests {
             "id": 1610090767,
             "frame_type": 0,
             "window_type": 0,
-            "title": "ultranix — GitHub",
+            "title": "ultranix - GitHub",
             "x": 10,
             "y": 50,
             "width": 1910,
@@ -526,7 +526,7 @@ mod tests {
         assert_eq!(wins.len(), 2);
         let w = &wins[0];
         assert_eq!(w.id, "1610090767");
-        assert_eq!(w.title, "ultranix — GitHub");
+        assert_eq!(w.title, "ultranix - GitHub");
         assert_eq!(w.class, "Firefox");
         assert_eq!(w.workspace, 0);
         assert_eq!(
@@ -704,7 +704,7 @@ mod tests {
     }
 
     /// The tuple bodies the extension expects serialize to top-level
-    /// D-Bus structure signatures — verified here so a zbus behavior
+    /// D-Bus structure signatures - verified here so a zbus behavior
     /// change can't silently break the wire format.
     #[test]
     fn call_wire_signatures() {

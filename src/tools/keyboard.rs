@@ -1,4 +1,4 @@
-//! Keyboard tools (2) — `InputProvider` injection with focus safety.
+//! Keyboard tools (2) - `InputProvider` injection with focus safety.
 //! Key names follow XKB keysym spelling (case-insensitive).
 
 use std::time::Duration;
@@ -15,7 +15,7 @@ use super::{
 use crate::providers::Providers;
 
 /// XKB keysym names accepted in addition to any single printable character
-/// and `F1`–`F24` (matched case-insensitively).
+/// and `F1`-`F24` (matched case-insensitively).
 const KNOWN_KEYSYMS: &[&str] = &[
     "return",
     "escape",
@@ -100,7 +100,7 @@ enum KeyAction {
 }
 
 /// Canonical modifier order is the enum declaration order
-/// (ctrl, shift, alt, super) — `Ord` sorts into it.
+/// (ctrl, shift, alt, super) - `Ord` sorts into it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum Modifier {
@@ -172,7 +172,7 @@ pub(super) async fn dispatch(
 }
 
 /// Snapshot of the focused window id, when a `WindowProvider` is present.
-/// Focus-safety failures are non-fatal to the snapshot itself — a missing
+/// Focus-safety failures are non-fatal to the snapshot itself - a missing
 /// provider simply disables the check.
 async fn focused_window_id(providers: &Providers) -> Option<String> {
     let window = providers.window.as_deref()?;

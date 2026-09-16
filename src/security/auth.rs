@@ -1,32 +1,32 @@
-//! API-key authentication for the streamable-HTTP transport —
+//! API-key authentication for the streamable-HTTP transport -
 //! docs/API_KEY_MANAGEMENT.md and SECURITY.md "Request pipeline" layer 1.
 //!
-//! Keys are `uxcp_<64 lowercase hex>` — 32 CSPRNG bytes (256 bits of
+//! Keys are `uxcp_<64 lowercase hex>` - 32 CSPRNG bytes (256 bits of
 //! entropy). Only SHA-256 digests are held in memory; presented
 //! credentials are hashed and compared in constant time, and no
-//! plaintext key is ever logged or persisted. The `key_id` — the first
-//! 8 hex chars of the SHA-256 digest — is the only identifier that may
+//! plaintext key is ever logged or persisted. The `key_id` - the first
+//! 8 hex chars of the SHA-256 digest - is the only identifier that may
 //! appear in logs and audit records.
 //!
 //! Sourcing precedence (first *configured* source wins; a shadowed
 //! lower-precedence source is warned about):
 //!
-//! 1. `ULTRANIX_MCP_API_KEY` — single key or comma-separated list, with
+//! 1. `ULTRANIX_MCP_API_KEY` - single key or comma-separated list, with
 //!    optional positionally-aligned `ULTRANIX_MCP_API_KEY_EXPIRES`
 //!    (RFC 3339 timestamps, empty entries = no expiry).
-//! 2. `ULTRANIX_MCP_API_KEY_FILE` — path to a key file; mode `0600`
-//!    enforced — a group/world-readable file refuses to load.
-//! 3. `<state_root>/api-keys/*.json` — convention fallback; same `0600`
+//! 2. `ULTRANIX_MCP_API_KEY_FILE` - path to a key file; mode `0600`
+//!    enforced - a group/world-readable file refuses to load.
+//! 3. `<state_root>/api-keys/*.json` - convention fallback; same `0600`
 //!    requirement per file.
 //!
-//! Key files accept either JSON — a single record object or an array of
-//! `{"key": "uxcp_…", "key_id"?: "…", "expires_at"?: "<RFC 3339>",
-//! "scopes"?: ["…"]}` — or a line format of
+//! Key files accept either JSON - a single record object or an array of
+//! `{"key": "uxcp_...", "key_id"?: "...", "expires_at"?: "<RFC 3339>",
+//! "scopes"?: ["..."]}` - or a line format of
 //! `key [expires=<RFC 3339>] [key_id=<id>] [scopes=a,b]` with `#`
 //! comments and blank lines allowed.
 //!
 //! Failure posture is fail-closed: with [`AuthMode::Required`] and no
-//! configured keys every request is rejected — there is no bootstrap or
+//! configured keys every request is rejected - there is no bootstrap or
 //! dev key, ever. `ULTRANIX_MCP_DISABLE_AUTH=true` is the single escape
 //! hatch ([`AuthMode::Disabled`]) and is for loopback development only;
 //! enabling it prints a loud stderr warning on every boot.
@@ -44,9 +44,9 @@ use sha2::{Digest, Sha256};
 
 use crate::state::StateDir;
 
-/// Fixed key prefix — "ultranix control plane" (API_KEY_MANAGEMENT.md §1).
+/// Fixed key prefix - "ultranix control plane" (API_KEY_MANAGEMENT.md §1).
 pub const KEY_PREFIX: &str = "uxcp_";
-/// Hex characters after the prefix: 32 CSPRNG bytes → 64 lowercase hex.
+/// Hex characters after the prefix: 32 CSPRNG bytes -> 64 lowercase hex.
 pub const KEY_HEX_LEN: usize = 64;
 
 /// Single key or comma-separated list (rotation overlap), env source.
@@ -65,25 +65,25 @@ pub const KEY_DIR_NAME: &str = "api-keys";
 pub enum AuthMode {
     /// A valid key is required on every HTTP request.
     Required,
-    /// `ULTRANIX_MCP_DISABLE_AUTH=true` — every request passes. Loopback
+    /// `ULTRANIX_MCP_DISABLE_AUTH=true` - every request passes. Loopback
     /// development only: anyone who can reach `:3010` controls the
     /// session's mouse and keyboard.
     Disabled,
 }
 
-/// Identity of an authenticated caller. Contains no key material — only
+/// Identity of an authenticated caller. Contains no key material - only
 /// the `key_id` (first 8 hex chars of SHA-256(key)) which is safe to log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyIdentity {
     /// Rate-limit/audit identity of the presenting key. `None` only under
-    /// [`AuthMode::Disabled`] — the middleware should then fall back to
+    /// [`AuthMode::Disabled`] - the middleware should then fall back to
     /// the remote socket address (API_KEY_MANAGEMENT.md §5).
     pub key_id: Option<String>,
     /// Scopes declared by the key record; empty means unrestricted.
     pub scopes: Vec<String>,
 }
 
-/// Why a request failed authentication — distinct enough for the
+/// Why a request failed authentication - distinct enough for the
 /// `auth.failure{reason}` / `auth.expired_key` audit split
 /// (API_KEY_MANAGEMENT.md §9).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,7 +96,7 @@ pub enum AuthFailure {
     Unknown,
     /// Valid, configured key presented past its `expires_at`.
     Expired {
-        /// The expired key's `key_id` — safe to log.
+        /// The expired key's `key_id` - safe to log.
         key_id: String,
         /// The expiry that was exceeded.
         expires_at: DateTime<Utc>,
@@ -134,12 +134,12 @@ impl std::fmt::Display for AuthFailure {
 /// overlap window stamped on the retired keys.
 #[derive(Debug, Clone)]
 pub struct RotationResult {
-    /// The freshly generated plaintext key — the only place plaintext
+    /// The freshly generated plaintext key - the only place plaintext
     /// key material leaves the store. Show it once, then discard.
     pub new_key: String,
     /// `key_id` of the new key (safe to log).
     pub new_key_id: String,
-    /// Expiry stamped on every previously-held key — the end of the
+    /// Expiry stamped on every previously-held key - the end of the
     /// zero-downtime overlap window.
     pub old_keys_expire_at: DateTime<Utc>,
 }
@@ -165,7 +165,7 @@ struct StoredKey {
     scopes: Vec<String>,
 }
 
-/// The on-disk JSON record shape — a single object or an array of these.
+/// The on-disk JSON record shape - a single object or an array of these.
 #[derive(Debug, Deserialize)]
 struct JsonKeyRecord {
     key: String,
@@ -183,7 +183,7 @@ struct JsonKeyRecord {
 #[derive(Debug)]
 pub struct ApiKeyStore {
     mode: AuthMode,
-    /// Includes expired-but-loaded records — they still produce the
+    /// Includes expired-but-loaded records - they still produce the
     /// distinct `auth.expired_key` failure rather than `unknown`.
     keys: Vec<StoredKey>,
 }
@@ -193,7 +193,7 @@ impl ApiKeyStore {
     /// key dir under [`StateDir::resolve_root`].
     ///
     /// Errors are hard startup failures (unreadable key file, loose
-    /// permissions, malformed JSON) — the caller should refuse to bind
+    /// permissions, malformed JSON) - the caller should refuse to bind
     /// the HTTP listener. An empty-but-valid load is *not* an error:
     /// fail-closed rejection happens per-request in [`Self::authenticate`].
     pub fn from_env() -> anyhow::Result<Self> {
@@ -212,14 +212,14 @@ impl ApiKeyStore {
             _ => AuthMode::Required,
         };
         if mode == AuthMode::Disabled {
-            // Spec demands a loud stderr warning, not just tracing — the
+            // Spec demands a loud stderr warning, not just tracing - the
             // harness may not have initialized a subscriber yet.
             eprintln!(
-                "*** ultranix-mcp: {ENV_DISABLE_AUTH} is set — HTTP API-key auth is DISABLED. \
+                "***ultranix-mcp: {ENV_DISABLE_AUTH} is set - HTTP API-key auth is DISABLED. \
                  Anyone who can reach the HTTP listener can drive this desktop. \
                  Loopback development only. ***"
             );
-            tracing::warn!("auth.disabled: {ENV_DISABLE_AUTH} set — HTTP auth off (dev hatch)");
+            tracing::warn!("auth.disabled: {ENV_DISABLE_AUTH} set - HTTP auth off (dev hatch)");
         }
 
         let key_dir = state_root.join(KEY_DIR_NAME);
@@ -230,7 +230,7 @@ impl ApiKeyStore {
         let raw: Vec<RawRecord> = if let Some(v) = env_val {
             if file_val.is_some() || dir_present {
                 tracing::warn!(
-                    "config.key.shadowed: {ENV_API_KEY} set — \
+                    "config.key.shadowed: {ENV_API_KEY} set - \
                      {ENV_API_KEY_FILE} and {} are ignored",
                     key_dir.display()
                 );
@@ -240,7 +240,7 @@ impl ApiKeyStore {
         } else if let Some(path) = file_val {
             if dir_present {
                 tracing::warn!(
-                    "config.key.shadowed: {ENV_API_KEY_FILE} set — {} is ignored",
+                    "config.key.shadowed: {ENV_API_KEY_FILE} set - {} is ignored",
                     key_dir.display()
                 );
             }
@@ -264,7 +264,7 @@ impl ApiKeyStore {
         );
         if mode == AuthMode::Required && active.is_empty() {
             tracing::warn!(
-                "no active API keys configured — HTTP transport will reject \
+                "no active API keys configured - HTTP transport will reject \
                  every request (fail closed); set {ENV_API_KEY} or generate \
                  a key with `ultranix-mcp keygen`"
             );
@@ -277,7 +277,7 @@ impl ApiKeyStore {
         self.mode
     }
 
-    /// `true` under [`AuthMode::Disabled`] — the dev escape hatch.
+    /// `true` under [`AuthMode::Disabled`] - the dev escape hatch.
     pub fn is_disabled(&self) -> bool {
         self.mode == AuthMode::Disabled
     }
@@ -292,7 +292,7 @@ impl ApiKeyStore {
         self.keys.is_empty()
     }
 
-    /// `key_id`s of the currently valid keys — for the `auth.keys.loaded`
+    /// `key_id`s of the currently valid keys - for the `auth.keys.loaded`
     /// audit event. Safe to log: these are hash prefixes, not key material.
     pub fn active_key_ids(&self) -> Vec<String> {
         let now = Utc::now();
@@ -303,7 +303,7 @@ impl ApiKeyStore {
             .collect()
     }
 
-    /// `key_id`s of expired-but-loaded keys — reported separately by
+    /// `key_id`s of expired-but-loaded keys - reported separately by
     /// `auth.keys.loaded` (API_KEY_MANAGEMENT.md §6).
     pub fn expired_key_ids(&self) -> Vec<String> {
         let now = Utc::now();
@@ -316,10 +316,10 @@ impl ApiKeyStore {
 
     /// Authenticate one HTTP request. `header_key` is the `X-API-Key`
     /// header value (canonical); `bearer` is the `Authorization` header
-    /// value — either the raw `Bearer <token>` form (case-insensitive
+    /// value - either the raw `Bearer <token>` form (case-insensitive
     /// scheme) or the bare token. A non-empty `header_key` wins when both
     /// are present. Returns `Some(identity)` on success, `None` on any
-    /// failure — use [`Self::authenticate_verbose`] when the caller needs
+    /// failure - use [`Self::authenticate_verbose`] when the caller needs
     /// the failure reason for `auth.failure`/`auth.expired_key` audits.
     ///
     /// Under [`AuthMode::Disabled`] every request succeeds with
@@ -404,7 +404,7 @@ impl ApiKeyStore {
     }
 }
 
-/// Generate a fresh `uxcp_<64 lowercase hex>` key — 32 bytes from the OS
+/// Generate a fresh `uxcp_<64 lowercase hex>` key - 32 bytes from the OS
 /// CSPRNG (256 bits). For the `ultranix-mcp keygen` CLI subcommand; the
 /// equivalent shell is `echo "uxcp_$(openssl rand -hex 32)"`
 /// (API_KEY_MANAGEMENT.md §2).
@@ -422,7 +422,7 @@ pub fn key_id(key: &str) -> String {
 }
 
 /// Format check: `^uxcp_[0-9a-f]{64}$`. Format validity says nothing
-/// about whether the key is configured — that is what
+/// about whether the key is configured - that is what
 /// [`ApiKeyStore::authenticate`] is for.
 pub fn is_valid_key(key: &str) -> bool {
     let Some(hex) = key.strip_prefix(KEY_PREFIX) else {
@@ -444,7 +444,7 @@ fn extract_credential<'a>(header_key: Option<&'a str>, bearer: Option<&'a str>) 
     }
     let b = bearer?.trim();
     // Strip a `Bearer` scheme (case-insensitive) only when it stands
-    // alone or is followed by whitespace — `bearerxyz` is a (malformed)
+    // alone or is followed by whitespace - `bearerxyz` is a (malformed)
     // token, not a scheme. A scheme with no token after it is `Missing`.
     let token = match b.get(..6) {
         Some(scheme) if scheme.eq_ignore_ascii_case("bearer") => {
@@ -483,7 +483,7 @@ fn parse_env_records(list: &str, expires_list: Option<&str>) -> Vec<RawRecord> {
                             Some(t) => Some(t),
                             None => {
                                 tracing::warn!(
-                                    "{ENV_API_KEY_EXPIRES}: entry {e:?} is not RFC 3339 — \
+                                    "{ENV_API_KEY_EXPIRES}: entry {e:?} is not RFC 3339 - \
                                      treated as no expiry"
                                 );
                                 None
@@ -506,7 +506,7 @@ fn parse_env_records(list: &str, expires_list: Option<&str>) -> Vec<RawRecord> {
         .collect()
 }
 
-/// Read and parse one key file. Mode `0600` (or stricter — anything
+/// Read and parse one key file. Mode `0600` (or stricter - anything
 /// without group/other bits) is enforced before reading: a
 /// group/world-readable key file is a hard startup failure per
 /// API_KEY_MANAGEMENT.md §3.
@@ -546,7 +546,7 @@ fn dir_has_json(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Dispatch on content shape: `{`/`[` → JSON record(s); otherwise the
+/// Dispatch on content shape: `{`/`[` -> JSON record(s); otherwise the
 /// line format.
 fn parse_key_records(content: &str, source: &Path) -> anyhow::Result<Vec<RawRecord>> {
     let t = content.trim_start();
@@ -619,7 +619,7 @@ fn parse_line_records(content: &str, source: &Path) -> Vec<RawRecord> {
                 Some(("expires", v)) => match parse_rfc3339(v) {
                     Some(t) => rec.expires_at = Some(t),
                     None => tracing::warn!(
-                        "{}:{}: bad expires= timestamp {v:?} — treated as no expiry",
+                        "{}:{}: bad expires= timestamp {v:?} - treated as no expiry",
                         source.display(),
                         lineno + 1
                     ),
@@ -652,7 +652,7 @@ fn parse_rfc3339(s: &str) -> Option<DateTime<Utc>> {
 }
 
 /// Validate format, dedup, hash, and fold declared metadata into the
-/// in-memory key set. Malformed entries are skipped with a warning — a
+/// in-memory key set. Malformed entries are skipped with a warning - a
 /// bad line must not silently widen the accepted set, but one typo
 /// should not discard the other keys either.
 fn records_to_keys(records: Vec<RawRecord>) -> Vec<StoredKey> {
@@ -679,7 +679,7 @@ fn records_to_keys(records: Vec<RawRecord>) -> Vec<StoredKey> {
             tracing::warn!(
                 declared = %declared,
                 computed = %computed,
-                "auth.keys.load: record key_id mismatch — using computed id"
+                "auth.keys.load: record key_id mismatch - using computed id"
             );
         }
         out.push(StoredKey {
@@ -692,14 +692,14 @@ fn records_to_keys(records: Vec<RawRecord>) -> Vec<StoredKey> {
     out
 }
 
-/// SHA-256 of a presented/stored key — the only form held in memory.
+/// SHA-256 of a presented/stored key - the only form held in memory.
 fn sha256_bytes(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
 /// Constant-time equality over fixed-length digests: XOR-fold with no
 /// early exit, so neither match position nor prefix length leaks through
-/// timing. (No `subtle` dep — documented per the security design; the
+/// timing. (No `subtle` dep - documented per the security design; the
 /// inputs are always exactly 32-byte SHA-256 digests.)
 fn ct_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
     let mut diff = 0u8;
@@ -718,7 +718,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 /// Refuse to read a credential file whose mode grants group/other any
-/// bits — the shared `0600` rule reused by `history.key` (S-8).
+/// bits - the shared `0600` rule reused by `history.key` (S-8).
 #[cfg(unix)]
 pub(crate) fn enforce_private_file(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -729,7 +729,7 @@ pub(crate) fn enforce_private_file(path: &Path) -> anyhow::Result<()> {
         & 0o777;
     if mode & 0o077 != 0 {
         bail!(
-            "key file {} is group/world-readable (mode {mode:04o}) — \
+            "key file {} is group/world-readable (mode {mode:04o}) - \
              chmod 0600 required, refusing to load",
             path.display()
         );
@@ -739,7 +739,7 @@ pub(crate) fn enforce_private_file(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(not(unix))]
 pub(crate) fn enforce_private_file(_path: &Path) -> anyhow::Result<()> {
-    // No portable mode bits — Linux-only crate, kept for check builds.
+    // No portable mode bits - Linux-only crate, kept for check builds.
     Ok(())
 }
 
@@ -858,7 +858,7 @@ mod tests {
             &[(ENV_API_KEY, &test_key(1)), (ENV_API_KEY_FILE, &kf)],
             tmp.path(),
         );
-        // Only the env key works — lower-precedence sources are shadowed.
+        // Only the env key works - lower-precedence sources are shadowed.
         assert!(store.authenticate(Some(&test_key(1)), None).is_some());
         assert!(store.authenticate(Some(&test_key(2)), None).is_none());
         assert!(store.authenticate(Some(&test_key(3)), None).is_none());
@@ -1134,7 +1134,7 @@ mod tests {
             store.authenticate_verbose(Some("not-a-key"), None),
             Err(AuthFailure::Malformed)
         );
-        // A *different* valid-format key is "unknown", not "malformed" —
+        // A *different* valid-format key is "unknown", not "malformed" -
         // and flipping one hex digit must not pass (constant-time compare
         // only ever returns true on a full match).
         let mut near_miss = test_key(80);
@@ -1256,7 +1256,7 @@ mod tests {
         let p = f.to_string_lossy().into_owned();
         let mut store = load_with(&[(ENV_API_KEY_FILE, &p)], tmp.path());
         let res = store.rotate(Duration::from_secs(3600));
-        // Already-expired key keeps its past expiry — rotate cannot
+        // Already-expired key keeps its past expiry - rotate cannot
         // resurrect it.
         assert!(store.authenticate(Some(&test_key(98)), None).is_none());
         assert!(res.old_keys_expire_at > Utc::now());

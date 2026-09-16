@@ -3,7 +3,7 @@ pkgname=ultranix-mcp-bin
 _pkgname=ultranix-mcp
 pkgver=1.4.0
 pkgrel=1
-pkgdesc="Wayland-native, security-first MCP server for Linux desktop automation (Hyprland-first, with sway/KDE fallbacks and clipboard tools) — prebuilt binary"
+pkgdesc="Wayland-native, security-first MCP server for Linux desktop automation (Hyprland-first, with sway/KDE fallbacks and clipboard tools) - prebuilt binary"
 arch=('x86_64')
 url="https://github.com/jxoesneon/ultranix-mcp"
 license=('ISC')
@@ -28,7 +28,7 @@ optdepends=(
   'xclip: X11 clipboard tool used by the clipboard backend'
   'xsel: X11 clipboard clear helper used by the clipboard backend'
   'kdotool: KDE KWin window-management helper'
-  'river: riverctl for the river window rung (focused-view window_control only — no list IPC) — v1.4.0+'
+  'river: riverctl for the river window rung (focused-view window_control only - no list IPC) - v1.4.0+'
   'xorg-xrandr: X11 output-geometry enrichment for the capture backend (X11 sessions only)'
   'xorg-xprop: X11 _NET_WM_STATE enrichment for the window backend (X11 sessions only)'
 )
@@ -36,10 +36,10 @@ provides=('ultranix-mcp')
 conflicts=('ultranix-mcp' 'ultranix-mcp-git')
 install=ultranix-mcp-bin.install
 # Prebuilt release tarball attached to the GitHub release by
-# .github/workflows/release.yml (x86_64-unknown-linux-gnu only — there is
+# .github/workflows/release.yml (x86_64-unknown-linux-gnu only - there is
 # no aarch64 release asset yet, hence the single-arch source).
 source_x86_64=("${_pkgname}-${pkgver}-x86_64-unknown-linux-gnu.tar.gz::${url}/releases/download/v${pkgver}/${_pkgname}-${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
-# Regenerate with `updpkgsums` after the v1.4.0 release asset lands —
+# Regenerate with `updpkgsums` after the v1.4.0 release asset lands -
 # the archive hash cannot exist before the release does. SKIP is
 # intentional until then.
 sha256sums_x86_64=('SKIP')

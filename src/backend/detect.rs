@@ -2,16 +2,16 @@
 //!
 //! Three layers, in increasing order of side effects:
 //!
-//! 1. [`SessionInfo`] — pure snapshot of the session environment
+//! 1. [`SessionInfo`] - pure snapshot of the session environment
 //!    (`XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`,
 //!    `HYPRLAND_INSTANCE_SIGNATURE`, `SWAYSOCK`, `WAYFIRE_SOCKET`,
 //!    `KDE_SESSION_VERSION`, `WAYLAND_DISPLAY`, `DISPLAY`), reduced to a
 //!    [`SessionKind`] compositor family plus a [`SessionType`]
 //!    transport.
-//! 2. [`plan_backends`] — pure function mapping a `SessionInfo` onto the
+//! 2. [`plan_backends`] - pure function mapping a `SessionInfo` onto the
 //!    ordered candidate list for each provider slot. This is the part the
 //!    unit tests exercise across the env matrix.
-//! 3. [`detect_providers`] — walks each ladder, calls each backend's
+//! 3. [`detect_providers`] - walks each ladder, calls each backend's
 //!    `pub fn new() -> Option<Self>` runtime availability check, and
 //!    registers (with `tracing::info!`) the first one that says yes.
 //!
@@ -24,11 +24,11 @@
 //! session marker + binary pin), so a missing backend simply falls
 //! through to the next rung.
 //!
-//! Compositor coverage (v1.2.0): the wlroots family — Hyprland, sway,
-//! Wayfire, river — routes to the `wlr-*` capture/input rungs and the
+//! Compositor coverage (v1.2.0): the wlroots family - Hyprland, sway,
+//! Wayfire, river - routes to the `wlr-*` capture/input rungs and the
 //! layer-shell overlay; KDE and GNOME route to the portal rungs they
 //! actually implement. Since v1.4.0 every compositor also has a window
-//! rung — `wayfire-ipc` on Wayfire, focused-view-only `riverctl` on
+//! rung - `wayfire-ipc` on Wayfire, focused-view-only `riverctl` on
 //! river, `gnome-shell` (Window Calls extension) on GNOME. See
 //! [`plan_backends`] for the per-slot policy.
 
@@ -46,19 +46,19 @@ use crate::traits::{
 pub enum SessionType {
     Wayland,
     X11,
-    /// tty / ssh / container — no display to automate.
+    /// tty / ssh / container - no display to automate.
     Headless,
 }
 
-/// Compositor/desktop family the session signature resolves to —
+/// Compositor/desktop family the session signature resolves to -
 /// orthogonal to [`SessionType`] (a Plasma X11 session is still
 /// [`SessionKind::Kde`]). Detection precedence is signature-first:
-/// `HYPRLAND_INSTANCE_SIGNATURE` → `SWAYSOCK`/`sway` →
-/// `WAYFIRE_SOCKET`/`Wayfire` → `river` → `KDE_SESSION_VERSION`/`KDE` →
+/// `HYPRLAND_INSTANCE_SIGNATURE` -> `SWAYSOCK`/`sway` ->
+/// `WAYFIRE_SOCKET`/`Wayfire` -> `river` -> `KDE_SESSION_VERSION`/`KDE` ->
 /// `GNOME`. Everything else is [`SessionKind::Other`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {
-    /// `HYPRLAND_INSTANCE_SIGNATURE` present — the signature is
+    /// `HYPRLAND_INSTANCE_SIGNATURE` present - the signature is
     /// authoritative; `XDG_CURRENT_DESKTOP=Hyprland` alone is not
     /// (stale env in a nested session must not gate hyprctl on).
     Hyprland,
@@ -74,14 +74,14 @@ pub enum SessionKind {
     Kde,
     /// `XDG_CURRENT_DESKTOP` contains `GNOME`.
     Gnome,
-    /// Any session matching no known compositor signature — most
-    /// unknown Wayland desktops are wlroots-based (niri, labwc, …), so
+    /// Any session matching no known compositor signature - most
+    /// unknown Wayland desktops are wlroots-based (niri, labwc, ...), so
     /// the ladders keep the wlr-first rungs with probe fallthrough.
     Other,
 }
 
 impl SessionKind {
-    /// wlroots-family compositors — the `wlr-screencopy`,
+    /// wlroots-family compositors - the `wlr-screencopy`,
     /// `wlr-virtual-input` and `wlr-layer-shell` rungs all probe
     /// successfully only on these.
     pub fn is_wlroots(&self) -> bool {
@@ -101,7 +101,7 @@ pub struct SessionInfo {
     /// Raw `XDG_CURRENT_DESKTOP` value (e.g. `"Hyprland"`, `"GNOME"`,
     /// `"sway:wlroots"`). `None` when unset or empty.
     pub desktop: Option<String>,
-    /// `HYPRLAND_INSTANCE_SIGNATURE` is present and non-empty — the
+    /// `HYPRLAND_INSTANCE_SIGNATURE` is present and non-empty - the
     /// authoritative Hyprland signal (also gates the hyprctl window
     /// backend, whose IPC socket lives under `$XDG_RUNTIME_DIR/hypr/<sig>`).
     pub is_hyprland: bool,
@@ -117,7 +117,7 @@ impl SessionInfo {
         Self::from_env(|key| std::env::var(key).ok())
     }
 
-    /// Build from an arbitrary env lookup — the unit-testable core.
+    /// Build from an arbitrary env lookup - the unit-testable core.
     /// Empty-string values are treated as unset throughout: a var that is
     /// exported but empty carries no usable signal.
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Self {
@@ -131,7 +131,7 @@ impl SessionInfo {
             Some("wayland") => SessionType::Wayland,
             Some("x11") => SessionType::X11,
             // "tty", "unspecified", unset: infer from display vars before
-            // declaring the session headless — e.g. a Wayland session
+            // declaring the session headless - e.g. a Wayland session
             // entered via `dbus-run-session` may lack XDG_SESSION_TYPE.
             _ if wayland_display.is_some() => SessionType::Wayland,
             _ if display.is_some() => SessionType::X11,
@@ -191,7 +191,7 @@ impl SessionInfo {
         self.session_type == SessionType::X11
     }
 
-    /// wlroots-family session — Hyprland, sway, Wayfire, river. These
+    /// wlroots-family session - Hyprland, sway, Wayfire, river. These
     /// route to the `wlr-*` capture/input rungs and the layer-shell
     /// overlay; KDE/GNOME do not.
     pub fn is_wlroots(&self) -> bool {
@@ -206,9 +206,9 @@ pub enum CaptureBackend {
     Wlr,
     /// `grim`/`slurp` subprocess fallback for wlroots compositors.
     Grim,
-    /// XDG `org.freedesktop.portal.Screenshot` — universal last resort.
+    /// XDG `org.freedesktop.portal.Screenshot` - universal last resort.
     Portal,
-    /// `scrot` subprocess — X11-native capture.
+    /// `scrot` subprocess - X11-native capture.
     Scrot,
 }
 
@@ -217,11 +217,11 @@ pub enum CaptureBackend {
 pub enum InputBackend {
     /// wlr-virtual-pointer + virtual-keyboard (compositor-native).
     Wlr,
-    /// `xdotool` subprocess — X11-native injection.
+    /// `xdotool` subprocess - X11-native injection.
     Xdotool,
-    /// `/dev/uinput` kernel-level injection — display-agnostic fallback.
+    /// `/dev/uinput` kernel-level injection - display-agnostic fallback.
     UInput,
-    /// XDG `org.freedesktop.portal.RemoteDesktop` — universal last resort.
+    /// XDG `org.freedesktop.portal.RemoteDesktop` - universal last resort.
     Portal,
 }
 
@@ -230,9 +230,9 @@ pub enum InputBackend {
 pub enum WindowBackend {
     /// `hyprctl` IPC (`$XDG_RUNTIME_DIR/hypr/$HIS/.socket.sock`).
     Hyprctl,
-    /// sway IPC direct to `$SWAYSOCK` — `providers::sway_window`.
+    /// sway IPC direct to `$SWAYSOCK` - `providers::sway_window`.
     SwayIpc,
-    /// `kdotool` subprocess — KWin window management on Wayland *and*
+    /// `kdotool` subprocess - KWin window management on Wayland *and*
     /// X11 (KDE rung). `providers::kdotool_window`, backend name
     /// `"kdotool"`; drops out when the pin or KDE session marker is
     /// absent.
@@ -240,7 +240,7 @@ pub enum WindowBackend {
     /// Wayfire `ipc` plugin socket (`$WAYFIRE_SOCKET`), length-prefixed
     /// JSON. `providers::wayfire_window`, backend name `"wayfire-ipc"`.
     WayfireIpc,
-    /// `riverctl` subprocess — river focused-view ops (no list IPC
+    /// `riverctl` subprocess - river focused-view ops (no list IPC
     /// exists). `providers::river_window`, backend name `"riverctl"`;
     /// drops out when the pin or `XDG_CURRENT_DESKTOP=river` marker is
     /// absent.
@@ -250,14 +250,14 @@ pub enum WindowBackend {
     /// backend name `"gnome-shell"`; drops out when the extension is not
     /// installed.
     GnomeShell,
-    /// `wmctrl` + `xdotool` — X11 EWMH window management.
+    /// `wmctrl` + `xdotool` - X11 EWMH window management.
     Wmctrl,
 }
 
 /// Ordered candidates for the visual-overlay slot (`screen_highlight`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayBackend {
-    /// `zwlr_layer_shell_v1` — short-lived translucent overlay surface.
+    /// `zwlr_layer_shell_v1` - short-lived translucent overlay surface.
     WlrLayerShell,
 }
 
@@ -286,14 +286,14 @@ pub enum BrowserBackend {
 /// Ordered candidates for the clipboard slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardBackend {
-    /// `wl-copy`/`wl-paste` (wl-clipboard) — Wayland-native clipboard.
+    /// `wl-copy`/`wl-paste` (wl-clipboard) - Wayland-native clipboard.
     WlClipboard,
-    /// `xclip` (+ `xsel` for clear) — X11 and XWayland clipboard.
+    /// `xclip` (+ `xsel` for clear) - X11 and XWayland clipboard.
     Xclip,
 }
 
 /// The ordered ladders [`detect_providers`] walks, resolved from session
-/// info alone. Pure and unit-testable — no syscalls, no constructors.
+/// info alone. Pure and unit-testable - no syscalls, no constructors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectionPlan {
     pub capture: Vec<CaptureBackend>,
@@ -309,42 +309,42 @@ pub struct DetectionPlan {
 /// Map a session snapshot onto the per-slot fallback ladders.
 ///
 /// Ladder policy (per spec):
-/// - capture: `Wlr → Grim → Portal → None` on wlroots and unknown
-///   Wayland sessions; `Portal → None` on KDE/GNOME Wayland (they
+/// - capture: `Wlr -> Grim -> Portal -> None` on wlroots and unknown
+///   Wayland sessions; `Portal -> None` on KDE/GNOME Wayland (they
 ///   implement neither wlr-screencopy nor grim-compatible protocols, so
-///   probing those rungs could never succeed — the portal is the real
-///   mechanism); `Scrot → Portal → None` on X11.
-/// - input: `Wlr → UInput → Portal → None` on wlroots and unknown
-///   Wayland; `Portal → None` on KDE/GNOME Wayland;
-///   `Xdotool → UInput → Portal → None` on X11 (X11-native first —
+///   probing those rungs could never succeed - the portal is the real
+///   mechanism); `Scrot -> Portal -> None` on X11.
+/// - input: `Wlr -> UInput -> Portal -> None` on wlroots and unknown
+///   Wayland; `Portal -> None` on KDE/GNOME Wayland;
+///   `Xdotool -> UInput -> Portal -> None` on X11 (X11-native first -
 ///   uinput needs the udev rule).
-/// - window: `Hyprctl → None` on Hyprland; `SwayIpc → None` on sway;
-///   `WayfireIpc → None` on Wayfire (`$WAYFIRE_SOCKET`, `ipc`/`ipc-rules`
-///   plugins — drops out when the socket is absent); `Riverctl → None`
-///   on river (focused-view-only rung: no list IPC — `get_windows`/
+/// - window: `Hyprctl -> None` on Hyprland; `SwayIpc -> None` on sway;
+///   `WayfireIpc -> None` on Wayfire (`$WAYFIRE_SOCKET`, `ipc`/`ipc-rules`
+///   plugins - drops out when the socket is absent); `Riverctl -> None`
+///   on river (focused-view-only rung: no list IPC - `get_windows`/
 ///   `get_active_window` fail honestly, `window_control` reaches the
-///   focused view); `Kdotool → None` on KDE Wayland; `Kdotool → Wmctrl →
+///   focused view); `Kdotool -> None` on KDE Wayland; `Kdotool -> Wmctrl ->
 ///   None` on KDE X11 (`kdotool` drives KWin on both transports and drops
 ///   out when the pin or session marker is absent, but a Plasma X11
-///   session always has EWMH `wmctrl` behind it); `GnomeShell → None` on
-///   GNOME Wayland and `GnomeShell → Wmctrl → None` on GNOME X11 (the
-///   Window Calls extension — `org.gnome.Shell.Eval` stays deliberately
-///   unused); `Wmctrl → None` on other X11 sessions.
-/// - overlay: `WlrLayerShell → None` on wlroots and unknown Wayland
+///   session always has EWMH `wmctrl` behind it); `GnomeShell -> None` on
+///   GNOME Wayland and `GnomeShell -> Wmctrl -> None` on GNOME X11 (the
+///   Window Calls extension - `org.gnome.Shell.Eval` stays deliberately
+///   unused); `Wmctrl -> None` on other X11 sessions.
+/// - overlay: `WlrLayerShell -> None` on wlroots and unknown Wayland
 ///   (the layer-shell protocol has no X11 analogue and no KDE/GNOME
-///   implementation — those sessions get an honest empty ladder).
-/// - ui_automation: `Atspi → None` on any non-headless session — the
+///   implementation - those sessions get an honest empty ladder).
+/// - ui_automation: `Atspi -> None` on any non-headless session - the
 ///   accessibility bus is compositor-agnostic (Wayland and X11 alike).
-/// - vision: `Onnx → None` on any non-headless session — frames come
+/// - vision: `Onnx -> None` on any non-headless session - frames come
 ///   from the capture slot, which is empty headless anyway.
-/// - browser: `Cdp → None` on any non-headless session — the loopback
+/// - browser: `Cdp -> None` on any non-headless session - the loopback
 ///   probe is cheap and no-op when nothing listens on :9222.
-/// - clipboard: `WlClipboard → Xclip → None` on Wayland (the X11 helpers
-///   still serve the selection through XWayland); `Xclip → None` on X11.
-/// - headless: every ladder is empty — there is no display to automate.
+/// - clipboard: `WlClipboard -> Xclip -> None` on Wayland (the X11 helpers
+///   still serve the selection through XWayland); `Xclip -> None` on X11.
+/// - headless: every ladder is empty - there is no display to automate.
 pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
     // KDE/GNOME Wayland sessions are portal-native for capture, input
-    // and overlay — see the ladder policy above.
+    // and overlay - see the ladder policy above.
     let portal_desktop =
         session.is_wayland() && matches!(session.kind, SessionKind::Kde | SessionKind::Gnome);
 
@@ -379,12 +379,12 @@ pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
         SessionKind::Sway => vec![WindowBackend::SwayIpc],
         // Wayfire's `ipc` plugin exposes `list-views` + view methods over
         // `$WAYFIRE_SOCKET`; river gets focused-view ops via `riverctl`
-        // (no list/active IPC exists — those calls error honestly).
+        // (no list/active IPC exists - those calls error honestly).
         SessionKind::Wayfire => vec![WindowBackend::WayfireIpc],
         SessionKind::River => vec![WindowBackend::Riverctl],
         SessionKind::Kde if session.is_wayland() => vec![WindowBackend::Kdotool],
         // Plasma X11: kdotool is still the KWin-native rung, but a
-        // session without the pin/marker is not window-less — EWMH
+        // session without the pin/marker is not window-less - EWMH
         // `wmctrl` manages X11 clients under KWin.
         SessionKind::Kde if session.is_x11() => {
             vec![WindowBackend::Kdotool, WindowBackend::Wmctrl]
@@ -517,7 +517,7 @@ pub fn detect_providers(session: &SessionInfo) -> Providers {
     providers
 }
 
-/// Walk the capture ladder: `Wlr → Grim → None`.
+/// Walk the capture ladder: `Wlr -> Grim -> None`.
 fn detect_capture(
     candidates: &[CaptureBackend],
 ) -> Option<(Arc<dyn CaptureProvider>, &'static str)> {
@@ -555,7 +555,7 @@ fn detect_capture(
     None
 }
 
-/// Walk the input ladder: `Wlr → UInput → None`.
+/// Walk the input ladder: `Wlr -> UInput -> None`.
 fn detect_input(candidates: &[InputBackend]) -> Option<(Arc<dyn InputProvider>, &'static str)> {
     for &candidate in candidates {
         match candidate {
@@ -596,11 +596,11 @@ fn detect_input(candidates: &[InputBackend]) -> Option<(Arc<dyn InputProvider>, 
     None
 }
 
-/// Walk the window ladder: `Hyprctl → None` on Hyprland, `SwayIpc →
-/// None` on sway, `Kdotool → None` on KDE Wayland (`Kdotool → Wmctrl →
-/// None` on KDE X11), `WayfireIpc → None` on Wayfire, `Riverctl → None`
-/// on river, `GnomeShell → None` on GNOME Wayland (`GnomeShell → Wmctrl
-/// → None` on GNOME X11), `Wmctrl → None` on other X11 sessions.
+/// Walk the window ladder: `Hyprctl -> None` on Hyprland, `SwayIpc ->
+/// None` on sway, `Kdotool -> None` on KDE Wayland (`Kdotool -> Wmctrl ->
+/// None` on KDE X11), `WayfireIpc -> None` on Wayfire, `Riverctl -> None`
+/// on river, `GnomeShell -> None` on GNOME Wayland (`GnomeShell -> Wmctrl
+/// -> None` on GNOME X11), `Wmctrl -> None` on other X11 sessions.
 fn detect_window(candidates: &[WindowBackend]) -> Option<(Arc<dyn WindowProvider>, &'static str)> {
     for &candidate in candidates {
         match candidate {
@@ -724,8 +724,8 @@ fn detect_overlay(
     None
 }
 
-/// Walk the clipboard ladder: `WlClipboard → Xclip → None` on Wayland,
-/// `Xclip → None` on X11.
+/// Walk the clipboard ladder: `WlClipboard -> Xclip -> None` on Wayland,
+/// `Xclip -> None` on X11.
 fn detect_clipboard(
     candidates: &[ClipboardBackend],
 ) -> Option<(Arc<dyn ClipboardProvider>, &'static str)> {
@@ -801,9 +801,9 @@ mod tests {
 
     #[test]
     fn generic_wayland_session_has_no_window_backend() {
-        // An unrecognized Wayland desktop (labwc/niri/cosmic/…): the
-        // wlr-first capture + input ladders apply — most unknown
-        // compositors are wlroots-based, and probe fallthrough is cheap —
+        // An unrecognized Wayland desktop (labwc/niri/cosmic/...): the
+        // wlr-first capture + input ladders apply - most unknown
+        // compositors are wlroots-based, and probe fallthrough is cheap -
         // but the window slot has no candidates.
         let s = SessionInfo::from_env(fake_env(&[
             ("XDG_SESSION_TYPE", "wayland"),
@@ -843,7 +843,7 @@ mod tests {
     #[test]
     fn sway_session_via_sock_and_desktop() {
         for env in [
-            // SWAYSOCK alone is authoritative — sway exports it to the
+            // SWAYSOCK alone is authoritative - sway exports it to the
             // whole session.
             fake_env(&[
                 ("XDG_SESSION_TYPE", "wayland"),
@@ -922,7 +922,7 @@ mod tests {
                 ]
             );
             // Wayfire's `ipc` plugin exposes `list-views` + view ops over
-            // `$WAYFIRE_SOCKET` — a real window rung.
+            // `$WAYFIRE_SOCKET` - a real window rung.
             assert_eq!(plan.window, vec![WindowBackend::WayfireIpc]);
             assert_eq!(plan.overlay, vec![OverlayBackend::WlrLayerShell]);
         }
@@ -955,7 +955,7 @@ mod tests {
                 InputBackend::Portal,
             ]
         );
-        // riverctl manages the *focused* view — a partial rung; list/
+        // riverctl manages the *focused* view - a partial rung; list/
         // active window calls error honestly at the provider.
         assert_eq!(plan.window, vec![WindowBackend::Riverctl]);
         assert_eq!(plan.overlay, vec![OverlayBackend::WlrLayerShell]);
@@ -987,11 +987,11 @@ mod tests {
             assert_eq!(plan.input, vec![InputBackend::Portal]);
             // kdotool drives KWin on Wayland and X11 alike; the rung
             // drops out at detect time when the pin or the KDE session
-            // marker is absent. On Wayland there is no EWMH behind it —
+            // marker is absent. On Wayland there is no EWMH behind it -
             // the single-rung ladder is honest (the KDE-X11 case below
             // adds `wmctrl`).
             assert_eq!(plan.window, vec![WindowBackend::Kdotool]);
-            // No layer-shell on KWin → honest empty overlay.
+            // No layer-shell on KWin -> honest empty overlay.
             assert!(plan.overlay.is_empty());
         }
     }
@@ -1000,7 +1000,7 @@ mod tests {
     fn kde_x11_keeps_kdotool_window_rung() {
         // Plasma X11: X11-native capture/input ladders, and kdotool is
         // still the first window rung (it drives KWin on both
-        // transports) — with EWMH `wmctrl` behind it so a session
+        // transports) - with EWMH `wmctrl` behind it so a session
         // lacking the pin/marker is not left window-less.
         let s = SessionInfo::from_env(fake_env(&[
             ("XDG_SESSION_TYPE", "x11"),
@@ -1037,7 +1037,7 @@ mod tests {
         let plan = plan_backends(&s);
         assert_eq!(plan.capture, vec![CaptureBackend::Portal]);
         assert_eq!(plan.input, vec![InputBackend::Portal]);
-        // The "Window Calls" Shell extension is the window rung —
+        // The "Window Calls" Shell extension is the window rung -
         // gnome-shell `Eval` stays deliberately unused (arbitrary-JS).
         assert_eq!(plan.window, vec![WindowBackend::GnomeShell]);
         assert!(plan.overlay.is_empty());
@@ -1045,7 +1045,7 @@ mod tests {
 
     #[test]
     fn clipboard_ladder_follows_session_transport() {
-        // Wayland: wl-clipboard first, the X11 helpers behind it — they
+        // Wayland: wl-clipboard first, the X11 helpers behind it - they
         // still serve the selection through XWayland.
         let wl = SessionInfo::from_env(fake_env(&[
             ("XDG_SESSION_TYPE", "wayland"),
@@ -1056,11 +1056,11 @@ mod tests {
             vec![ClipboardBackend::WlClipboard, ClipboardBackend::Xclip]
         );
 
-        // X11: xclip only — no Wayland selection exists to serve.
+        // X11: xclip only - no Wayland selection exists to serve.
         let x = SessionInfo::from_env(fake_env(&[("XDG_SESSION_TYPE", "x11"), ("DISPLAY", ":0")]));
         assert_eq!(plan_backends(&x).clipboard, vec![ClipboardBackend::Xclip]);
 
-        // Headless: no display → no clipboard.
+        // Headless: no display -> no clipboard.
         let h = SessionInfo::from_env(fake_env(&[]));
         assert!(plan_backends(&h).clipboard.is_empty());
     }
@@ -1108,7 +1108,7 @@ mod tests {
 
     #[test]
     fn headless_kde_env_does_not_emit_kdotool() {
-        // Stale desktop vars on a tty must not produce a window rung —
+        // Stale desktop vars on a tty must not produce a window rung -
         // headless keeps every ladder empty except the signature-gated
         // compositor rungs whose IPC socket is itself the proof of life.
         let s = SessionInfo::from_env(fake_env(&[
@@ -1182,7 +1182,7 @@ mod tests {
     #[test]
     fn session_type_inferred_from_wayland_display() {
         // No XDG_SESSION_TYPE (e.g. dbus-run-session) but a live Wayland
-        // socket name — still a Wayland session.
+        // socket name - still a Wayland session.
         let s = SessionInfo::from_env(fake_env(&[("WAYLAND_DISPLAY", "wayland-0")]));
         assert_eq!(s.session_type, SessionType::Wayland);
     }
@@ -1238,7 +1238,7 @@ mod tests {
     #[test]
     fn session_wide_slots_follow_display_presence() {
         // ui_automation / vision / browser ride along on any session
-        // with a display — they are compositor-agnostic.
+        // with a display - they are compositor-agnostic.
         let wl = SessionInfo::from_env(fake_env(&[("WAYLAND_DISPLAY", "wayland-0")]));
         let plan = plan_backends(&wl);
         assert_eq!(plan.ui_automation, vec![UiAutomationBackend::Atspi]);
@@ -1251,7 +1251,7 @@ mod tests {
         assert_eq!(plan.vision, vec![VisionBackend::Onnx]);
         assert_eq!(plan.browser, vec![BrowserBackend::Cdp]);
 
-        // Headless: nothing to automate → all three slots empty.
+        // Headless: nothing to automate -> all three slots empty.
         let h = SessionInfo::from_env(fake_env(&[]));
         let plan = plan_backends(&h);
         assert!(plan.ui_automation.is_empty());
@@ -1263,7 +1263,7 @@ mod tests {
     fn hyprland_signature_wins_even_on_x11_typed_session() {
         // A session that reports `x11` but carries the instance
         // signature (e.g. Xwayland-only display var) still gets the
-        // hyprctl window backend — the signature check precedes the
+        // hyprctl window backend - the signature check precedes the
         // X11 fallback.
         let s = SessionInfo::from_env(fake_env(&[
             ("XDG_SESSION_TYPE", "x11"),
@@ -1277,9 +1277,9 @@ mod tests {
     #[test]
     fn kdotool_rung_yields_none_outside_kde_session() {
         // Construction path: with no KDE session markers the provider
-        // refuses to construct even if the `kdotool` pin could resolve —
+        // refuses to construct even if the `kdotool` pin could resolve -
         // the rung falls through to an honest `None`.
-        // SAFETY: test-only env mutation, restored before returning —
+        // SAFETY: test-only env mutation, restored before returning -
         // the same pattern the provider gate tests use.
         let saved_v = std::env::var_os("KDE_SESSION_VERSION");
         let saved_d = std::env::var_os("XDG_CURRENT_DESKTOP");
@@ -1303,7 +1303,7 @@ mod tests {
 
     #[test]
     fn detect_providers_headless_yields_empty_registry() {
-        // Headless: no candidates on any ladder, so every slot is None —
+        // Headless: no candidates on any ladder, so every slot is None -
         // guaranteed regardless of which provider modules are gated in.
         let s = SessionInfo::from_env(fake_env(&[]));
         let providers = detect_providers(&s);

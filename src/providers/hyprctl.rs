@@ -1,25 +1,25 @@
-//! Hyprland `WindowProvider` — compositor IPC equivalent to `hyprctl`.
+//! Hyprland `WindowProvider` - compositor IPC equivalent to `hyprctl`.
 //!
 //! Two transports, probed once at construction ([`HyprctlWindow::new`]):
 //!
-//! * **Socket (preferred)** — `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock`
+//! * **Socket (preferred)**- `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock`
 //!   (falling back to `/tmp/hypr/<HIS>/.socket.sock` when `XDG_RUNTIME_DIR` is
 //!   unset). Wire format per the Hyprland IPC docs: write
-//!   `[flags]/command args` (`j/clients`, `j/activewindow`, `dispatch …`),
+//!   `[flags]/command args` (`j/clients`, `j/activewindow`, `dispatch ...`),
 //!   half-close, read the reply until EOF. Every request is a fresh
-//!   connection — the compositor answers each connection synchronously, so a
+//!   connection - the compositor answers each connection synchronously, so a
 //!   lingering socket would stall it.
-//! * **`hyprctl` binary (fallback)** — the canonicalized absolute path of
+//! * **`hyprctl` binary (fallback)**- the canonicalized absolute path of
 //!   the `hyprctl` pinned from `PATH` at construction time (the same
 //!   [`crate::security::whitelist`] resolver `SecurityContext` uses), so
 //!   a later `PATH` hijack cannot substitute a trojan. Invoked as
-//!   `hyprctl -j <sub>` / `hyprctl dispatch …` under a scrubbed
+//!   `hyprctl -j <sub>` / `hyprctl dispatch ...` under a scrubbed
 //!   environment ([`crate::security::spawn`]). Used only when the socket
 //!   cannot be probed (e.g. an older compositor without the runtime dir).
 //!
 //! `dispatch` only ever emits the fixed dispatcher set
 //! `focuswindow|movewindowpixel|resizewindowpixel|movetoworkspacesilent|closewindow`
-//! — `exec` / `exec-once` are never reachable through this provider.
+//! - `exec` / `exec-once` are never reachable through this provider.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -56,13 +56,13 @@ impl HyprctlWindow {
         Self::with_pins(&crate::security::whitelist::resolve_binaries())
     }
 
-    /// [`Self::new`] against a caller-supplied pin set — the testable
+    /// [`Self::new`] against a caller-supplied pin set - the testable
     /// seam: hermetic tests resolve a fresh `PinnedBins` over a tempdir
     /// `PATH` instead of the process-wide snapshot.
     pub fn with_pins(pins: &crate::security::whitelist::PinnedBins) -> Option<Self> {
         let his = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
-        // The signature is joined into a socket path below — an absolute
-        // or `..`-bearing value would escape the `…/hypr/` dir, so only
+        // The signature is joined into a socket path below - an absolute
+        // or `..`-bearing value would escape the `.../hypr/` dir, so only
         // the real signature shape is accepted.
         if !valid_instance_signature(&his) {
             return None;
@@ -74,7 +74,7 @@ impl HyprctlWindow {
                 });
             }
         }
-        // Pin the whitelisted `hyprctl` once — the canonicalized path is
+        // Pin the whitelisted `hyprctl` once - the canonicalized path is
         // immune to a later `PATH` change (S-1).
         let bin = pins.get("hyprctl").map(Path::to_path_buf)?;
         Some(Self {
@@ -82,7 +82,7 @@ impl HyprctlWindow {
         })
     }
 
-    /// `hyprctl -j <sub>` (or `j/<sub>` on the socket) → parsed JSON.
+    /// `hyprctl -j <sub>` (or `j/<sub>` on the socket) -> parsed JSON.
     async fn query(&self, sub: &str) -> Result<Value> {
         let body = match &self.transport {
             Transport::Socket(path) => socket_request(path, &format!("j/{sub}")).await?,
@@ -95,7 +95,7 @@ impl HyprctlWindow {
         serde_json::from_str(body).with_context(|| format!("hyprland: bad JSON for '{sub}'"))
     }
 
-    /// Send a `dispatch …` request; the socket replies `ok` on success.
+    /// Send a `dispatch ...` request; the socket replies `ok` on success.
     async fn send_dispatch(&self, request: &str) -> Result<()> {
         debug_assert!(request.starts_with("dispatch "));
         match &self.transport {
@@ -185,7 +185,7 @@ fn socket_candidates(his: &std::ffi::OsStr) -> Vec<PathBuf> {
 
 /// One socket round-trip: connect, write the request verbatim, half-close,
 /// read the reply to EOF. A fresh short-lived connection per request is
-/// mandatory — an unclosed connection blocks the compositor's synchronous
+/// mandatory - an unclosed connection blocks the compositor's synchronous
 /// IPC loop.
 async fn socket_request(path: &Path, request: &str) -> Result<String> {
     let fut = async {
@@ -218,7 +218,7 @@ async fn hyprctl_output(bin: &Path, argv: &[&str]) -> Result<std::process::Outpu
     .context("hyprctl timed out")?
 }
 
-/// `hyprctl <argv>` → stdout, failing on non-zero exit.
+/// `hyprctl <argv>` -> stdout, failing on non-zero exit.
 async fn hyprctl_run(bin: &Path, argv: &[&str]) -> Result<String> {
     let out = hyprctl_output(bin, argv).await?;
     if out.status.success() {
@@ -274,7 +274,7 @@ fn client_to_info(v: &Value, focused_addr: Option<&str>) -> Option<WindowInfo> {
         },
         focused,
         floating: v.get("floating").and_then(Value::as_bool),
-        // `fullscreen` is an int enum (0 none / 1 real / 2 maximized) —
+        // `fullscreen` is an int enum (0 none / 1 real / 2 maximized) -
         // expose it as "is fullscreen".
         fullscreen: v.get("fullscreen").and_then(Value::as_i64).map(|f| f != 0),
         pid: v.get("pid").and_then(Value::as_i64),
@@ -282,7 +282,7 @@ fn client_to_info(v: &Value, focused_addr: Option<&str>) -> Option<WindowInfo> {
     })
 }
 
-/// `clients` reply → window list. Non-array replies are an error.
+/// `clients` reply -> window list. Non-array replies are an error.
 fn parse_clients(v: &Value, focused_addr: Option<&str>) -> Result<Vec<WindowInfo>> {
     let arr = v
         .as_array()
@@ -293,7 +293,7 @@ fn parse_clients(v: &Value, focused_addr: Option<&str>) -> Result<Vec<WindowInfo
         .collect())
 }
 
-/// `activewindow` reply → `Some` window, or `None` when the compositor
+/// `activewindow` reply -> `Some` window, or `None` when the compositor
 /// reports nothing focused (`{}`, `null`, or a record without an address).
 fn parse_active(v: &Value) -> Result<Option<WindowInfo>> {
     if v.is_null() || v.get("address").is_none() {
@@ -304,7 +304,7 @@ fn parse_active(v: &Value) -> Result<Option<WindowInfo>> {
 
 // ---------- dispatch mapping ----------
 
-/// Window ids are compositor addresses (`0x…`); restricting to ASCII
+/// Window ids are compositor addresses (`0x...`); restricting to ASCII
 /// alphanumerics keeps socket requests single-line and argv splits clean.
 fn valid_window_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric())
@@ -315,7 +315,7 @@ fn arg_i64(args: &Value, key: &str) -> Option<i64> {
 }
 
 /// Build the `dispatch <dispatcher> <args>` request string for an action.
-/// Fixed mapping only — `exec`/`exec-once` can never be produced here.
+/// Fixed mapping only - `exec`/`exec-once` can never be produced here.
 fn dispatch_request(action: &str, window_id: &str, args: &Value) -> Result<String> {
     if !valid_window_id(window_id) {
         bail!("hyprland: invalid window id '{window_id}'");
@@ -343,7 +343,7 @@ fn dispatch_request(action: &str, window_id: &str, args: &Value) -> Result<Strin
                 bail!("hyprland: resize requires w,h (or dw,dh)")
             }
         }
-        // `special:` (empty name) is the default special workspace —
+        // `special:` (empty name) is the default special workspace -
         // Hyprland's off-screen "minimized" stash.
         "minimize" => format!("movetoworkspacesilent special:,address:{window_id}"),
         "close" => format!("closewindow address:{window_id}"),
@@ -370,7 +370,7 @@ mod tests {
             "floating": false,
             "monitor": 0,
             "class": "kitty",
-            "title": "devin: onboarding",
+            "title": "notes: onboarding",
             "pid": 37381,
             "xwayland": false,
             "fullscreen": 0,
@@ -385,7 +385,7 @@ mod tests {
             "workspace": {"id": 2, "name": "2"},
             "floating": true,
             "class": "kitty",
-            "title": "devin: planning",
+            "title": "notes: planning",
             "focusHistoryID": 0
         },
         {
@@ -405,7 +405,7 @@ mod tests {
         "size": [625, 745],
         "workspace": {"id": 2, "name": "2"},
         "class": "kitty",
-        "title": "devin: planning",
+        "title": "notes: planning",
         "focusHistoryID": 0
     }"#;
 
@@ -419,7 +419,7 @@ mod tests {
         assert_eq!(windows.len(), 3);
         let w = &windows[0];
         assert_eq!(w.id, "0x55817dbad0a0");
-        assert_eq!(w.title, "devin: onboarding");
+        assert_eq!(w.title, "notes: onboarding");
         assert_eq!(w.class, "kitty");
         assert_eq!(w.workspace, 2);
         assert_eq!(
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn focused_falls_back_to_focus_history_id() {
-        // No activewindow address available → focusHistoryID == 0 wins.
+        // No activewindow address available -> focusHistoryID == 0 wins.
         let windows = parse_clients(&clients_json(), None).unwrap();
         assert!(windows[1].focused);
         assert!(!windows[0].focused);
@@ -557,7 +557,7 @@ mod tests {
                 "{good:?} must be accepted"
             );
         }
-        // Anything that escapes or alters the `…/hypr/<HIS>/` join —
+        // Anything that escapes or alters the `.../hypr/<HIS>/` join -
         // absolute paths, `..`, separators, whitespace, dots, dashes.
         for bad in [
             "",
@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn with_pins_rejects_hostile_signature() {
         use std::os::unix::fs::PermissionsExt;
-        // A pinned `hyprctl` is present — the signature gate must still
+        // A pinned `hyprctl` is present - the signature gate must still
         // reject before the socket join or the binary fallback matter.
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("hyprctl");
@@ -599,7 +599,7 @@ mod tests {
         }
     }
 
-    /// Live smoke test — needs a running Hyprland session; read-only
+    /// Live smoke test - needs a running Hyprland session; read-only
     /// (`clients` + `activewindow`, never `dispatch`).
     /// Run with `cargo test --lib hyprctl -- --ignored`.
     #[tokio::test]

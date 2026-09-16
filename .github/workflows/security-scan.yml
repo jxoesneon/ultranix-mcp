@@ -6,11 +6,11 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Weekly on Mondays at 06:00 UTC — catches newly disclosed advisories
+    # Weekly on Mondays at 06:00 UTC - catches newly disclosed advisories
     # even when the crate is not being actively pushed to.
     - cron: "0 6 * * 1"
 
-# audit-check creates check-run annotations for findings — needs
+# audit-check creates check-run annotations for findings - needs
 # checks:write or it dies with "Resource not accessible by integration"
 # before reporting what it found.
 permissions:

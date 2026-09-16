@@ -1,10 +1,10 @@
-//! Plugin tools (3) — `plugin_list` / `plugin_run` / `plugin_reload` over
+//! Plugin tools (3) - `plugin_list` / `plugin_run` / `plugin_reload` over
 //! the declarative tool-macros in `<state-root>/plugins/*.json`
 //! ([`crate::plugins`]).
 //!
-//! `plugin_run` is **not** itself consent-gated: its steps re-enter the
-//! normal dispatch path — [`super::call_tool_secured`] when a
-//! `SecurityContext` exists, [`super::call_tool`] otherwise — exactly
+//! `plugin_run` is **not**itself consent-gated: its steps re-enter the
+//! normal dispatch path - [`super::call_tool_secured`] when a
+//! `SecurityContext` exists, [`super::call_tool`] otherwise - exactly
 //! like `replay_action` re-dispatches the recorded call (admin.rs).
 //! Destructive steps therefore challenge the consent gate on their own
 //! `{caller, tool, args_hash}` binding, are audited, and land in action
@@ -13,16 +13,16 @@
 //! declares a `consent_token` string param and references
 //! `${consent_token}` in the step args.
 //!
-//! Scanning is always fresh — every call rescans the manifest dir
+//! Scanning is always fresh - every call rescans the manifest dir
 //! (manifests are tiny; a live view beats cache invalidation), and
 //! `plugin_reload` exists to surface *what loaded* and *what was
 //! skipped*, not to flush state.
 //!
 //! [`dispatch_ctx`]'s catch-all arm additionally resolves *non-catalog*
 //! names against the live plugin-tool registry (manifest `tool`
-//! sections — [`crate::plugins::ToolRegistry`]): `deploy_notes{…}`
+//! sections - [`crate::plugins::ToolRegistry`]): `deploy_notes{...}`
 //! routes into the same manifest executor as
-//! `plugin_run{name, params}` — never a bypass, since it sits inside
+//! `plugin_run{name, params}` - never a bypass, since it sits inside
 //! `call_tool_secured`'s policy/consent/audit pipeline. Unresolved
 //! names return `None` and the caller reports `-32601` as before.
 
@@ -68,7 +68,7 @@ pub(super) fn tools() -> Vec<Tool> {
     ]
 }
 
-/// Borrowed security pipeline for the secured dispatch path — mirrors
+/// Borrowed security pipeline for the secured dispatch path - mirrors
 /// admin.rs `Secured`: lets `plugin_run` pass each step back through
 /// `call_tool_secured` (consent re-challenge, audit, real
 /// `system_command` exec) instead of an ungated dispatch.
@@ -92,7 +92,7 @@ pub(super) async fn dispatch(
 
 /// Secured variant for `call_tool_secured` (via `super::dispatch_secured`):
 /// identical to [`dispatch`] but `plugin_run` re-enters the full security
-/// pipeline per step — mirrors `admin::dispatch_secured`.
+/// pipeline per step - mirrors `admin::dispatch_secured`.
 pub(super) async fn dispatch_secured(
     name: &str,
     args: &Map<String, Value>,
@@ -125,15 +125,15 @@ async fn dispatch_ctx(
         "plugin_run" => Some(plugin_run(args, providers, secured).await),
         "plugin_reload" => Some(plugin_reload(args).await),
         // A name no catalog leg claimed may be a plugin-exposed tool
-        // (a manifest `tool` section — crate::plugins::ToolRegistry).
+        // (a manifest `tool` section - crate::plugins::ToolRegistry).
         // `None` here falls through to `unknown_tool` (-32601) in the
         // caller, keeping the catalog-miss error shape unchanged.
         _ => run_exposed_tool(&ambient_store(), name, args, providers, secured).await,
     }
 }
 
-/// The manifest dir for tool calls — the ambient state root
-/// (`ULTRANIX_MCP_STATE_DIR` → `$HOME/.ultranix-mcp`). In production the
+/// The manifest dir for tool calls - the ambient state root
+/// (`ULTRANIX_MCP_STATE_DIR` -> `$HOME/.ultranix-mcp`). In production the
 /// `SecurityContext` is built on this same root (main.rs), so the
 /// secured path resolves the identical directory; the inner
 /// `*_in(store)` functions take the store explicitly so tests stay
@@ -142,8 +142,8 @@ fn ambient_store() -> PluginStore {
     PluginStore::ambient()
 }
 
-/// `PluginStore::scan` is blocking `std::fs` work — a directory listing
-/// plus a read + JSON parse per manifest — so it runs on
+/// `PluginStore::scan` is blocking `std::fs` work - a directory listing
+/// plus a read + JSON parse per manifest - so it runs on
 /// `tokio::task::spawn_blocking` instead of a runtime worker, the same
 /// EFF-1 convention as the secured history append and
 /// `clear_action_history`. The store is recreated inside the closure
@@ -192,7 +192,7 @@ async fn plugin_reload_in(
         "loaded": scan.plugins.len(),
         "plugins": scan.plugins.iter().map(plugin_json).collect::<Vec<_>>(),
         "skipped": scan.skipped.iter().map(|s| json!({
-            // Basename only — absolute paths leak host filesystem layout
+            // Basename only - absolute paths leak host filesystem layout
             // to any caller that can reach plugin_list/plugin_reload.
             "file": s.file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| s.file.display().to_string()),
             "error": s.error,
@@ -217,7 +217,7 @@ async fn plugin_run(
 }
 
 /// `plugin_list` entry shape: name, version, description, params
-/// schema, steps count — plus the registered `tool` name when the
+/// schema, steps count - plus the registered `tool` name when the
 /// manifest exposes itself in `tools/list` (`null` otherwise).
 fn plugin_json(p: &plugins::Plugin) -> Value {
     let m = &p.manifest;
@@ -238,7 +238,7 @@ fn plugin_json(p: &plugins::Plugin) -> Value {
     })
 }
 
-/// Scan + resolve + run — the store-parameterized workhorse behind
+/// Scan + resolve + run - the store-parameterized workhorse behind
 /// `plugin_run` (tests inject a tempdir store here).
 async fn run_by_name(
     store: &PluginStore,
@@ -255,7 +255,7 @@ async fn run_by_name(
         .ok_or_else(|| invalid_params(format!("plugin_run: no plugin named {name:?}")))?;
     if let Some(s) = secured {
         // Symmetric deny: `deny_tools` naming the exposed tool
-        // (`deploy_notes`) *or* the manifest name (`deploy-notes`) —
+        // (`deploy_notes`) *or* the manifest name (`deploy-notes`) -
         // either address `plugin_list` shows must bite a
         // `plugin_run{name: "deploy-notes"}` call. Same manifest,
         // either spelling.
@@ -273,10 +273,10 @@ async fn run_by_name(
     run_manifest(&plugin.manifest, params, providers, secured).await
 }
 
-/// Execute a validated manifest: bind params → per-step `${…}`
-/// substitution → each step dispatched through the *same* path a direct
+/// Execute a validated manifest: bind params -> per-step `${...}`
+/// substitution -> each step dispatched through the *same* path a direct
 /// `tools/call` would take (`call_tool_secured` on the secured path,
-/// `call_tool` otherwise — the `replay_action` mechanism), collecting
+/// `call_tool` otherwise - the `replay_action` mechanism), collecting
 /// truncated per-step results. Stops on the first error.
 async fn run_manifest(
     manifest: &PluginManifest,
@@ -290,8 +290,8 @@ async fn run_manifest(
     for (i, step) in manifest.steps.iter().enumerate() {
         let step_args = match plugins::substitute_args(&step.args, &bound) {
             Ok(a) => a,
-            // Unsupplied optional refs are caller-fixable → InvalidParams;
-            // a Template fault is unreachable post-validation → step error.
+            // Unsupplied optional refs are caller-fixable -> InvalidParams;
+            // a Template fault is unreachable post-validation -> step error.
             Err(e) => {
                 return Err(if matches!(e, ParamError::Template(_)) {
                     step_error(manifest, i, &step.tool, e.to_string())
@@ -300,8 +300,8 @@ async fn run_manifest(
                 });
             }
         };
-        // Boxed re-dispatch (mirrors replay_action): plugin_run →
-        // dispatch → plugin_run is an async-recursion cycle — the
+        // Boxed re-dispatch (mirrors replay_action): plugin_run ->
+        // dispatch -> plugin_run is an async-recursion cycle - the
         // indirection keeps the future sized (E0733).
         let inner = match secured {
             Some(s) => {
@@ -318,9 +318,9 @@ async fn run_manifest(
             None => Box::pin(super::call_tool(&step.tool, step_args, providers)).await,
         };
         match inner {
-            // The step's own JSON-RPC error keeps its code and data —
+            // The step's own JSON-RPC error keeps its code and data -
             // `-32015 ConsentRequired` (and its consent_token) must
-            // survive for the client to retry — annotated with which
+            // survive for the client to retry - annotated with which
             // step produced it.
             Err(e) => return Err(step_dispatch_error(manifest, i, &step.tool, e)),
             Ok(r) if r.is_error == Some(true) => {
@@ -346,13 +346,13 @@ async fn run_manifest(
 
 /// Dispatch arm for non-catalog names: resolve `name` against the live
 /// plugin-tool registry (a manifest `tool` section) and run the owning
-/// manifest — identical to `plugin_run{name: <plugin>, params: args}`
+/// manifest - identical to `plugin_run{name: <plugin>, params: args}`
 /// but addressed by the advertised tool name. `None` when no plugin
 /// registers `name`: the caller's `unknown_tool` (-32601) then
 /// reports the catalog miss unchanged.
 ///
 /// This is the tail of `dispatch`/`dispatch_secured`, so an exposed
-/// call passes through *the same* secured pipeline as a catalog tool —
+/// call passes through *the same* secured pipeline as a catalog tool -
 /// `call_tool_secured` already policy-checked the tool's own name and
 /// will audit/metric/history it under that name. What remains here is
 /// the plugin-specific conjuncts a catalog miss cannot express: the
@@ -375,8 +375,8 @@ async fn run_exposed_tool(
         .find(|p| p.manifest.tool.as_ref().is_some_and(|t| t.name == name))?;
     if let Some(s) = secured {
         // Plugin tools are uncatalogued, so `call_tool_secured`'s
-        // category gate cannot classify them — they inherit the gate
-        // of the plugin machinery itself (`plugin_run` → `admin`). A
+        // category gate cannot classify them - they inherit the gate
+        // of the plugin machinery itself (`plugin_run` -> `admin`). A
         // server filtered to `mouse`-only must not expose them.
         if let Some(err) = category_disabled(name, s.security.categories.as_deref()) {
             return Some(Err(err));
@@ -387,7 +387,7 @@ async fn run_exposed_tool(
         // role that does not list the tool never reaches dispatch).
         let role = s.security.policy.resolve(s.key_id);
         // Symmetric deny: `deny_tools` naming the *plugin* (`deploy-
-        // notes`) must bite its exposed tool (`deploy_notes`) too —
+        // notes`) must bite its exposed tool (`deploy_notes`) too -
         // the manifest is reachable under either name.
         if !s.security.policy.is_tool_allowed(role, "plugin_run")
             || role.deny_tools.contains(&plugin.manifest.name)
@@ -395,7 +395,7 @@ async fn run_exposed_tool(
             return Some(Err(plugin_run_denied(name, role)));
         }
     }
-    // The call's argument object *is* the manifest's `params` map —
+    // The call's argument object *is* the manifest's `params` map -
     // the advertised inputSchema and `bind_params` describe the same
     // declared set.
     Some(run_manifest(&plugin.manifest, args.clone(), providers, secured).await)
@@ -403,7 +403,7 @@ async fn run_exposed_tool(
 
 /// `-32601 MethodNotFound` for a plugin-exposed tool when the server's
 /// category set excludes `plugin_run`'s category (`admin`). Same wire
-/// shape as `super::category_gate`, which cannot produce it itself —
+/// shape as `super::category_gate`, which cannot produce it itself -
 /// plugin tool names are uncatalogued, so that gate returns `None`
 /// for them.
 fn category_disabled(name: &str, categories: Option<&[String]>) -> Option<ErrorData> {
@@ -423,7 +423,7 @@ fn category_disabled(name: &str, categories: Option<&[String]>) -> Option<ErrorD
     ))
 }
 
-/// Denial for the `plugin_run` conjunct of an exposed-tool call —
+/// Denial for the `plugin_run` conjunct of an exposed-tool call -
 /// mirrors `super::policy_denied`'s wire shape (private there, so
 /// reconstructed here): `denial_reason` distinguishes a readonly role
 /// from an allow/deny-list rejection, and the message names the
@@ -450,7 +450,7 @@ fn plugin_run_denied(name: &str, role: &crate::security::policy::Role) -> ErrorD
 
 /// A step's `Err(e)` re-wrapped with plugin/step context. The inner
 /// code is preserved (consent challenges stay `-32015`) and `data`
-/// gains `plugin`/`step`/`step_tool` — `kind`, `consent_token`, and
+/// gains `plugin`/`step`/`step_tool` - `kind`, `consent_token`, and
 /// `expires_in_ms` pass through untouched.
 fn step_dispatch_error(manifest: &PluginManifest, i: usize, tool: &str, e: ErrorData) -> ErrorData {
     let data = match e.data {
@@ -482,7 +482,7 @@ fn step_dispatch_error(manifest: &PluginManifest, i: usize, tool: &str, e: Error
     )
 }
 
-/// A step-level failure with no inner JSON-RPC error — `isError`
+/// A step-level failure with no inner JSON-RPC error - `isError`
 /// results and post-validation template faults.
 fn step_error(manifest: &PluginManifest, i: usize, tool: &str, detail: String) -> ErrorData {
     ErrorData::new(
@@ -511,7 +511,7 @@ fn first_text(r: &CallToolResult) -> String {
         .unwrap_or_else(|| "<non-text result>".into())
 }
 
-/// Char-safe truncation to [`RESULT_SUMMARY_MAX`] — the history.rs
+/// Char-safe truncation to [`RESULT_SUMMARY_MAX`] - the history.rs
 /// convention for per-step result summaries.
 fn truncate(s: &str) -> String {
     if s.chars().count() <= RESULT_SUMMARY_MAX {
@@ -545,7 +545,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// Tempdir plugin root — hermetic, injected via `PluginStore::at`.
+    /// Tempdir plugin root - hermetic, injected via `PluginStore::at`.
     fn store_with(files: &[(&str, &str)]) -> (tempfile::TempDir, PluginStore) {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("plugins");
@@ -664,7 +664,7 @@ mod tests {
     #[tokio::test]
     async fn run_typed_substitution_feeds_sleep_a_number() {
         // `"ms": "${ms}"` whole-string substitution keeps the JSON
-        // number — a text-substituted "0" would fail sleep's schema.
+        // number - a text-substituted "0" would fail sleep's schema.
         let (_t, store) = store_with(&[("nap.json", SLEEP_PLUGIN)]);
         run_by_name(
             &store,
@@ -679,7 +679,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_stops_on_first_failing_step() {
-        // Step 0 sleeps fine; step 1 violates sleep's ms bound →
+        // Step 0 sleeps fine; step 1 violates sleep's ms bound ->
         // InvalidParams propagates with the step index.
         let manifest = r#"{
             "name": "two-step",
@@ -699,7 +699,7 @@ mod tests {
         assert_eq!(err.data.unwrap()["step"], 1);
     }
 
-    /// WindowProvider that reports no windows — drives
+    /// WindowProvider that reports no windows - drives
     /// `window_control{focus}` onto its `isError` "no active window"
     /// path so a step-level tool error can be exercised end-to-end.
     struct NoWindows;
@@ -724,8 +724,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_tool_error_result_stops_chain() {
-        // window_control{focus} on a provider with no windows →
-        // Ok(isError) → the chain stops with -32017 PluginStepError
+        // window_control{focus} on a provider with no windows ->
+        // Ok(isError) -> the chain stops with -32017 PluginStepError
         // naming the step.
         let manifest = r#"{
             "name": "focus-nowhere",
@@ -768,7 +768,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code.0, INVALID_PARAMS);
-        // Extra (undeclared) param — rejected, not ignored.
+        // Extra (undeclared) param - rejected, not ignored.
         let err = run_by_name(
             &store,
             "nap",
@@ -812,7 +812,7 @@ mod tests {
         .await
         .unwrap();
         // type_text reports the char count: "hi bob ${who}" is 13
-        // chars — proves `${who}` was substituted and `$${who}` stayed
+        // chars - proves `${who}` was substituted and `$${who}` stayed
         // literal by the time the step reached dispatch.
         let body: Value = serde_json::from_str(&text_of(&res)).unwrap();
         assert_eq!(body["results"][0]["result"], "Typed 13 characters");
@@ -850,7 +850,7 @@ mod tests {
     #[tokio::test]
     async fn run_destructive_step_rechallenges_consent() {
         // A gated step inside a plugin is challenged by the secured
-        // dispatch — the -32015 (and its token) must propagate through
+        // dispatch - the -32015 (and its token) must propagate through
         // plugin_run's step-error wrapper.
         let manifest = r#"{
             "name": "sniper",
@@ -904,7 +904,7 @@ mod tests {
         )
         .await
         .unwrap();
-        // Every step went through call_tool_secured → audit.jsonl
+        // Every step went through call_tool_secured -> audit.jsonl
         // carries one record per step.
         let audit = fs::read_to_string(sec_tmp.path().join("logs/audit.jsonl")).unwrap();
         let lines: Vec<&str> = audit.lines().collect();
@@ -917,7 +917,7 @@ mod tests {
 
     #[tokio::test]
     async fn plugin_tools_cannot_write_manifests() {
-        // The tool surface exposes only list/run/reload — read-only
+        // The tool surface exposes only list/run/reload - read-only
         // scans. Assert the whole cycle leaves the dir byte-identical.
         let (_t, store) = store_with(&[("nap.json", SLEEP_PLUGIN)]);
         let before: Vec<_> = fs::read_dir(store.dir())
@@ -998,7 +998,7 @@ mod tests {
         .unwrap()
         .unwrap_err();
         assert_eq!(err.code.0, INVALID_PARAMS);
-        // Undeclared param — strict, same as plugin_run.
+        // Undeclared param - strict, same as plugin_run.
         let err = run_exposed_tool(
             &store,
             "deploy_notes",
@@ -1014,14 +1014,14 @@ mod tests {
 
     #[tokio::test]
     async fn unregistered_tool_name_falls_through() {
-        // `None` → the caller reports -32601 unknown tool, unchanged.
+        // `None` -> the caller reports -32601 unknown tool, unchanged.
         let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
         assert!(
             run_exposed_tool(&store, "nope", &Map::new(), &Providers::empty(), None)
                 .await
                 .is_none()
         );
-        // …and a name that could never be a legal tool name too.
+        // ...and a name that could never be a legal tool name too.
         assert!(
             run_exposed_tool(&store, "no-such", &Map::new(), &Providers::empty(), None)
                 .await
@@ -1054,7 +1054,7 @@ mod tests {
 
     #[tokio::test]
     async fn exposed_tool_inherits_plugin_run_category_gate() {
-        // Plugin tools live in `admin` — a `mouse`-only server must
+        // Plugin tools live in `admin` - a `mouse`-only server must
         // not dispatch them (MethodNotFound + CategoryDisabled).
         let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
         let sec_tmp = tempfile::tempdir().unwrap();
@@ -1077,7 +1077,7 @@ mod tests {
     #[tokio::test]
     async fn secured_dispatch_routes_exposed_tool_by_name() {
         // End-to-end through call_tool_secured: the ambient store is
-        // the registry — pin ULTRANIX_MCP_STATE_DIR to this test's
+        // the registry - pin ULTRANIX_MCP_STATE_DIR to this test's
         // root. The env is process-wide, so keep the window tight and
         // restore it; scans are read-only, so a parallel test's ambient
         // read is at worst a listing of this dir.
@@ -1113,7 +1113,7 @@ mod tests {
     #[tokio::test]
     async fn policy_denylist_denies_exposed_tool_name() {
         // `deny_tools: ["deploy_notes"]` bites in call_tool_secured's
-        // primary policy check — before dispatch, so no manifest is
+        // primary policy check - before dispatch, so no manifest is
         // needed.
         let sec_tmp = tempfile::tempdir().unwrap();
         let mut sec = SecurityContext::new(sec_tmp.path(), false, false).unwrap();
@@ -1138,7 +1138,7 @@ mod tests {
 
     #[tokio::test]
     async fn allowlist_role_denies_unlisted_exposed_tool() {
-        // `allow_tools` without the plugin tool's name → denied by the
+        // `allow_tools` without the plugin tool's name -> denied by the
         // primary check, consistent with `Role::allows` semantics.
         let sec_tmp = tempfile::tempdir().unwrap();
         let mut sec = SecurityContext::new(sec_tmp.path(), false, false).unwrap();
@@ -1174,7 +1174,7 @@ mod tests {
     #[tokio::test]
     async fn denylist_plugin_name_denies_exposed_tool() {
         // Symmetric deny: `deny_tools: ["deploy-notes"]` (the plugin
-        // name) must bite the exposed `deploy_notes` tool — the
+        // name) must bite the exposed `deploy_notes` tool - the
         // manifest is reachable under either name.
         let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
         let sec_tmp = tempfile::tempdir().unwrap();
@@ -1198,7 +1198,7 @@ mod tests {
     #[tokio::test]
     async fn denylist_exposed_name_denies_plugin_run() {
         // The other direction: `deny_tools: ["deploy_notes"]` blocks
-        // the tool AND `plugin_run{name: "deploy-notes"}` — otherwise
+        // the tool AND `plugin_run{name: "deploy-notes"}` - otherwise
         // the name-addressed path would bypass the tool deny.
         let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
         let sec_tmp = tempfile::tempdir().unwrap();
@@ -1220,8 +1220,8 @@ mod tests {
 
     #[tokio::test]
     async fn denylist_manifest_name_denies_plugin_run() {
-        // Full symmetry: `deny_tools: ["deploy-notes"]` — the name
-        // `plugin_list` shows — must bite the name-addressed
+        // Full symmetry: `deny_tools: ["deploy-notes"]` - the name
+        // `plugin_list` shows - must bite the name-addressed
         // `plugin_run` call too, not only the exposed `deploy_notes`.
         let (_t, store) = store_with(&[("d.json", EXPOSED_PLUGIN)]);
         let sec_tmp = tempfile::tempdir().unwrap();

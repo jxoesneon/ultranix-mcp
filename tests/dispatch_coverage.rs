@@ -1,12 +1,12 @@
 //! Secured-dispatch coverage: every tool is driven through
-//! `call_tool_secured` (consent gate → dispatch → audit + metrics +
-//! history) against deterministic providers — happy paths, per-tool
+//! `call_tool_secured` (consent gate -> dispatch -> audit + metrics +
+//! history) against deterministic providers - happy paths, per-tool
 //! param-validation branches, provider-absent `-32010`s, the consent
 //! challenge/verify/bypass arms, and the backend-error arms that only a
 //! failing or non-empty mock can reach.
 //!
 //! Complements `dispatch_mock.rs` (which exercises the unsecured
-//! `call_tool` shim) — a few `call_tool` calls remain here only where the
+//! `call_tool` shim) - a few `call_tool` calls remain here only where the
 //! secured path deliberately bypasses the code under test (the Phase-0
 //! `system_command` validation stub in `automation.rs`).
 
@@ -64,7 +64,7 @@ fn ctx(providers: Providers) -> Ctx {
     }
 }
 
-/// Same, with `--allow-destructive` — the consent gate is bypassed so
+/// Same, with `--allow-destructive` - the consent gate is bypassed so
 /// validation/dispatch branches of gated tools are reachable.
 fn ctx_destructive(providers: Providers) -> Ctx {
     let tmp = tempfile::tempdir().unwrap();
@@ -120,10 +120,10 @@ fn record(c: &Ctx, tool: &str, args_json: Value) -> ultranix_mcp::security::hist
 }
 
 // ---------------------------------------------------------------------------
-// Custom providers — reach the arms the all-Ok mocks cannot.
+// Custom providers - reach the arms the all-Ok mocks cannot.
 // ---------------------------------------------------------------------------
 
-/// Every InputProvider method fails — drives the `backend!` error arms.
+/// Every InputProvider method fails - drives the `backend!` error arms.
 struct FailInput;
 
 #[async_trait]
@@ -151,7 +151,7 @@ impl InputProvider for FailInput {
     }
 }
 
-/// `mouse_move` succeeds once (the move-to-start) then fails — drives the
+/// `mouse_move` succeeds once (the move-to-start) then fails - drives the
 /// mid-drag `move_err` arm while still exercising the release path.
 struct DragFailInput {
     moves: AtomicUsize,
@@ -186,7 +186,7 @@ impl InputProvider for DragFailInput {
     }
 }
 
-/// Modifier keys succeed but the primary key event fails — reaches the
+/// Modifier keys succeed but the primary key event fails - reaches the
 /// `outcome`/`backend!(outcome)` arm with held modifiers released.
 struct KeyFailInput;
 
@@ -247,7 +247,7 @@ impl UIAutomationProvider for UiFound {
 
 /// Overrides `invoke_element_action`: only `"expand"` is "supported".
 /// `invoke_element` returning `true` would make the trait-default's
-/// press→default-action mapping report ok — so a `press` call reporting
+/// press->default-action mapping report ok - so a `press` call reporting
 /// `action_not_supported` proves the *named* method ran.
 struct UiNamedAction;
 
@@ -275,7 +275,7 @@ impl UIAutomationProvider for UiNamedAction {
     }
 }
 
-/// `find_element` fails — drives the `wait_for_ui_element` error arm.
+/// `find_element` fails - drives the `wait_for_ui_element` error arm.
 struct UiErr;
 
 #[async_trait]
@@ -334,7 +334,7 @@ fn window(id: &str, title: &str, focused: bool) -> WindowInfo {
     }
 }
 
-/// Active window id changes on every query — trips the post-action
+/// Active window id changes on every query - trips the post-action
 /// FocusChanged check in the keyboard tools.
 struct FocusFlipper {
     calls: AtomicUsize,
@@ -373,7 +373,7 @@ impl WindowProvider for FocusVanish {
     }
 }
 
-/// No windows at all — `resolve_window` `NoActive` and the
+/// No windows at all - `resolve_window` `NoActive` and the
 /// `{"focused": null}` arm.
 struct NoWindows;
 
@@ -390,7 +390,7 @@ impl WindowProvider for NoWindows {
     }
 }
 
-/// Two windows sharing the substring "dup" — `resolve_window` Ambiguous.
+/// Two windows sharing the substring "dup" - `resolve_window` Ambiguous.
 struct DupWindows;
 
 #[async_trait]
@@ -411,7 +411,7 @@ impl WindowProvider for DupWindows {
 
 /// Focused-view-only backend (river shape): cannot enumerate or
 /// identify windows, so `list_windows`/`active_window` bail, but
-/// `dispatch` on the `"focused"` selector works — exercised through
+/// `dispatch` on the `"focused"` selector works - exercised through
 /// `window_control`'s focused-view shortcut and relative-delta params.
 struct FocusedOnlyWindow {
     calls: Mutex<Vec<(String, String, Value)>>,
@@ -443,7 +443,7 @@ impl WindowProvider for FocusedOnlyWindow {
     }
 }
 
-/// Every window call fails — `resolve_window` Backend arm.
+/// Every window call fails - `resolve_window` Backend arm.
 struct FailWindow;
 
 #[async_trait]
@@ -459,7 +459,7 @@ impl WindowProvider for FailWindow {
     }
 }
 
-/// OCR/icon detections — one matching and one non-matching word.
+/// OCR/icon detections - one matching and one non-matching word.
 struct OcrVision;
 
 #[async_trait]
@@ -502,7 +502,7 @@ impl VisionProvider for OcrVision {
     }
 }
 
-/// `ensure_ready` fails — `web_query`'s readiness `backend!` arm.
+/// `ensure_ready` fails - `web_query`'s readiness `backend!` arm.
 struct FailBrowser;
 
 #[async_trait]
@@ -515,7 +515,7 @@ impl BrowserProvider for FailBrowser {
     }
 }
 
-/// Returns a fixed payload — `web_query` envelope-normalization arms.
+/// Returns a fixed payload - `web_query` envelope-normalization arms.
 struct RawBrowser(Value);
 
 #[async_trait]
@@ -528,7 +528,7 @@ impl BrowserProvider for RawBrowser {
     }
 }
 
-/// `capture_frame` fails — screenshot/color_at `backend!` arms.
+/// `capture_frame` fails - screenshot/color_at `backend!` arms.
 struct FailCapture;
 
 #[async_trait]
@@ -544,7 +544,7 @@ impl CaptureProvider for FailCapture {
     }
 }
 
-/// Records the `region` passed to `capture_frame` — proves spatial-focus
+/// Records the `region` passed to `capture_frame` - proves spatial-focus
 /// scoping actually reaches the capture backend.
 #[derive(Default)]
 struct SpyCapture {
@@ -561,7 +561,7 @@ impl SpyCapture {
 impl CaptureProvider for SpyCapture {
     async fn capture_frame(&self, r: Option<Rect>) -> anyhow::Result<Frame> {
         *self.last.lock().unwrap() = r;
-        // Pixel content is irrelevant — the vision fixtures ignore it.
+        // Pixel content is irrelevant - the vision fixtures ignore it.
         Ok(Frame {
             png: vec![],
             width: r.map_or(1920, |r| r.w.max(1)) as u32,
@@ -577,7 +577,7 @@ impl CaptureProvider for SpyCapture {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Happy paths — every tool through the secured pipeline.
+// 1. Happy paths - every tool through the secured pipeline.
 // ---------------------------------------------------------------------------
 
 /// All non-gated tools return Ok with non-empty content under all-mocks.
@@ -691,7 +691,7 @@ async fn mouse_get_position_prefers_input_then_capture() {
     let v = json_of(&res);
     assert_eq!(v["x"], 0);
     assert_eq!(v["y"], 0);
-    // (0,0) sits inside the mock 1920×1080 output at origin — the
+    // (0,0) sits inside the mock 1920×1080 output at origin - the
     // output-under-pointer resolves to the mock monitor's name.
     assert_eq!(v["display"], "mock");
 
@@ -724,7 +724,7 @@ async fn mouse_drag_instant_and_timed() {
     .unwrap();
     assert_eq!(text_of(&res), "Dragged left from (0, 0) to (50, 50) in 0ms");
 
-    // Timed drag with a non-default button — interpolation + sleep arms.
+    // Timed drag with a non-default button - interpolation + sleep arms.
     let res = secured(
         &c,
         "mouse_drag",
@@ -790,11 +790,11 @@ async fn mouse_button_control_down_and_up() {
 
 /// Button-state tracking (TOOLS.md `mouse_button_control`): releasing an
 /// unpressed button is a no-op *success*, as is re-pressing a held one.
-/// Uses `middle` — no other test ever holds it.
+/// Uses `middle` - no other test ever holds it.
 #[tokio::test]
 async fn mouse_button_control_tracks_held_state() {
     let c = ctx(Providers::all_mocks());
-    // up without a prior down → no-op success, nothing injected.
+    // up without a prior down -> no-op success, nothing injected.
     let res = secured(
         &c,
         "mouse_button_control",
@@ -803,7 +803,7 @@ async fn mouse_button_control_tracks_held_state() {
     .await
     .unwrap();
     assert_eq!(text_of(&res), "middle button up");
-    // down then a redundant down → both succeed; second is a no-op.
+    // down then a redundant down -> both succeed; second is a no-op.
     for _ in 0..2 {
         let res = secured(
             &c,
@@ -924,7 +924,7 @@ async fn type_text_delayed_aborts_mid_sequence_on_focus_change() {
 
 #[tokio::test]
 async fn type_text_focus_change_and_vanish_arms() {
-    // Focus flips mid-action → FocusChanged isError result.
+    // Focus flips mid-action -> FocusChanged isError result.
     let c = ctx(providers_with(|p| {
         p.input = Some(Arc::new(MockInput));
         p.window = Some(Arc::new(FocusFlipper {
@@ -937,7 +937,7 @@ async fn type_text_focus_change_and_vanish_arms() {
     assert_eq!(res.is_error, Some(true));
     assert!(text_of(&res).contains("FocusChanged"), "{res:?}");
 
-    // Focus present before, gone after → unchanged-check `_` arm.
+    // Focus present before, gone after -> unchanged-check `_` arm.
     let c = ctx(providers_with(|p| {
         p.input = Some(Arc::new(MockInput));
         p.window = Some(Arc::new(FocusVanish {
@@ -1098,11 +1098,11 @@ async fn screenshot_display_resolution_arms() {
         .await
         .unwrap();
 
-    // Unknown output name → InvalidParams listing the known outputs.
+    // Unknown output name -> InvalidParams listing the known outputs.
     let res = secured(&c, "screenshot", args(json!({"display": "eDP-9"}))).await;
     assert_error_code(&res, &[INVALID_PARAMS], "unknown display");
 
-    // screen_info failing → isError (not InvalidParams).
+    // screen_info failing -> isError (not InvalidParams).
     let c = ctx(providers_with(|p| p.capture = Some(Arc::new(FailCapture))));
     let res = secured(&c, "screenshot", args(json!({"display": "x"})))
         .await
@@ -1161,7 +1161,7 @@ async fn screen_info_highlight_color_at() {
     let res = secured(&c, "screen_info", args(json!({}))).await.unwrap();
     assert!(json_of(&res)["monitors"].is_array());
 
-    // No overlay backend — the call validates then reports -32010
+    // No overlay backend - the call validates then reports -32010
     // ProviderUnavailable (a no-op success would be a lie).
     let res = secured(
         &c,
@@ -1173,7 +1173,7 @@ async fn screen_info_highlight_color_at() {
     let e = res.unwrap_err();
     assert_eq!(e.data.unwrap()["provider"], "OverlayProvider");
 
-    // Real 1x1 capture decoded: the mock's PNG is white → #FFFFFF.
+    // Real 1x1 capture decoded: the mock's PNG is white -> #FFFFFF.
     let res = secured(&c, "color_at", args(json!({"x": 9, "y": 9})))
         .await
         .unwrap();
@@ -1299,7 +1299,7 @@ async fn find_element_found_and_not_found() {
 #[tokio::test]
 async fn find_text_on_screen_ocr_paths() {
     let _focus = focus_lock().await;
-    // Mock OCR → no detections → found:false. (Explicit region wins over
+    // Mock OCR -> no detections -> found:false. (Explicit region wins over
     // the focus rect; ensure none is installed.)
     let c = ctx(Providers::all_mocks());
     secured(&c, "set_spatial_focus", args(json!({"clear": true})))
@@ -1384,7 +1384,7 @@ async fn find_text_and_icon_scoped_by_spatial_focus() {
             h: 80
         })
     );
-    // Detection local (1,2,10,5) → layout (51,62,10,5).
+    // Detection local (1,2,10,5) -> layout (51,62,10,5).
     let v = json_of(&res);
     assert_eq!(v["found"], true);
     assert_eq!(
@@ -1414,7 +1414,7 @@ async fn find_text_and_icon_scoped_by_spatial_focus() {
     let v = json_of(&res);
     assert_eq!(v["matches"][0]["bounds"], json!({"x":1,"y":2,"w":10,"h":5}));
 
-    // find_icon scopes the same way — the focus rect applies again (the
+    // find_icon scopes the same way - the focus rect applies again (the
     // explicit `region` above was per-call, not persistent).
     let res = secured(&c, "find_icon", args(json!({"description": "gear"})))
         .await
@@ -1441,7 +1441,7 @@ async fn find_text_and_icon_scoped_by_spatial_focus() {
 
 #[tokio::test(start_paused = true)]
 async fn wait_for_ui_element_all_outcomes() {
-    // Timeout → success carrying timed_out (paused clock, no real wait).
+    // Timeout -> success carrying timed_out (paused clock, no real wait).
     let c = ctx(Providers::all_mocks());
     let res = secured(
         &c,
@@ -1469,7 +1469,7 @@ async fn wait_for_ui_element_all_outcomes() {
     assert_eq!(v["found"], true);
     assert_eq!(v["count"], 1);
 
-    // Backend fault inside the poll loop → isError result.
+    // Backend fault inside the poll loop -> isError result.
     let c = ctx(providers_with(|p| p.ui_automation = Some(Arc::new(UiErr))));
     let res = secured(
         &c,
@@ -1484,7 +1484,7 @@ async fn wait_for_ui_element_all_outcomes() {
 
 #[tokio::test]
 async fn invoke_element_arms() {
-    // No match → -32016 ElementNotFound.
+    // No match -> -32016 ElementNotFound.
     let c = ctx(Providers::all_mocks());
     let res = secured(
         &c,
@@ -1495,7 +1495,7 @@ async fn invoke_element_arms() {
     assert_error_code(&res, &[ELEMENT_NOT_FOUND], "invoke_element no match");
 
     // Match + press supported via the trait-default mapping; the other
-    // action spellings reach the provider as named actions — a backend
+    // action spellings reach the provider as named actions - a backend
     // without named-action support reports them as action_not_supported.
     let c = ctx(providers_with(|p| {
         p.ui_automation = Some(Arc::new(UiFound { invoke_ok: true }))
@@ -1524,7 +1524,7 @@ async fn invoke_element_arms() {
         .unwrap();
     assert_eq!(json_of(&res)["action"], "press");
 
-    // Match + action unsupported → action_not_supported.
+    // Match + action unsupported -> action_not_supported.
     let c = ctx(providers_with(|p| {
         p.ui_automation = Some(Arc::new(UiFound { invoke_ok: false }))
     }));
@@ -1538,14 +1538,14 @@ async fn invoke_element_arms() {
     assert_eq!(json_of(&res)["action_result"], "action_not_supported");
 }
 
-/// The requested action name must reach the provider — a backend that
+/// The requested action name must reach the provider - a backend that
 /// honours AT-SPI named actions sees `"expand"`, not a silent `"press"`.
 #[tokio::test]
 async fn invoke_element_passes_named_action_through() {
     let c = ctx(providers_with(|p| {
         p.ui_automation = Some(Arc::new(UiNamedAction))
     }));
-    // "expand" is supported by this backend…
+    // "expand" is supported by this backend...
     let res = secured(
         &c,
         "invoke_element",
@@ -1554,8 +1554,8 @@ async fn invoke_element_passes_named_action_through() {
     .await
     .unwrap();
     assert_eq!(json_of(&res)["action_result"], "ok");
-    // …and "press" is not — the named method ran (the trait default would
-    // have mapped press → invoke_element → ok).
+    // ...and "press" is not - the named method ran (the trait default would
+    // have mapped press -> invoke_element -> ok).
     let res = secured(
         &c,
         "invoke_element",
@@ -1587,7 +1587,7 @@ async fn sleep_max_boundary() {
 #[tokio::test]
 async fn mouse_move_path_shapes() {
     let c = ctx(Providers::all_mocks());
-    // Normal polyline with a degenerate (zero-length) segment inside —
+    // Normal polyline with a degenerate (zero-length) segment inside -
     // covers the `len <= 0.0 continue` and `remaining -= len` arms.
     let res = secured(
         &c,
@@ -1601,7 +1601,7 @@ async fn mouse_move_path_shapes() {
     .unwrap();
     assert!(text_of(&res).contains("Moved along 4-point path"));
 
-    // All-identical points → total_len == 0 arm.
+    // All-identical points -> total_len == 0 arm.
     let res = secured(
         &c,
         "mouse_move_path",
@@ -1628,14 +1628,14 @@ async fn mouse_move_path_shapes() {
 
 #[tokio::test]
 async fn web_query_envelope_normalization() {
-    // Mock browser returns {"matches": []} → found:false inserted.
+    // Mock browser returns {"matches": []} -> found:false inserted.
     let c = ctx(Providers::all_mocks());
     let res = secured(&c, "web_query", args(json!({"selector": "button"})))
         .await
         .unwrap();
     assert_eq!(json_of(&res)["found"], false);
 
-    // Non-empty matches → first match normalised into the spec element
+    // Non-empty matches -> first match normalised into the spec element
     // shape, `bounds_space` defaulted, `matches` folded away.
     let c = ctx(providers_with(|p| {
         p.browser = Some(Arc::new(RawBrowser(
@@ -1654,7 +1654,7 @@ async fn web_query_envelope_normalization() {
     assert_eq!(v["element"]["bounds"], json!({"x":1,"y":2,"w":3,"h":4}));
     assert!(v.get("matches").is_none());
 
-    // Envelope already present → passthrough.
+    // Envelope already present -> passthrough.
     let c = ctx(providers_with(|p| {
         p.browser = Some(Arc::new(RawBrowser(json!({"found": true, "extra": 1}))))
     }));
@@ -1663,7 +1663,7 @@ async fn web_query_envelope_normalization() {
         .unwrap();
     assert_eq!(json_of(&res)["extra"], 1);
 
-    // Non-object provider payload → no normalization.
+    // Non-object provider payload -> no normalization.
     let c = ctx(providers_with(|p| {
         p.browser = Some(Arc::new(RawBrowser(json!(["x"]))))
     }));
@@ -1672,7 +1672,7 @@ async fn web_query_envelope_normalization() {
         .unwrap();
     assert_eq!(json_of(&res), json!(["x"]));
 
-    // ensure_ready failure → isError.
+    // ensure_ready failure -> isError.
     let c = ctx(providers_with(|p| p.browser = Some(Arc::new(FailBrowser))));
     let res = secured(&c, "web_query", args(json!({"selector": "a"})))
         .await
@@ -1734,7 +1734,7 @@ async fn window_control_resolve_window_error_arms() {
     .await;
     assert_error_code(&res, &[INVALID_PARAMS], "window_control ambiguous");
 
-    // No active window → isError (not a JSON-RPC error).
+    // No active window -> isError (not a JSON-RPC error).
     let c = ctx(providers_with(|p| p.window = Some(Arc::new(NoWindows))));
     let res = secured(&c, "window_control", args(json!({"action": "focus"})))
         .await
@@ -1742,7 +1742,7 @@ async fn window_control_resolve_window_error_arms() {
     assert_eq!(res.is_error, Some(true));
     assert!(text_of(&res).contains("no active window"));
 
-    // Backend fault → isError.
+    // Backend fault -> isError.
     let c = ctx(providers_with(|p| p.window = Some(Arc::new(FailWindow))));
     let res = secured(
         &c,
@@ -1774,7 +1774,7 @@ async fn window_control_focused_view_backend() {
     )
     .await;
     // `close` is consent-gated upstream; accept either the challenge or
-    // the dispatched result — what must NOT happen is a resolution error.
+    // the dispatched result - what must NOT happen is a resolution error.
     match res {
         Ok(r) => assert_ne!(r.is_error, Some(true), "focused close: {r:?}"),
         Err(e) => assert_eq!(e.code.0, CONSENT_REQUIRED, "focused close: {e:?}"),
@@ -1800,7 +1800,7 @@ async fn window_control_focused_view_backend() {
         );
     }
 
-    // Absolute args still pass through — the provider decides whether
+    // Absolute args still pass through - the provider decides whether
     // it can honour them (river bails honestly).
     let res = secured(
         &c,
@@ -1817,7 +1817,7 @@ async fn window_control_focused_view_backend() {
 async fn window_control_delta_param_rules() {
     let c = ctx(Providers::all_mocks());
 
-    // dx/dy on a normal (list-capable) backend → InvalidParams.
+    // dx/dy on a normal (list-capable) backend -> InvalidParams.
     let res = secured(
         &c,
         "window_control",
@@ -1826,7 +1826,7 @@ async fn window_control_delta_param_rules() {
     .await;
     assert_error_code(&res, &[INVALID_PARAMS], "deltas on mock backend");
 
-    // Mixed absolute + relative → InvalidParams.
+    // Mixed absolute + relative -> InvalidParams.
     let res = secured(
         &c,
         "window_control",
@@ -1835,7 +1835,7 @@ async fn window_control_delta_param_rules() {
     .await;
     assert_error_code(&res, &[INVALID_PARAMS], "mixed absolute+relative");
 
-    // Partial delta pair → InvalidParams.
+    // Partial delta pair -> InvalidParams.
     let res = secured(
         &c,
         "window_control",
@@ -1844,7 +1844,7 @@ async fn window_control_delta_param_rules() {
     .await;
     assert_error_code(&res, &[INVALID_PARAMS], "partial dw/dh pair");
 
-    // Deltas on a non-geometry action → InvalidParams.
+    // Deltas on a non-geometry action -> InvalidParams.
     let res = secured(
         &c,
         "window_control",
@@ -1889,7 +1889,7 @@ async fn metrics_returns_exposition() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Param-validation branches — -32602 through the secured gate.
+// 2. Param-validation branches - -32602 through the secured gate.
 //    (allow_destructive so consent never pre-empts validation.)
 // ---------------------------------------------------------------------------
 
@@ -2019,7 +2019,7 @@ async fn sanitization_rejected_branches() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Provider-absent branches — -32010 with the right provider name.
+// 3. Provider-absent branches - -32010 with the right provider name.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -2100,7 +2100,7 @@ async fn provider_absent_matrix() {
     }
 }
 
-/// Vision present but capture absent → the *second* provider lookup fails.
+/// Vision present but capture absent -> the *second* provider lookup fails.
 #[tokio::test]
 async fn find_text_and_icon_capture_absent() {
     let c = ctx(providers_with(|p| {
@@ -2142,10 +2142,10 @@ async fn destructive_tools_challenge_without_token() {
 }
 
 /// `window_control{close}` without `window` resolves the active window at
-/// challenge time (target-scoped token) — both the Some and None arms.
+/// challenge time (target-scoped token) - both the Some and None arms.
 #[tokio::test]
 async fn window_close_target_scoped_challenge() {
-    // Active window resolvable → challenge_for_target arm.
+    // Active window resolvable -> challenge_for_target arm.
     let c = ctx(Providers::all_mocks());
     let err = secured(&c, "window_control", args(json!({"action": "close"})))
         .await
@@ -2162,7 +2162,7 @@ async fn window_close_target_scoped_challenge() {
     .await;
     assert_success(&res, "window_control close with valid token");
 
-    // No window provider → target unresolvable → plain challenge arm.
+    // No window provider -> target unresolvable -> plain challenge arm.
     let c = ctx(Providers::empty());
     let err = secured(&c, "window_control", args(json!({"action": "close"})))
         .await
@@ -2184,7 +2184,7 @@ async fn wrong_consent_token_still_challenges() {
     assert_eq!(err.code.0, CONSENT_REQUIRED);
 }
 
-/// Challenge → retry roundtrip: the verified path executes the tool.
+/// Challenge -> retry roundtrip: the verified path executes the tool.
 #[tokio::test]
 async fn consent_token_retry_executes() {
     let c = ctx(Providers::all_mocks());
@@ -2232,7 +2232,7 @@ async fn allow_destructive_bypasses_consent() {
     assert_eq!(text_of(&res), "close applied to 0x0 (\"mock-window\")");
 
     // replay_action clears the gate, then fails selector resolution
-    // against an empty store — a fresh context, since the calls above
+    // against an empty store - a fresh context, since the calls above
     // already recorded history entries into `c`.
     let c2 = ctx_destructive(Providers::all_mocks());
     let res = secured(&c2, "replay_action", args(json!({"index": 0}))).await;
@@ -2244,18 +2244,18 @@ async fn allow_destructive_bypasses_consent() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. system_command — secured exec path + unsecured Phase-0 stub.
+// 5. system_command - secured exec path + unsecured Phase-0 stub.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn system_command_secured_exec_paths() {
     let c = ctx_destructive(Providers::empty());
 
-    // Missing `command` → -32602 from exec_system_command itself.
+    // Missing `command` -> -32602 from exec_system_command itself.
     let res = secured(&c, "system_command", args(json!({}))).await;
     assert_error_code(&res, &[INVALID_PARAMS], "missing command");
 
-    // Non-string args are filtered out of argv (filter_map arm) — the
+    // Non-string args are filtered out of argv (filter_map arm) - the
     // surviving "monitors" read subcommand still validates and executes.
     // (Deliberately `hyprctl`, not `slurp`: slurp blocks on interactive
     // region selection under a live session.)
@@ -2271,7 +2271,7 @@ async fn system_command_secured_exec_paths() {
     }
 
     // `grim` exercises the server-supplied capture-dir arm (created then
-    // unlinked after use). If grim is absent the pin rejects it — both
+    // unlinked after use). If grim is absent the pin rejects it - both
     // are deterministic, typed outcomes.
     let res = secured(&c, "system_command", args(json!({"command": "grim"}))).await;
     match res {
@@ -2298,7 +2298,7 @@ async fn system_command_secured_exec_paths() {
     }
 
     // Whitelist rejections map per failure class (docs/TOOLS.md):
-    // constraint violations → -32003, metacharacters → -32006.
+    // constraint violations -> -32003, metacharacters -> -32006.
     for (a, code) in [
         (
             json!({"command": "hyprctl", "args": ["keyword", "gaps_in", "0"]}),
@@ -2324,7 +2324,7 @@ async fn system_command_secured_exec_paths() {
 }
 
 /// The Phase-0 validation stub in `automation.rs` is unreachable through
-/// `call_tool_secured` (which routes `system_command` to real exec) — it
+/// `call_tool_secured` (which routes `system_command` to real exec) - it
 /// is only reachable via the unsecured `call_tool` shim.
 #[tokio::test]
 async fn system_command_phase0_stub_via_unsecured() {
@@ -2399,7 +2399,7 @@ async fn replay_action_secured_replays_and_audits() {
     let c = ctx_destructive(Providers::all_mocks());
     let rec = record(&c, "sleep", json!({"ms": 0}));
 
-    // By id — the recorded call re-enters call_tool_secured.
+    // By id - the recorded call re-enters call_tool_secured.
     let res = secured(&c, "replay_action", args(json!({"id": rec.id})))
         .await
         .unwrap();
@@ -2431,7 +2431,7 @@ async fn replay_action_secured_replays_and_audits() {
         .unwrap_err();
     assert_eq!(err.code.0, CONSENT_REQUIRED);
 
-    // Non-replayable recorded tool → -32602.
+    // Non-replayable recorded tool -> -32602.
     let c4 = ctx_destructive(Providers::all_mocks());
     let rec = record(&c4, "metrics", json!({}));
     let res = secured(&c4, "replay_action", args(json!({"id": rec.id}))).await;
@@ -2492,7 +2492,7 @@ fn tool_registration_and_category_filter() {
     assert!(none.is_empty());
 }
 
-/// Each category leg of the unsecured `call_tool` → `dispatch` chain,
+/// Each category leg of the unsecured `call_tool` -> `dispatch` chain,
 /// plus its unknown-name fall-through.
 #[tokio::test]
 async fn unsecured_dispatch_each_category_leg() {

@@ -1,16 +1,16 @@
-//! Arg-constrained command whitelist — SECURITY.md "Arg-constrained command
+//! Arg-constrained command whitelist - SECURITY.md "Arg-constrained command
 //! whitelist" and docs/TOOLS.md `system_command`.
 //!
 //! Membership in the closed set `{grim, slurp, hyprctl, scrot, xdotool,
 //! wmctrl}` is necessary but not sufficient: each member's argv is
 //! constrained here, and every binary is resolved to an absolute path at
 //! startup and pinned so a later `PATH` hijack cannot substitute a trojan.
-//! The pin set is wider than the invocable set — provider-internal
+//! The pin set is wider than the invocable set - provider-internal
 //! helpers (`xrandr`, `xprop`, `wl-copy`, `wl-paste`, `xclip`, `xsel`,
 //! `kdotool`) are resolved-and-spawned by providers but have no
 //! `validate_command` arm, so `system_command` can never reach them.
 //!
-//! `busctl`/`gdbus` are deliberately absent — generic D-Bus clients are
+//! `busctl`/`gdbus` are deliberately absent - generic D-Bus clients are
 //! arbitrary-exec primitives (THREAT_MODEL.md §4.10); D-Bus work happens
 //! in-process via `zbus`/`atspi`.
 
@@ -21,7 +21,7 @@ use crate::security::paths;
 use crate::security::sanitize::{SanitizeError, sanitize_arg};
 
 /// Binaries that may ever be spawned by `system_command`.
-/// Pin set — includes provider-internal helpers (`xrandr`, `xprop`,
+/// Pin set - includes provider-internal helpers (`xrandr`, `xprop`,
 /// `wl-copy`, `wl-paste`, `xclip`, `xsel`, `kdotool`, `riverctl`) that
 /// are resolved-and-spawned by X11/clipboard/compositor providers but
 /// have no `validate_command` arm, so `system_command` cannot invoke
@@ -37,7 +37,7 @@ pub const MAX_ARGS: usize = 16;
 /// `hyprctl` read-only subcommands.
 const HYPRCTL_READS: &[&str] = &["clients", "activewindow", "monitors", "workspaces"];
 
-/// `hyprctl dispatch` subcommands that are permitted — window management,
+/// `hyprctl dispatch` subcommands that are permitted - window management,
 /// never process execution. `exec`/`exec-once` are arbitrary code execution
 /// wearing a whitelisted binary's name (SECURITY.md).
 const HYPRCTL_DISPATCHERS: &[&str] = &[
@@ -48,7 +48,7 @@ const HYPRCTL_DISPATCHERS: &[&str] = &[
     "movetoworkspace",
 ];
 
-/// Rejection reasons — `NotWhitelisted` and `ArgConstraint` both map to
+/// Rejection reasons - `NotWhitelisted` and `ArgConstraint` both map to
 /// `-32003`; `Sanitize` maps to `-32006`; `Path` to `-32004`
 /// (docs/TOOLS.md error table).
 #[derive(Debug, thiserror::Error)]
@@ -78,7 +78,7 @@ fn arg_constraint(cmd: &str, detail: impl Into<String>) -> WhitelistError {
 /// argv (argv[0] is the command name, conventions of `Command::new`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AbsoluteInvocation {
-    /// Pinned absolute path to the binary — spawn this, never a bare name.
+    /// Pinned absolute path to the binary - spawn this, never a bare name.
     pub abs_path: PathBuf,
     /// Complete argument vector, output path included where applicable.
     pub argv: Vec<String>,
@@ -88,7 +88,7 @@ pub struct AbsoluteInvocation {
 ///
 /// Resolution happens once: every member is looked up along `PATH`, and the
 /// first executable hit is canonicalized and stored. A member absent from
-/// `PATH` is simply unpinned — [`PinnedBins::validate_command`] then rejects
+/// `PATH` is simply unpinned - [`PinnedBins::validate_command`] then rejects
 /// it as `NotWhitelisted` (spec: "binary absent at startup pin time is
 /// treated as unavailable").
 #[derive(Debug, Clone, Default)]
@@ -104,7 +104,7 @@ impl PinnedBins {
         Self::resolve_in(&dirs)
     }
 
-    /// Resolution against an explicit directory list — factored out for
+    /// Resolution against an explicit directory list - factored out for
     /// hermetic tests (mutating `PATH` inside a test process is unsound).
     pub(crate) fn resolve_in(dirs: &[PathBuf]) -> Self {
         let mut bins = HashMap::with_capacity(WHITELIST.len());
@@ -135,13 +135,13 @@ impl PinnedBins {
     /// Validate `cmd` + `args` against the per-binary constraints and return
     /// a spawn-ready [`AbsoluteInvocation`].
     ///
-    /// `x11_active` gates `xdotool`/`wmctrl` — they are refused on native
+    /// `x11_active` gates `xdotool`/`wmctrl` - they are refused on native
     /// Wayland sessions (they are the X11/XWayland fallback backend).
     ///
-    /// `capture_out` is the **server-supplied** output path for `grim`/
+    /// `capture_out` is the **server-supplied**output path for `grim`/
     /// `scrot` (inside a fresh `0700` dir from [`crate::security::captures`]);
     /// required for those two, forbidden for every other command. Callers
-    /// never supply an output file argument — the whitelist enforces that
+    /// never supply an output file argument - the whitelist enforces that
     /// structurally.
     pub fn validate_command(
         &self,
@@ -154,10 +154,10 @@ impl PinnedBins {
             return Err(arg_constraint(cmd, "too many arguments"));
         }
         // Defense in depth: the pipeline sanitizes before this layer, but a
-        // future callsite must not be able to skip it — e.g. `slurp -f`
+        // future callsite must not be able to skip it - e.g. `slurp -f`
         // legitimately takes a free-form format string that could carry `;`.
         // The command name itself is user-supplied too, so it is resanitized
-        // alongside the args (metachars in `cmd` → `-32006`, not `-32003`).
+        // alongside the args (metachars in `cmd` -> `-32006`, not `-32003`).
         sanitize_arg(cmd)?;
         for a in args {
             sanitize_arg(a)?;
@@ -205,7 +205,7 @@ impl PinnedBins {
                         "permitted only under the X11/XWayland fallback backend",
                     ));
                 }
-                // wmctrl exposes no exec-capable subcommand — the X11
+                // wmctrl exposes no exec-capable subcommand - the X11
                 // gate + sanitization are the constraint.
                 argv.extend(args.iter().cloned());
             }
@@ -215,7 +215,7 @@ impl PinnedBins {
     }
 }
 
-/// Search `PATH` once and pin the whitelist set — process-wide. Every
+/// Search `PATH` once and pin the whitelist set - process-wide. Every
 /// caller (`SecurityContext::pins`, each provider's pin field) shares
 /// the single snapshot taken on first use, so resolution can never
 /// observe a `PATH` mutated between two construction sites (S-1).
@@ -234,7 +234,7 @@ fn is_executable(path: &Path) -> bool {
 }
 
 /// `grim`/`scrot` output path: server-supplied only. Validated against the
-/// path whitelist's *parent* rule (the leaf does not exist yet — the spawned
+/// path whitelist's *parent* rule (the leaf does not exist yet - the spawned
 /// binary creates it).
 fn capture_arg(cmd: &str, capture_out: Option<&Path>) -> Result<String, WhitelistError> {
     let out = capture_out
@@ -256,7 +256,7 @@ fn reject_capture_out(cmd: &str, capture_out: Option<&Path>) -> Result<(), White
     Ok(())
 }
 
-/// `grim [-o <output>] [-g <geometry>]` — no caller `[file]` argument, no
+/// `grim [-o <output>] [-g <geometry>]` - no caller `[file]` argument, no
 /// other flags (`-t`, `-c`, `-l`, `-s`, `-w`, `-h` all denied).
 fn validate_grim(cmd: &str, args: &[String], argv: &mut Vec<String>) -> Result<(), WhitelistError> {
     let mut seen_o = false;
@@ -270,7 +270,7 @@ fn validate_grim(cmd: &str, args: &[String], argv: &mut Vec<String>) -> Result<(
                 return Err(arg_constraint(
                     cmd,
                     format!(
-                        "unsupported argument {a:?} — only -o <output> and -g <geometry> are allowed"
+                        "unsupported argument {a:?} - only -o <output> and -g <geometry> are allowed"
                     ),
                 ));
             }
@@ -288,7 +288,7 @@ fn validate_grim(cmd: &str, args: &[String], argv: &mut Vec<String>) -> Result<(
     Ok(())
 }
 
-/// `scrot [-s] [-d <sec>]` — no caller `[file]` argument.
+/// `scrot [-s] [-d <sec>]` - no caller `[file]` argument.
 fn validate_scrot(
     cmd: &str,
     args: &[String],
@@ -327,7 +327,7 @@ fn validate_scrot(
             _ => {
                 return Err(arg_constraint(
                     cmd,
-                    format!("unsupported argument {a:?} — only -s and -d <sec> are allowed"),
+                    format!("unsupported argument {a:?} - only -s and -d <sec> are allowed"),
                 ));
             }
         }
@@ -336,7 +336,7 @@ fn validate_scrot(
 }
 
 /// `xdotool` subcommands that `system_command` may invoke. Pointing,
-/// typing, and window queries only — the exec-capable primitives
+/// typing, and window queries only - the exec-capable primitives
 /// (`exec`, `execsync`, `behave`, `behave_screen_edge`) are denied the
 /// same way `hyprctl dispatch exec` is (THREAT_MODEL §7).
 const XDOTOOL_SUBCOMMANDS: &[&str] = &[
@@ -404,16 +404,16 @@ fn validate_xdotool(
     if !XDOTOOL_SUBCOMMANDS.contains(&sub) {
         return Err(arg_constraint(
             cmd,
-            format!("unsupported subcommand {sub:?} — exec-capable and unlisted verbs are denied"),
+            format!("unsupported subcommand {sub:?} - exec-capable and unlisted verbs are denied"),
         ));
     }
     argv.extend(args.iter().cloned());
     Ok(())
 }
 
-/// `slurp [-f <format>] [-d] [-b <color>] [-c <color>]` — fixed flag set,
+/// `slurp [-f <format>] [-d] [-b <color>] [-c <color>]` - fixed flag set,
 /// no path arguments. All other slurp flags (`-o`, `-p`, `-w`, `-s`, `-h`,
-/// `-r`, …) are denied per the spec table ("everything else").
+/// `-r`, ...) are denied per the spec table ("everything else").
 fn validate_slurp(
     cmd: &str,
     args: &[String],
@@ -434,7 +434,7 @@ fn validate_slurp(
                 return Err(arg_constraint(
                     cmd,
                     format!(
-                        "unsupported argument {a:?} — allowed: -f <fmt>, -d, -b <color>, -c <color>"
+                        "unsupported argument {a:?} - allowed: -f <fmt>, -d, -b <color>, -c <color>"
                     ),
                 ));
             }
@@ -444,8 +444,8 @@ fn validate_slurp(
 }
 
 /// `hyprctl [-j] <read-sub>` or `hyprctl [-j] dispatch <allowed-dispatcher>
-/// <args…>`. Everything else — `keyword`, `setprop`, `reload`, `dispatch
-/// exec`/`exec-once`, other dispatchers, other flags — is denied.
+/// <args...>`. Everything else - `keyword`, `setprop`, `reload`, `dispatch
+/// exec`/`exec-once`, other dispatchers, other flags - is denied.
 fn validate_hyprctl(
     cmd: &str,
     args: &[String],
@@ -479,7 +479,7 @@ fn validate_hyprctl(
         if !HYPRCTL_DISPATCHERS.contains(&dispatcher.as_str()) {
             return Err(arg_constraint(
                 cmd,
-                format!("dispatcher {dispatcher:?} denied — allowed: {HYPRCTL_DISPATCHERS:?}"),
+                format!("dispatcher {dispatcher:?} denied - allowed: {HYPRCTL_DISPATCHERS:?}"),
             ));
         }
         if dargs.is_empty() || dargs.len() > 4 {
@@ -496,7 +496,7 @@ fn validate_hyprctl(
     Err(arg_constraint(
         cmd,
         format!(
-            "subcommand {sub:?} denied — allowed: {HYPRCTL_READS:?} plus dispatch {HYPRCTL_DISPATCHERS:?}"
+            "subcommand {sub:?} denied - allowed: {HYPRCTL_READS:?} plus dispatch {HYPRCTL_DISPATCHERS:?}"
         ),
     ))
 }
@@ -507,7 +507,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
-    /// A pin set with every member mapped into `dir` — arg-validation tests
+    /// A pin set with every member mapped into `dir` - arg-validation tests
     /// don't need real binaries, just non-empty pins.
     fn pins_all(dir: &Path) -> PinnedBins {
         let mut bins = HashMap::new();
@@ -643,7 +643,7 @@ mod tests {
     fn slurp_denies_everything_else() {
         let pins = pins_all(Path::new("/pinned"));
         for args in [
-            s(&["-o"]), // outputs flag — not in the sanctioned set
+            s(&["-o"]), // outputs flag - not in the sanctioned set
             s(&["-w", "0"]),
             s(&["-p"]),
             s(&["-s", "0"]),
@@ -737,7 +737,7 @@ mod tests {
     #[test]
     fn x11_tools_gated_on_session() {
         let pins = pins_all(Path::new("/pinned"));
-        // X11 fallback active → permitted
+        // X11 fallback active -> permitted
         assert!(
             pins.validate_command("xdotool", &s(&["key", "Return"]), true, None)
                 .is_ok()
@@ -746,7 +746,7 @@ mod tests {
             pins.validate_command("wmctrl", &s(&["-l"]), true, None)
                 .is_ok()
         );
-        // Wayland session → ArgConstraintViolation
+        // Wayland session -> ArgConstraintViolation
         for cmd in ["xdotool", "wmctrl"] {
             let err = pins
                 .validate_command(cmd, &s(&["-l"]), false, None)
@@ -823,8 +823,8 @@ mod tests {
     #[test]
     fn kdotool_is_pin_only_never_invocable() {
         // `kdotool` is a WHITELIST member (providers may pin+spawn it
-        // internally) but has no `validate_command` arm — same contract
-        // as `xrandr`/`xprop` — so `system_command` must reject it as
+        // internally) but has no `validate_command` arm - same contract
+        // as `xrandr`/`xprop` - so `system_command` must reject it as
         // NotWhitelisted even though the pin resolves.
         assert!(WHITELIST.contains(&"kdotool"));
         let pins = pins_all(Path::new("/pinned"));
@@ -847,8 +847,8 @@ mod tests {
     #[test]
     fn clipboard_helpers_are_pin_only_never_invocable() {
         // `wl-copy`/`wl-paste`/`xclip`/`xsel`/`riverctl` are WHITELIST
-        // members — the clipboard/river providers pin+spawn them
-        // internally — but none has a `validate_command` arm (same
+        // members - the clipboard/river providers pin+spawn them
+        // internally - but none has a `validate_command` arm (same
         // contract as `xrandr`/`xprop`/`kdotool`), so `system_command`
         // must reject every one as NotWhitelisted even though the pins
         // resolve.
@@ -880,7 +880,7 @@ mod tests {
     #[test]
     fn capture_out_must_be_under_allowed_roots() {
         let pins = pins_all(Path::new("/pinned"));
-        // /etc exists and canonicalizes, but is not an allowed root —
+        // /etc exists and canonicalizes, but is not an allowed root -
         // a path-whitelist failure (-32004), not an arg constraint.
         let err = pins
             .validate_command("grim", &[], false, Some(Path::new("/etc/evil.png")))
@@ -892,7 +892,7 @@ mod tests {
     fn command_name_is_resanitized() {
         let pins = pins_all(Path::new("/pinned"));
         // A metachar in the command name is a sanitization failure
-        // (-32006), not merely "not whitelisted" (-32003) — callers map
+        // (-32006), not merely "not whitelisted" (-32003) - callers map
         // the variants to distinct error codes.
         let err = pins
             .validate_command("grim;rm", &[], false, None)

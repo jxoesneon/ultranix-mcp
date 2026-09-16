@@ -1,10 +1,10 @@
-//! XDG Desktop Portal `RemoteDesktop` input backend — the last-resort
-//! rung of the input fallback ladder (`wlr-virtual` → `/dev/uinput` →
-//! portal → `xdotool`; ADR 0004, ARCHITECTURE.md §5).
+//! XDG Desktop Portal `RemoteDesktop` input backend - the last-resort
+//! rung of the input fallback ladder (`wlr-virtual` -> `/dev/uinput` ->
+//! portal -> `xdotool`; ADR 0004, ARCHITECTURE.md §5).
 //!
 //! This is the only input path that works on compositors with neither
 //! `zwlr_virtual_pointer_manager_v1`/`virtual-keyboard-unstable-v1` nor a
-//! writable `/dev/uinput` — GNOME, KDE Plasma, COSMIC — at the price of a
+//! writable `/dev/uinput` - GNOME, KDE Plasma, COSMIC - at the price of a
 //! **consent dialog**.
 //!
 //! ## Session lifecycle
@@ -15,17 +15,17 @@
 //! cached in the struct (`Mutex<Option<Session>>`):
 //!
 //! ```text
-//! CreateSession ──► Response{session_handle}
+//! CreateSession --> Response{session_handle}
 //! SelectDevices(types = pointer|keyboard)
-//! SelectSources(types = monitor)              — v2+ only, best-effort
-//! Start("", {}) ──► Response{devices, streams?}
+//! SelectSources(types = monitor)              - v2+ only, best-effort
+//! Start("", {}) --> Response{devices, streams?}
 //! ```
 //!
 //! Every method answers via a `Response` signal on a per-call request
 //! object (see `portal_capture::await_response`); `Start` is the call
 //! that raises the consent dialog. If a `Notify*` call fails later
 //! (session revoked, portal restarted) the session is dropped and
-//! **re-established once** — a `user-cancelled` failure on the retry
+//! **re-established once**- a `user-cancelled` failure on the retry
 //! propagates without a third attempt.
 //!
 //! ## Consent behavior per backend
@@ -33,14 +33,14 @@
 //! - `persist_mode`/`restore_token` are **deliberately never sent and
 //!   never stored**: a persisted restore credential would let a later
 //!   process re-establish a RemoteDesktop session with no fresh consent
-//!   prompt (THREAT_MODEL.md §4.2). Every session — including the
-//!   one-shot re-establishment after a `Notify*` failure — consents
+//!   prompt (THREAT_MODEL.md §4.2). Every session - including the
+//!   one-shot re-establishment after a `Notify*` failure - consents
 //!   afresh through `Start`.
 //! - `xdg-desktop-portal-gnome` / `-kde`: `Start` shows a dialog asking
 //!   which screen to share *and* grants the device set.
 //! - `xdg-desktop-portal-hyprland` / `-wlr`: consent is typically a
 //!   one-shot prompt.
-//! - Version-1 backends get the same plain non-persisted sessions — the
+//! - Version-1 backends get the same plain non-persisted sessions - the
 //!   dialog appears once per process (and again if the session must be
 //!   rebuilt).
 //!
@@ -49,11 +49,11 @@
 //! `NotifyPointerMotionAbsolute` addresses a *stream* (PipeWire node id).
 //! When the session selected sources (v2 `SelectSources`), the granted
 //! stream's `position`/`size` map global coordinates into stream-local
-//! space — this is what GNOME/KDE need. Input-only sessions (v1, or a
+//! space - this is what GNOME/KDE need. Input-only sessions (v1, or a
 //! backend that skipped `SelectSources`) get no streams; we then pass
 //! [`NO_STREAM`] (`u32::MAX`) with global coordinates, which the wlr/
 //! hyprland family treats as whole-session space. A backend that rejects
-//! it answers with a D-Bus error → one reconnect attempt → surfaced as
+//! it answers with a D-Bus error -> one reconnect attempt -> surfaced as
 //! `InputInjectionFailed`.
 //!
 //! ## What is deliberately not done
@@ -66,7 +66,7 @@
 //!   `uinput_input` (portal sessions have no keymap channel).
 //! - **No clipboard/touch devices**: `types = pointer|keyboard` only.
 //!
-//! SAFETY: unit tests never create a session — `CreateSession`/`Start`
+//! SAFETY: unit tests never create a session - `CreateSession`/`Start`
 //! raise GUI consent dialogs on the live desktop. Tests cover the pure
 //! mapping/parsing halves only.
 
@@ -95,13 +95,13 @@ use super::portal_capture::{
 const REMOTE_DESKTOP_IFACE: &str = "org.freedesktop.portal.RemoteDesktop";
 
 /// `SelectDevices` `types` bitmask: keyboard(1) | pointer(2). (4 would be
-/// touchscreen — unused.)
+/// touchscreen - unused.)
 const DEVICE_TYPES: u32 = 0b011;
 
 /// `SelectSources` `types` bitmask: monitor(1) only.
 const SOURCE_MONITOR: u32 = 1;
 
-/// `cursor_mode`: hidden(1) — we never composite a cursor into the stream
+/// `cursor_mode`: hidden(1) - we never composite a cursor into the stream
 /// (the stream itself is never consumed).
 const CURSOR_HIDDEN: u32 = 1;
 
@@ -130,7 +130,7 @@ pub struct PortalInput {
     /// remainders.
     pointer: Mutex<PointerState>,
     /// Pinned `hyprctl` absolute path, when it was on `PATH` at
-    /// construction — the `cursor_position` fallback (S-1).
+    /// construction - the `cursor_position` fallback (S-1).
     hyprctl: Option<PathBuf>,
 }
 
@@ -147,7 +147,7 @@ struct Session {
     proxy: zbus::Proxy<'static>,
     /// Object path of the `org.freedesktop.portal.Session` object.
     path: OwnedObjectPath,
-    /// Streams granted by `Start` — empty for input-only sessions.
+    /// Streams granted by `Start` - empty for input-only sessions.
     streams: Vec<Stream>,
 }
 
@@ -170,7 +170,7 @@ struct PointerState {
 }
 
 // ---------------------------------------------------------------------------
-// Options builders (pure — unit-tested)
+// Options builders (pure - unit-tested)
 // ---------------------------------------------------------------------------
 
 fn base_options(token: String) -> Options {
@@ -185,7 +185,7 @@ fn create_session_options(handle_token: String, session_token: String) -> Option
     o
 }
 
-/// `SelectDevices` options — never carries `persist_mode` or
+/// `SelectDevices` options - never carries `persist_mode` or
 /// `restore_token`: restore credentials are not requested, stored, or
 /// replayed, so every `Start` re-consents (module docs).
 fn select_devices_options(handle_token: String) -> Options {
@@ -223,7 +223,7 @@ fn session_path_from(results: &HashMap<String, OwnedValue>) -> Result<OwnedObjec
         .context("session_handle is neither s nor o")
 }
 
-/// One stream entry (`{node_id: u, position: (ii), size: (ii), …}`) of
+/// One stream entry (`{node_id: u, position: (ii), size: (ii), ...}`) of
 /// the `aa{sv}` `streams` result.
 fn parse_stream(dict: &HashMap<String, OwnedValue>) -> Option<Stream> {
     let node_id = u32::try_from(dict.get("node_id")?).ok()?;
@@ -238,7 +238,7 @@ fn parse_stream(dict: &HashMap<String, OwnedValue>) -> Option<Stream> {
     })
 }
 
-/// `(ii)`/`(uu)` variant → integer pair, via `Structure` fields.
+/// `(ii)`/`(uu)` variant -> integer pair, via `Structure` fields.
 fn pair_i32(v: Option<&OwnedValue>) -> Option<(i32, i32)> {
     let st: &zvariant::Structure = v?.try_into().ok()?;
     let f = st.fields();
@@ -273,7 +273,7 @@ fn absolute_target(streams: &[Stream], x: i32, y: i32) -> (u32, f64, f64) {
         .iter()
         .find(|s| s.w > 0 && s.h > 0 && x >= s.x && y >= s.y && x < s.x + s.w && y < s.y + s.h)
         .unwrap_or(first);
-    // Streams without geometry report (0,0,0,0) — identity mapping.
+    // Streams without geometry report (0,0,0,0) - identity mapping.
     if s.w <= 0 || s.h <= 0 {
         return (s.node_id, f64::from(x), f64::from(y));
     }
@@ -291,7 +291,7 @@ fn absolute_target(streams: &[Stream], x: i32, y: i32) -> (u32, f64, f64) {
 impl PortalInput {
     /// Probe only: `Some` when the session bus is up and
     /// `org.freedesktop.portal.Desktop` is owned. No portal method is
-    /// invoked — the session (and its consent dialog) starts lazily on
+    /// invoked - the session (and its consent dialog) starts lazily on
     /// the first input call.
     pub fn new() -> Option<Self> {
         if !portal_name_owned() {
@@ -319,7 +319,7 @@ impl PortalInput {
     }
 
     /// Run `op` against the live session, establishing it on demand. On
-    /// op failure the session is dropped and rebuilt **once** — covering
+    /// op failure the session is dropped and rebuilt **once**- covering
     /// revoked sessions and portal restarts without an error loop. The
     /// session mutex serializes every call, so one consent flow is ever
     /// in flight.
@@ -350,7 +350,7 @@ impl PortalInput {
 
     /// Interface `version` property (v2 adds `SelectSources`). Tries the
     /// modern `version` name then the legacy `AvailableVersion`;
-    /// unreadable/timed-out → `1` (conservative).
+    /// unreadable/timed-out -> `1` (conservative).
     async fn interface_version(proxy: &zbus::Proxy<'_>) -> u32 {
         if let Ok(v) = portal_call(proxy.get_property::<u32>("version")).await {
             return v;
@@ -360,9 +360,9 @@ impl PortalInput {
             .unwrap_or(1)
     }
 
-    /// `CreateSession → SelectDevices → SelectSources? → Start` — see
+    /// `CreateSession -> SelectDevices -> SelectSources? -> Start` - see
     /// module docs for the consent story. `Start` is where the consent
-    /// dialog lives; it is re-run on every establishment — no
+    /// dialog lives; it is re-run on every establishment - no
     /// `persist_mode`/`restore_token` is ever sent or stored.
     async fn start_session(&self, conn: &zbus::Connection) -> Result<Session> {
         let proxy = portal_call(
@@ -386,7 +386,7 @@ impl PortalInput {
         // SelectSources exists at interface version ≥ 2.
         let has_sources = Self::interface_version(&proxy).await >= 2;
 
-        // CreateSession(a{sv}) → request → Response{session_handle}
+        // CreateSession(a{sv}) -> request -> Response{session_handle}
         let opts = create_session_options(new_handle_token(), new_handle_token());
         let req: OwnedObjectPath = portal_call(proxy.call("CreateSession", &(&opts,)))
             .await
@@ -394,7 +394,7 @@ impl PortalInput {
         let results = await_response(&mut responses, &req).await?;
         let session_path = session_path_from(&results)?;
 
-        // SelectDevices(o, a{sv}) — pointer + keyboard.
+        // SelectDevices(o, a{sv}) - pointer + keyboard.
         let opts = select_devices_options(new_handle_token());
         let req: OwnedObjectPath =
             portal_call(proxy.call("SelectDevices", &(&session_path, &opts)))
@@ -402,7 +402,7 @@ impl PortalInput {
                 .context("portal SelectDevices call")?;
         await_response(&mut responses, &req).await?;
 
-        // SelectSources(o, a{sv}) — v2+, best-effort. One monitor source
+        // SelectSources(o, a{sv}) - v2+, best-effort. One monitor source
         // gives `Start` a stream whose geometry anchors absolute pointer
         // motion (GNOME/KDE require it). Backends without source support
         // keep running streamless.
@@ -428,9 +428,9 @@ impl PortalInput {
             }
         }
 
-        // Start(o, s parent_window, a{sv}) — this is where the consent
+        // Start(o, s parent_window, a{sv}) - this is where the consent
         // dialog lives; may block until the user answers. A
-        // `restore_token` in the response is deliberately ignored —
+        // `restore_token` in the response is deliberately ignored -
         // persistence is off by policy (module docs).
         let opts = base_options(new_handle_token());
         let req: OwnedObjectPath = portal_call(proxy.call("Start", &(&session_path, "", &opts)))
@@ -511,7 +511,7 @@ impl PortalInput {
     }
 }
 
-/// `NotifyKeyboardKeycode(o, a{sv}, i keycode, u state)` — one press or
+/// `NotifyKeyboardKeycode(o, a{sv}, i keycode, u state)` - one press or
 /// release of `code` on `s`.
 async fn notify_keycode(s: &Session, code: i32, down: bool) -> Result<()> {
     portal_call(s.proxy.call::<_, _, ()>(
@@ -533,7 +533,7 @@ impl InputProvider for PortalInput {
     }
 
     async fn mouse_click(&self, x: i32, y: i32, button: &str) -> Result<()> {
-        // Validate before moving — a bad name never repositions the
+        // Validate before moving - a bad name never repositions the
         // pointer (same ordering as wlr_input/uinput_input).
         let code = button_code(button)
             .map(i32::from)
@@ -550,7 +550,7 @@ impl InputProvider for PortalInput {
         self.emit_button(code, down).await
     }
 
-    /// `dx`/`dy` are wheel steps; positive scrolls right/down —
+    /// `dx`/`dy` are wheel steps; positive scrolls right/down -
     /// `NotifyPointerAxisDiscrete` shares that sign convention (unlike
     /// evdev `REL_WHEEL`), so no inversion is needed. Sub-detent
     /// remainders accumulate across calls.
@@ -635,7 +635,7 @@ impl InputProvider for PortalInput {
 // ---------------------------------------------------------------------------
 //
 // SAFETY: no test in this module opens a portal session or calls a
-// portal method — `CreateSession`/`Start` raise GUI consent dialogs on a
+// portal method - `CreateSession`/`Start` raise GUI consent dialogs on a
 // live desktop. Covered: key/button tables, option builders, response
 // parsing, stream mapping, wheel detents, and the read-only
 // name-ownership probe.
@@ -738,7 +738,7 @@ mod tests {
         let o = select_devices_options("h".into());
         assert!(matches!(o["types"], Value::U32(3)));
         // Restore credentials are never requested: every `Start`
-        // re-consents (module docs — no persist_mode, no restore_token).
+        // re-consents (module docs - no persist_mode, no restore_token).
         assert!(!o.contains_key("persist_mode"));
         assert!(!o.contains_key("restore_token"));
     }
@@ -813,7 +813,7 @@ mod tests {
             }
         );
 
-        // Missing/empty → none.
+        // Missing/empty -> none.
         assert!(parse_streams(&HashMap::new()).is_empty());
     }
 
@@ -821,22 +821,22 @@ mod tests {
 
     #[test]
     fn pair_i32_accepts_only_two_int_structures() {
-        // (ii) → pair.
+        // (ii) -> pair.
         let v = owned(zvariant::Structure::from((7i32, -3i32)));
         assert_eq!(pair_i32(Some(&v)), Some((7, -3)));
-        // Missing value, non-structure, short structure → None.
+        // Missing value, non-structure, short structure -> None.
         assert_eq!(pair_i32(None), None);
         assert_eq!(pair_i32(Some(&owned(5u32))), None);
         let one = owned(zvariant::Structure::from((9i32,)));
         assert_eq!(pair_i32(Some(&one)), None);
-        // (uu) fields do not coerce to i32 → None.
+        // (uu) fields do not coerce to i32 -> None.
         let uu = owned(zvariant::Structure::from((3u32, 4u32)));
         assert_eq!(pair_i32(Some(&uu)), None);
     }
 
     #[test]
     fn parse_stream_defaults_missing_geometry() {
-        // node_id alone → a stream with identity (0,0,0,0) geometry.
+        // node_id alone -> a stream with identity (0,0,0,0) geometry.
         let mut s: HashMap<String, OwnedValue> = HashMap::new();
         s.insert("node_id".into(), owned(9u32));
         assert_eq!(
@@ -849,7 +849,7 @@ mod tests {
                 h: 0
             })
         );
-        // No node_id → not a stream at all.
+        // No node_id -> not a stream at all.
         let mut bad: HashMap<String, OwnedValue> = HashMap::new();
         bad.insert(
             "position".into(),
@@ -860,7 +860,7 @@ mod tests {
 
     #[test]
     fn parse_streams_tolerates_malformed_values() {
-        // `streams` present but not an aa{sv} → empty, not an error.
+        // `streams` present but not an aa{sv} -> empty, not an error.
         let mut results: HashMap<String, OwnedValue> = HashMap::new();
         results.insert("streams".into(), owned("not-a-dict-array"));
         assert!(parse_streams(&results).is_empty());
@@ -874,11 +874,11 @@ mod tests {
         assert_eq!(parse_streams(&results).len(), 1);
     }
 
-    // ---- stream → coordinate mapping ------------------------------------
+    // ---- stream -> coordinate mapping ------------------------------------
 
     #[test]
     fn absolute_target_clamps_before_first_stream() {
-        // Point left/above the first stream's origin → stream-local 0,0
+        // Point left/above the first stream's origin -> stream-local 0,0
         // via the clamp (the `find` miss falls back to `first`).
         let streams = vec![Stream {
             node_id: 4,
@@ -917,7 +917,7 @@ mod tests {
                 h: 1440,
             },
         ];
-        // Point on the second output → stream-local coords.
+        // Point on the second output -> stream-local coords.
         let (node, x, y) = absolute_target(&streams, 2000, 100);
         assert_eq!(node, 11);
         assert_eq!((x, y), (80.0, 100.0));
@@ -925,7 +925,7 @@ mod tests {
         let (node, x, y) = absolute_target(&streams, 5, 5);
         assert_eq!(node, 10);
         assert_eq!((x, y), (5.0, 5.0));
-        // Point outside all → first stream, clamped.
+        // Point outside all -> first stream, clamped.
         let (node, x, y) = absolute_target(&streams, 9000, 9000);
         assert_eq!(node, 10);
         assert_eq!((x, y), (1919.0, 1079.0));
@@ -958,7 +958,7 @@ mod tests {
 
     #[test]
     fn new_probe_is_bounded_and_pure() {
-        // Only session-bus NameHasOwner — no session, no dialog.
+        // Only session-bus NameHasOwner - no session, no dialog.
         let _ = PortalInput::new();
     }
 
@@ -968,8 +968,8 @@ mod tests {
         if std::env::var("ULTRANIX_MCP_LIVE_TESTS").ok().as_deref() != Some("1") {
             return;
         }
-        // Probe only — deliberately NOT calling any InputProvider method:
-        // the first call would trigger Start → GUI consent dialog.
+        // Probe only - deliberately NOT calling any InputProvider method:
+        // the first call would trigger Start -> GUI consent dialog.
         let p = PortalInput::new();
         tracing::info!("portal input probe: {:?}", p.is_some());
     }

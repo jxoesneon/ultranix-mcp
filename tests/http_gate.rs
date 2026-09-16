@@ -7,7 +7,7 @@
 //! `serve_http` snapshots its `ApiKeyStore`/`RateLimiter` from the
 //! *process* environment at startup, so every test configures
 //! `ULTRANIX_MCP_*` vars through [`EnvGuard`]: it serializes on
-//! [`ENV_LOCK`] (env is process-global — tests run on threads in this
+//! [`ENV_LOCK`] (env is process-global - tests run on threads in this
 //! binary), clears every gate-relevant var, applies the per-test
 //! overrides, and restores the ambient values on drop. The guard is held
 //! for the whole test so no parallel test can observe a half-configured
@@ -16,7 +16,7 @@
 //! `serve_stdio` is intentionally *not* re-covered here:
 //! `tests/nested.rs::stdio_mock_transport_smoke` already spawns
 //! `ultranix-mcp --transport stdio --mock`, drives the
-//! initialize → initialized → `tools/list` handshake, and asserts the
+//! initialize -> initialized -> `tools/list` handshake, and asserts the
 //! 40-tool catalog plus a `tools/call` round-trip.
 
 use std::collections::{HashMap, HashSet};
@@ -36,7 +36,7 @@ use ultranix_mcp::server::UltraNixServer;
 /// through this lock for its full duration.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// Every `ULTRANIX_MCP_*` var `serve_http` consults — directly or via
+/// Every `ULTRANIX_MCP_*` var `serve_http` consults - directly or via
 /// `SecurityContext`/`ApiKeyStore`/`RateLimiter`/audit/history. Cleared
 /// before each test so ambient developer/CI env can never leak in.
 const ENV_VARS: &[&str] = &[
@@ -51,10 +51,10 @@ const ENV_VARS: &[&str] = &[
     "ULTRANIX_MCP_AUDIT_SECRET",
 ];
 
-/// `uxcp_<64 lowercase hex>` — configured as the server's key in most
+/// `uxcp_<64 lowercase hex>` - configured as the server's key in most
 /// tests. Format-valid per `auth::is_valid_key`.
 const TEST_KEY: &str = "uxcp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-/// Valid format but never configured — drives the `unknown` 401 path.
+/// Valid format but never configured - drives the `unknown` 401 path.
 const UNKNOWN_KEY: &str = "uxcp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 /// Holds `ENV_LOCK` for the test's duration; restores every saved var on
@@ -121,7 +121,7 @@ impl Drop for TestServer {
 
 /// `UltraNixServer` + security pipeline over `state_dir` (a per-test
 /// tempdir), bound to a free loopback port, polled until `/health`
-/// answers 200 (≤5 s) — which also proves the env snapshot
+/// answers 200 (≤5 s) - which also proves the env snapshot
 /// (`ApiKeyStore::from_env`, `RateLimiter::from_env`) already ran, since
 /// both precede the bind in `serve_http`.
 fn spawn_server(rt: &tokio::runtime::Runtime, state_dir: &Path) -> TestServer {
@@ -137,7 +137,7 @@ fn spawn_server_with_policy(
     state_dir: &Path,
     policy: ultranix_mcp::security::policy::Policy,
 ) -> TestServer {
-    // Reserve a free port, release it, then let the server bind it — the
+    // Reserve a free port, release it, then let the server bind it - the
     // race window is tiny and loopback-only.
     let port = TcpListener::bind("127.0.0.1:0")
         .expect("bind ephemeral port")
@@ -250,7 +250,7 @@ fn mcp_initialize(
     (session, body)
 }
 
-/// `notifications/initialized` on an established session — transport
+/// `notifications/initialized` on an established session - transport
 /// answers 202 Accepted.
 fn mcp_notify_initialized(client: &reqwest::blocking::Client, port: u16, session: &str) {
     let resp = mcp_post(
@@ -298,7 +298,7 @@ fn mcp_call_tool(
     sse_json(&body, id)
 }
 
-/// Extract the JSON-RPC message for request `id` from an SSE body —
+/// Extract the JSON-RPC message for request `id` from an SSE body -
 /// scans `data:` frames (the stream may also carry a priming event with
 /// empty data and `retry:`).
 fn sse_json(body: &str, id: i64) -> Value {
@@ -487,7 +487,7 @@ fn readyz_reports_mock_provider_shape() {
     let srv = spawn_server(&rt, tmp.path());
     let client = http_client();
 
-    // No credential — /readyz is deliberately outside the gate.
+    // No credential - /readyz is deliberately outside the gate.
     let resp = client
         .get(format!("http://127.0.0.1:{}/readyz", srv.port))
         .send()
@@ -566,7 +566,7 @@ fn rate_limit_burst_returns_429() {
     let mut allowed = 0u32;
     let mut rejected = 0u32;
     for i in 0..30 {
-        // `ping` never creates a session (422 past the gate — session
+        // `ping` never creates a session (422 past the gate - session
         // routing wants `initialize` first); what matters is that the
         // token bucket adjudicates each request before the MCP layer.
         let resp = mcp_post(
@@ -609,7 +609,7 @@ fn disable_auth_dev_hatch_reaches_mcp_layer() {
     let srv = spawn_server(&rt, tmp.path());
     let client = http_client();
 
-    // No credential at all — auth is off, so the request must reach the
+    // No credential at all - auth is off, so the request must reach the
     // MCP transport (200 SSE), not the 401 gate.
     let (_session, body) = mcp_initialize(&client, srv.port, None);
     let reply = sse_json(&body, 1);
@@ -641,8 +641,8 @@ fn tools_call_over_http_returns_mock_json() {
         mcp_initialize(&client, srv.port, Some(("x-api-key", TEST_KEY.to_string())));
     mcp_notify_initialized(&client, srv.port, &session);
 
-    // screen_info → MockCapture's deterministic monitor JSON, routed via
-    // call_tool_secured (security is Some) → audit + metrics recorded.
+    // screen_info -> MockCapture's deterministic monitor JSON, routed via
+    // call_tool_secured (security is Some) -> audit + metrics recorded.
     let reply = mcp_call_tool(&client, srv.port, &session, 2, "screen_info");
     let text = reply
         .pointer("/result/content/0/text")
@@ -652,7 +652,7 @@ fn tools_call_over_http_returns_mock_json() {
     assert_eq!(doc["monitors"][0]["name"], "mock");
     assert_eq!(doc["monitors"][0]["width"], 1920);
 
-    // get_windows → MockWindow's single "mock-window" entry.
+    // get_windows -> MockWindow's single "mock-window" entry.
     let reply = mcp_call_tool(&client, srv.port, &session, 3, "get_windows");
     let text = reply
         .pointer("/result/content/0/text")
@@ -722,7 +722,7 @@ fn mcp_list_tool_names(
         .collect()
 }
 
-/// First 8 hex chars of SHA-256(key) — the `key_id` `http_gate` derives
+/// First 8 hex chars of SHA-256(key) - the `key_id` `http_gate` derives
 /// from the authenticated credential and `policy.keys` maps to a role.
 fn test_key_id() -> String {
     use sha2::{Digest, Sha256};
@@ -740,7 +740,7 @@ fn per_key_role_scopes_list_and_call() {
         ("ULTRANIX_MCP_API_KEY", Some(TEST_KEY)),
         ("ULTRANIX_MCP_STATE_DIR", tmp.path().to_str()),
     ]);
-    // TEST_KEY's fingerprint → a role allowing only `screen_info`; every
+    // TEST_KEY's fingerprint -> a role allowing only `screen_info`; every
     // other tool is hidden from tools/list and denied on tools/call.
     let policy = Policy {
         roles: HashMap::from([(

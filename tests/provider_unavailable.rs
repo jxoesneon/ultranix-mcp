@@ -43,7 +43,7 @@ async fn provider_backed_tools_return_provider_unavailable() {
     );
 }
 
-/// Server-core tools never report -32010 — they have no provider slot.
+/// Server-core tools never report -32010 - they have no provider slot.
 #[tokio::test]
 async fn server_core_tools_never_report_provider_unavailable() {
     let providers = Providers::empty();
@@ -52,7 +52,7 @@ async fn server_core_tools_never_report_provider_unavailable() {
             continue;
         }
         // replay_action re-enters `call_tool` with the *recorded* tool, which
-        // may be provider-backed — under an empty registry -32010 is the
+        // may be provider-backed - under an empty registry -32010 is the
         // honest outcome, so the core-only invariant does not apply to it.
         if *name == "replay_action" {
             continue;
@@ -111,7 +111,7 @@ async fn gated_core_tools_challenge_or_run_without_providers() {
 }
 
 /// Invalid input still beats the provider check when schema validation
-/// runs first — at minimum it must not be reported as -32010 success.
+/// runs first - at minimum it must not be reported as -32010 success.
 /// (Ordering is implementation-defined; we only pin that an invalid call
 /// cannot succeed.)
 #[tokio::test]

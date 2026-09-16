@@ -13,7 +13,7 @@ feature-depth = 1
 # cargo-deny ≥0.18 removed `vulnerability`/`unsound`/`notice` (all now
 # error unconditionally) and changed `unmaintained` to a scope:
 # all | workspace | transitive | none. `workspace` fails only when a
-# DIRECT dep is unmaintained — transitive strays still surface via
+# DIRECT dep is unmaintained - transitive strays still surface via
 # `cargo audit` informational warnings.
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
@@ -42,7 +42,7 @@ allow = [
   "Unicode-3.0",
   "MPL-2.0",
   "CC0-1.0",
-  # `webpki-roots`/`webpki-root-certs` (via `ureq` → ort/sentry) ship
+  # `webpki-roots`/`webpki-root-certs` (via `ureq` -> ort/sentry) ship
   # the Mozilla CA bundle under the permissive Community Data License.
   "CDLA-Permissive-2.0",
   # `uinput`/`uinput-sys` (/dev/uinput input provider) are WTFPL.

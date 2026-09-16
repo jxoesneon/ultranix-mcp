@@ -24,7 +24,7 @@ const COMMAND_NOT_WHITELISTED: i32 = -32003;
 #[tokio::test]
 async fn all_tools_valid_args_succeed_with_mocks() {
     // `screen_record` writes a real `rec-<ulid>` dir under the ambient
-    // captures root — the `#[cfg(test)]` TEST_RECORDING_BASE seam does
+    // captures root - the `#[cfg(test)]` TEST_RECORDING_BASE seam does
     // not exist in the lib build integration tests link. Redirect the
     // state root into a tempdir for the whole loop (serialized via
     // env_lock: the environment is process-global).
@@ -32,10 +32,10 @@ async fn all_tools_valid_args_succeed_with_mocks() {
     let state_tmp = tempfile::tempdir().unwrap();
     let _state = common::ScopedStateDir::set(state_tmp.path());
     let providers = Providers::all_mocks();
-    // invoke_element (mock tree has no match → -32016 is legal),
+    // invoke_element (mock tree has no match -> -32016 is legal),
     // system_command / replay_action / clear_action_history (consent gate),
     // get_action_history (history store may not exist yet),
-    // plugin_run (the fixture names a plugin that does not exist →
+    // plugin_run (the fixture names a plugin that does not exist ->
     // InvalidParams is legal), and
     // screen_highlight (MockOverlay no-ops; the -32010 path is covered
     // in dispatch_coverage) are
@@ -62,7 +62,7 @@ async fn all_tools_valid_args_succeed_with_mocks() {
 
 /// With a mock AT-SPI tree `invoke_element` finds no match: per spec a
 /// query with no match is `-32016 ElementNotFound`. A Phase-0 stub may
-/// also surface the mock's `invoke_element → false` as a normal result —
+/// also surface the mock's `invoke_element -> false` as a normal result -
 /// accept either, but never InvalidParams.
 #[tokio::test]
 async fn invoke_element_no_match_is_element_not_found_or_success() {
@@ -99,7 +99,7 @@ async fn replay_action_without_token_executes_or_challenges() {
     match res {
         Ok(r) => assert!(r.is_error != Some(true)),
         // -32015 consent challenge; -32602/-32014 when the history store
-        // has no index 0 yet — all are spec-shaped Phase-0 outcomes.
+        // has no index 0 yet - all are spec-shaped Phase-0 outcomes.
         Err(e) => assert!(
             [CONSENT_REQUIRED, INVALID_PARAMS, HISTORY_ERROR].contains(&e.code.0),
             "unexpected code for replay_action: {e:?}"
@@ -184,7 +184,7 @@ async fn mouse_scroll_both_deltas_zero_is_invalid_params() {
 #[tokio::test]
 async fn window_control_move_requires_geometry() {
     let providers = Providers::all_mocks();
-    // `move` requires x and y — omitting them is a per-action rule violation.
+    // `move` requires x and y - omitting them is a per-action rule violation.
     let res = call(
         "window_control",
         args(json!({"action": "move"})),
@@ -269,14 +269,14 @@ async fn unknown_tool_name_is_method_not_found() {
     assert_error_code(&res, &[METHOD_NOT_FOUND], "unknown tool");
 }
 
-/// Valid calls must not produce provider errors under all_mocks — sanity
+/// Valid calls must not produce provider errors under all_mocks - sanity
 /// that the fixtures above route to the right backend. (`screen_highlight`
 /// is exempt: no OverlayProvider exists at all, so -32010 is its honest
 /// answer everywhere.)
 #[tokio::test]
 async fn valid_calls_never_report_provider_unavailable() {
     // Same screen_record hermeticity seam as
-    // `all_tools_valid_args_succeed_with_mocks` — this loop dispatches
+    // `all_tools_valid_args_succeed_with_mocks` - this loop dispatches
     // it too.
     let _env = common::env_lock().await;
     let state_tmp = tempfile::tempdir().unwrap();

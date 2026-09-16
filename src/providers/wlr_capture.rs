@@ -1,5 +1,5 @@
 //! Wayland-native screen capture via `zwlr_screencopy_manager_v1`
-//! (wlr-screencopy-unstable-v1) — in-process, no external binaries.
+//! (wlr-screencopy-unstable-v1) - in-process, no external binaries.
 //!
 //! Connects to `$WAYLAND_DISPLAY`, binds `wl_shm` + the screencopy manager,
 //! copies the first `wl_output` (or a region of it) into a SHM pool backed by
@@ -37,7 +37,7 @@ use super::common::{OutputInfo, hyprctl_cursorpos, hyprctl_monitors};
 /// the provider `Send + Sync` without holding protocol objects across awaits.
 pub struct WlrCapture {
     /// Pinned `hyprctl` absolute path, when it was on `PATH` at
-    /// construction — `cursor_position`/`screen_info` helpers (S-1).
+    /// construction - `cursor_position`/`screen_info` helpers (S-1).
     hyprctl: Option<std::path::PathBuf>,
 }
 
@@ -252,7 +252,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for State {
     }
 }
 
-// `wl_shm` emits `format` events after bind — `delegate_noop!` would
+// `wl_shm` emits `format` events after bind - `delegate_noop!` would
 // panic on them; give it an explicit swallow-everything impl.
 impl Dispatch<wl_shm::WlShm, ()> for State {
     fn event(
@@ -347,7 +347,7 @@ fn capture_blocking(region: Option<Rect>) -> Result<Frame> {
 
     // Pump events until `ready`/`failed` or a 5 s deadline. Each roundtrip
     // is bounded by the compositor's sync reply, but the copy itself is
-    // asynchronous — `ready` arrives when the GPU work completes, often
+    // asynchronous - `ready` arrives when the GPU work completes, often
     // several display frames later, so a fixed roundtrip count races it.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !(state.ready || state.failed.is_some()) {
@@ -398,7 +398,7 @@ fn capture_blocking(region: Option<Rect>) -> Result<Frame> {
     })
 }
 
-/// wl_output inventory as JSON — fallback for `screen_info` when `hyprctl`
+/// wl_output inventory as JSON - fallback for `screen_info` when `hyprctl`
 /// is absent (non-Hyprland wlroots compositors).
 fn screen_info_blocking() -> Result<Value> {
     let (_queue, state) = connect()?;
@@ -426,7 +426,7 @@ fn screen_info_blocking() -> Result<Value> {
 // Pixel conversion + PNG
 // ---------------------------------------------------------------------------
 
-/// wl_shm formats [`shm_to_rgba`] can decode — the four 32-bit 8888
+/// wl_shm formats [`shm_to_rgba`] can decode - the four 32-bit 8888
 /// layouts only; anything else the compositor offers is declined so the
 /// `buffer` event loop keeps looking for a usable one.
 fn shm_format_supported(fmt: wl_shm::Format) -> bool {
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn shm_short_buffer_leaves_tail_zeroed() {
-        // Declared 2x2 but the buffer ends after one row — the row loop
+        // Declared 2x2 but the buffer ends after one row - the row loop
         // breaks instead of reading out of bounds; unwritten rows stay 0.
         let raw = [0x20, 0x40, 0x60, 0x00, 0x21, 0x41, 0x61, 0x00];
         let rgba = shm_to_rgba(&raw, wl_shm::Format::Xrgb8888, 2, 2, 8, false);
@@ -612,7 +612,7 @@ mod tests {
         assert!(shm_format_supported(Format::Argb8888));
         assert!(shm_format_supported(Format::Xbgr8888));
         assert!(shm_format_supported(Format::Abgr8888));
-        // 16-bit and palette formats must be declined — `shm_to_rgba`
+        // 16-bit and palette formats must be declined - `shm_to_rgba`
         // assumes 4 bytes per pixel.
         assert!(!shm_format_supported(Format::Rgb565));
         assert!(!shm_format_supported(Format::C8));

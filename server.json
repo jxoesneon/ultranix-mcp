@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.jxoesneon/ultranix-mcp",
-  "description": "Secure Linux desktop automation — input, screen/OCR/vision, AT-SPI2 UI tree, window, clipboard",
+  "description": "Secure Linux desktop automation - input, screen/OCR/vision, AT-SPI2 UI tree, window, clipboard",
   "version": "1.4.0",
   "title": "ultranix-mcp",
   "repository": {
@@ -16,7 +16,7 @@
       "transport": { "type": "stdio" },
       "runtimeHint": "docker",
       "environmentVariables": [
-        { "name": "ULTRANIX_MCP_API_KEY", "description": "API key(s) (uxcp_*) for HTTP transport auth — required for --transport http (fail-closed), unused on stdio", "isRequired": false, "isSecret": true },
+        { "name": "ULTRANIX_MCP_API_KEY", "description": "API key(s) (uxcp_*) for HTTP transport auth - required for --transport http (fail-closed), unused on stdio", "isRequired": false, "isSecret": true },
         { "name": "ULTRANIX_MCP_API_KEY_FILE", "description": "Path to a 0600 file holding uxcp_* keys, one per line", "isRequired": false, "isSecret": false },
         { "name": "ULTRANIX_MCP_API_KEY_EXPIRES", "description": "Optional RFC 3339 expiry for the env-sourced key (self-revoking)", "isRequired": false, "isSecret": false },
         { "name": "ULTRANIX_MCP_HISTORY_SECRET", "description": "AES-256-GCM secret for encrypted action history (per-install generated if unset)", "isRequired": false, "isSecret": true },

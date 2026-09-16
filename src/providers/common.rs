@@ -1,18 +1,18 @@
-//! Shared provider helpers — the single home for code the provider
+//! Shared provider helpers - the single home for code the provider
 //! backends used to carry as private copies.
 //!
 //! Two families live here:
 //!
-//! - **`hyprctl` degraded-read helpers** (`parse_cursorpos`,
+//! - **`hyprctl` degraded-read helpers**(`parse_cursorpos`,
 //!   [`hyprctl_cursorpos`], [`hyprctl_monitors`], [`hyprctl_screen_size`]):
 //!   backends without their own read channel (uinput, portal, grim) reuse
 //!   Hyprland's IPC for cursor position / monitor inventory. The binary is
 //!   always the canonicalized path pinned by
 //!   [`crate::security::whitelist`] at construction and spawned under the
 //!   scrubbed env + timeouts of [`crate::security::spawn`].
-//! - **evdev key/button table** ([`key_binding`], [`char_binding`],
-//!   [`button_code`], [`detents`], …): the fixed US-layout code table
-//!   shared by `uinput_input` and `portal_input` — both rungs are
+//! - **evdev key/button table**([`key_binding`], [`char_binding`],
+//!   [`button_code`], [`detents`], ...): the fixed US-layout code table
+//!   shared by `uinput_input` and `portal_input` - both rungs are
 //!   display-protocol agnostic with no keymap channel, so names and
 //!   characters resolve to raw evdev codes.
 //!
@@ -22,7 +22,7 @@
 //! [`parse_monitors_extent`]).
 
 // Every consumer of this module is feature-gated (`wayland`, `uinput`,
-// `a11y`, `vision`), so under `--no-default-features` nothing uses it —
+// `a11y`, `vision`), so under `--no-default-features` nothing uses it -
 // dead-code warnings there are feature-shape artifacts, not real drift.
 #![allow(dead_code)]
 
@@ -35,7 +35,7 @@ use serde_json::Value;
 // hyprctl helpers
 // ---------------------------------------------------------------------------
 
-/// Parse `hyprctl cursorpos` output — modern JSON `{"x":N,"y":M}` or the
+/// Parse `hyprctl cursorpos` output - modern JSON `{"x":N,"y":M}` or the
 /// legacy `x, y` pair.
 pub(crate) fn parse_cursorpos(s: &str) -> Option<(i32, i32)> {
     let t = s.trim();
@@ -77,7 +77,7 @@ pub(crate) async fn hyprctl_monitors(bin: &Path) -> Result<Value> {
 }
 
 /// Best-effort desktop extent via `hyprctl -j monitors` (blocking; used
-/// only at provider construction). `None` off Hyprland — `bin` is the
+/// only at provider construction). `None` off Hyprland - `bin` is the
 /// pinned whitelisted path under a scrubbed env, and the wait is bounded
 /// so a wedged helper cannot stall provider detection.
 pub(crate) fn hyprctl_screen_size(bin: &Path) -> Option<(i32, i32)> {
@@ -150,7 +150,7 @@ pub(crate) fn parse_monitors_extent(bytes: &[u8]) -> Option<(i32, i32)> {
 // wl_output geometry record
 // ---------------------------------------------------------------------------
 
-/// Accumulated `wl_output` geometry — the full field set of
+/// Accumulated `wl_output` geometry - the full field set of
 /// `wlr_capture` (name/make/model/refresh/scale are unused by
 /// `wlr_input`, which only needs the layout rect).
 #[derive(Clone, Default)]
@@ -167,7 +167,7 @@ pub(crate) struct OutputInfo {
 }
 
 // ---------------------------------------------------------------------------
-// evdev key/button table (fixed US layout — no keymap channel exists on
+// evdev key/button table (fixed US layout - no keymap channel exists on
 // the uinput / portal rungs; wlr_input resolves keysyms instead)
 // ---------------------------------------------------------------------------
 
@@ -249,7 +249,7 @@ fn digit_code(c: char) -> u16 {
     }
 }
 
-/// Multi-character key names → evdev codes. Input is already normalized
+/// Multi-character key names -> evdev codes. Input is already normalized
 /// (lowercase, separators stripped). Covers `wlr_input`'s alias set plus
 /// keypad/media keys that exist as real keycodes.
 fn named_key_code(n: &str) -> Option<u16> {
@@ -323,7 +323,7 @@ fn named_key_code(n: &str) -> Option<u16> {
     })
 }
 
-/// `F1`–`F24` → KEY_F1(59)..F10(68), F11(87), F12(88), F13(183)..F24(194).
+/// `F1`-`F24` -> KEY_F1(59)..F10(68), F11(87), F12(88), F13(183)..F24(194).
 fn fn_key_code(n: &str) -> Option<u16> {
     let f: u16 = n.strip_prefix('f')?.parse().ok()?;
     Some(match f {
@@ -336,7 +336,7 @@ fn fn_key_code(n: &str) -> Option<u16> {
 
 /// KeyBinding for a literal character, on a US-layout keymap assumption
 /// (no keymap exists at this level; this mirrors the stock `us` evdev
-/// layout). `\n`/`\r` → Enter, `\t` → Tab; non-ASCII has no binding.
+/// layout). `\n`/`\r` -> Enter, `\t` -> Tab; non-ASCII has no binding.
 pub(crate) fn char_binding(c: char) -> Option<KeyBinding> {
     let (code, shifted) = match c {
         'a'..='z' => (letter_code(c), false),
@@ -383,7 +383,7 @@ pub(crate) fn char_binding(c: char) -> Option<KeyBinding> {
 }
 
 /// Resolve a key name to a binding. Single characters go through
-/// [`char_binding`] first so case carries shift state (`"A"` → Shift+a,
+/// [`char_binding`] first so case carries shift state (`"A"` -> Shift+a,
 /// matching `wlr_input`'s level-1 keysym handling); multi-character names
 /// hit the normalized table, then the F-key range.
 pub(crate) fn key_binding(name: &str) -> Option<KeyBinding> {
@@ -686,14 +686,14 @@ mod tests {
             })
         );
         assert_eq!(b('é'), None);
-        assert_eq!(b('←'), None);
+        assert_eq!(b('\u{2190}'), None);
     }
 
     #[test]
     fn detents_carry_sub_step_remainder() {
         let mut acc = 0.0;
         assert_eq!(detents(0.4, &mut acc), 0);
-        assert_eq!(detents(0.4, &mut acc), 1); // 0.8 → one detent
+        assert_eq!(detents(0.4, &mut acc), 1); // 0.8 -> one detent
         assert_eq!(detents(0.4, &mut acc), 0); // 0.2 left
         assert_eq!(detents(-3.0, &mut acc), -3);
         assert_eq!(detents(2.5, &mut acc), 3); // rounds to nearest

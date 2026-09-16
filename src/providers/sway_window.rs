@@ -1,30 +1,30 @@
-//! Sway `WindowProvider` — direct sway IPC socket transport (`$SWAYSOCK`).
+//! Sway `WindowProvider` - direct sway IPC socket transport (`$SWAYSOCK`).
 //!
 //! Sway speaks the i3 IPC protocol: a 14-byte header `"i3-ipc"` +
 //! `u32` payload length + `u32` message type (both little-endian),
 //! followed by the payload. This provider uses two message types:
 //!
-//! * `GET_TREE` (4) — the full container tree; walked once per query and
+//! * `GET_TREE` (4) - the full container tree; walked once per query and
 //!   mapped onto [`WindowInfo`] (list + active window, geometry for
 //!   relative moves).
-//! * `RUN_COMMAND` (0) — `swaymsg` command strings scoped to a container
+//! * `RUN_COMMAND` (0) - `swaymsg` command strings scoped to a container
 //!   via `[con_id=N]` criteria. Only a fixed command set is reachable
 //!   through [`WindowProvider::dispatch`]: `focus`, `kill`, `move
 //!   scratchpad`, `move absolute position`, `resize set`,
 //!   `resize grow|shrink`. `exec`/`exec_always` and every other sway
-//!   command are unreachable — commands are built by
+//!   command are unreachable - commands are built by
 //!   [`command_plan`] from a closed match, and con ids are restricted to
 //!   decimal digits so no criteria string can be smuggled in.
 //!
 //! Semantics notes (honest mappings):
 //!
-//! * **minimize** → `move scratchpad`. Sway has no iconic/minimized
+//! * **minimize**-> `move scratchpad`. Sway has no iconic/minimized
 //!   window state; the scratchpad is the compositor's stash for hidden
 //!   windows, and `scratchpad show` is the un-minimize. That is sway's
 //!   minimize, so the mapping is documented rather than emulated.
-//! * **move/resize** are floating-window ops in sway (tiled windows are
+//! * **move/resize**are floating-window ops in sway (tiled windows are
 //!   layout-managed); the compositor simply no-ops them on tiled nodes.
-//! * `WindowInfo.id` is the decimal container id — the same id the
+//! * `WindowInfo.id` is the decimal container id - the same id the
 //!   `[con_id=N]` criterion takes. `monitor` is the index of the
 //!   containing output in `GET_TREE` order (the pseudo-output `__i3`
 //!   that backs the scratchpad counts). `workspace` is the workspace
@@ -32,8 +32,8 @@
 //!   workspaces). `floating`/`fullscreen`/`pid` come straight from the
 //!   node record.
 //! * `focused`: sway marks `focused: true` on every node along the
-//!   single root→focused-leaf path, so exactly one *window* node carries
-//!   it — that is the active window. An empty focused workspace yields
+//!   single root->focused-leaf path, so exactly one *window* node carries
+//!   it - that is the active window. An empty focused workspace yields
 //!   `active_window() == None`.
 //!
 //! Transport mirrors `hyprctl.rs`: a fresh short-lived connection per
@@ -51,7 +51,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::traits::{Rect, WindowInfo, WindowProvider};
 
-/// i3/sway IPC magic — the first six bytes of every message.
+/// i3/sway IPC magic - the first six bytes of every message.
 const IPC_MAGIC: &[u8; 6] = b"i3-ipc";
 /// IPC message type: execute a `swaymsg` command string.
 const IPC_RUN_COMMAND: u32 = 0;
@@ -62,7 +62,7 @@ const IPC_GET_TREE: u32 = 4;
 /// synchronously, so a healthy reply is effectively instant.
 const IPC_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Cap on a reply payload — GET_TREE is a few hundred KB on busy
+/// Cap on a reply payload - GET_TREE is a few hundred KB on busy
 /// sessions; 64 MiB bounds a hostile/buggy reply without false
 /// positives.
 const MAX_REPLY_LEN: u32 = 64 * 1024 * 1024;
@@ -81,7 +81,7 @@ const _: () = {
 impl SwayWindow {
     /// Construct only inside a live sway session: requires `SWAYSOCK`
     /// (the IPC socket path sway exports to its session), then
-    /// cheap-probes it with a connect-and-drop — sway idles waiting for
+    /// cheap-probes it with a connect-and-drop - sway idles waiting for
     /// the request header, so the probe is harmless.
     pub fn new() -> Option<Self> {
         let sock = std::env::var_os("SWAYSOCK")?;
@@ -91,7 +91,7 @@ impl SwayWindow {
         Self::probe(valid_swaysock(Path::new(&sock))?)
     }
 
-    /// Construct against an explicit socket path — the hermetic-test
+    /// Construct against an explicit socket path - the hermetic-test
     /// seam (a fake i3-ipc responder) and a hook for embedders that pin
     /// a known socket.
     pub fn with_socket_path(path: PathBuf) -> Option<Self> {
@@ -104,13 +104,13 @@ impl SwayWindow {
         Some(Self { socket: path })
     }
 
-    /// `GET_TREE` → parsed root node.
+    /// `GET_TREE` -> parsed root node.
     async fn tree(&self) -> Result<Value> {
         let body = ipc_request(&self.socket, IPC_GET_TREE, "").await?;
         serde_json::from_slice(&body).context("sway: bad GET_TREE JSON")
     }
 
-    /// `RUN_COMMAND <payload>` — sway replies `[{"success":bool,…}]`,
+    /// `RUN_COMMAND <payload>` - sway replies `[{"success":bool,...}]`,
     /// one entry per command in the payload; every entry must succeed.
     async fn run_command(&self, command: &str) -> Result<()> {
         let body = ipc_request(&self.socket, IPC_RUN_COMMAND, command).await?;
@@ -130,7 +130,7 @@ impl SwayWindow {
         Ok(())
     }
 
-    /// Current rect of container `con_id` — the anchor for relative
+    /// Current rect of container `con_id` - the anchor for relative
     /// `dx,dy` moves. `Err` when the id left the tree.
     async fn rect_of(&self, con_id: u64) -> Result<Rect> {
         let tree = self.tree().await?;
@@ -154,7 +154,7 @@ impl WindowProvider for SwayWindow {
 
     async fn dispatch(&self, action: &str, window_id: &str, args: &Value) -> Result<()> {
         let con_id = parse_con_id(window_id)?;
-        // Relative moves anchor on the live rect — fetched lazily so the
+        // Relative moves anchor on the live rect - fetched lazily so the
         // common paths stay single-request.
         let rect = if action == "move" && args.get("dx").is_some() {
             Some(self.rect_of(con_id).await?)
@@ -168,10 +168,10 @@ impl WindowProvider for SwayWindow {
     }
 }
 
-/// `SWAYSOCK` is process environment — a hostile value must not steer
+/// `SWAYSOCK` is process environment - a hostile value must not steer
 /// the provider onto an arbitrary filesystem entry. Accept only an
-/// existing unix socket, and — when `XDG_RUNTIME_DIR` is set (sway
-/// always places the socket beneath it) — only one that canonically
+/// existing unix socket, and - when `XDG_RUNTIME_DIR` is set (sway
+/// always places the socket beneath it) - only one that canonically
 /// lives under that dir. Anything else declines the provider rather
 /// than connecting. (`with_socket_path` skips this: it is the explicit
 /// pin/test seam.)
@@ -197,7 +197,7 @@ fn valid_swaysock(path: &Path) -> Option<PathBuf> {
 
 /// One IPC round-trip: connect, send the 14-byte header + payload,
 /// half-close, read the reply header + bounded payload. A fresh
-/// short-lived connection per request is mandatory — an unclosed
+/// short-lived connection per request is mandatory - an unclosed
 /// connection blocks the compositor's synchronous IPC loop.
 async fn ipc_request(path: &Path, msg_type: u32, payload: &str) -> Result<Vec<u8>> {
     let fut = async {
@@ -237,7 +237,7 @@ async fn ipc_request(path: &Path, msg_type: u32, payload: &str) -> Result<Vec<u8
 
 /// A node is a window when it is a `con`/`floating_con` carrying view
 /// identity: `app_id` (Wayland), `window_properties`/`window` (X11), or
-/// — the fallback for clients that set neither — a leaf with a `pid`.
+/// - the fallback for clients that set neither - a leaf with a `pid`.
 fn is_window(node: &Value) -> bool {
     if node.get("app_id").is_some_and(Value::is_string)
         || node.get("window_properties").is_some_and(Value::is_object)
@@ -256,8 +256,8 @@ fn is_window(node: &Value) -> bool {
             .is_none_or(Vec::is_empty)
 }
 
-/// `rect` field → [`Rect`]. This is the container's absolute layout
-/// position — `window_rect` is *relative to the container* (decoration
+/// `rect` field -> [`Rect`]. This is the container's absolute layout
+/// position - `window_rect` is *relative to the container* (decoration
 /// offset), so it is never the right screen-space geometry here.
 fn node_rect(node: &Value) -> Option<Rect> {
     let r = node.get("rect")?;
@@ -286,7 +286,7 @@ fn find_node(node: &Value, con_id: u64) -> Option<&Value> {
     None
 }
 
-/// One node record → [`WindowInfo`]. `workspace` is the enclosing
+/// One node record -> [`WindowInfo`]. `workspace` is the enclosing
 /// workspace's `num` (`-1` for `__i3_scratch` and unnumbered
 /// workspaces); `monitor` is the enclosing output's index in
 /// `GET_TREE` order.
@@ -322,7 +322,7 @@ fn node_to_info(node: &Value, workspace: i32, monitor: i64) -> WindowInfo {
             .and_then(Value::as_bool)
             .unwrap_or(false),
         floating: Some(node.get("type").and_then(Value::as_str) == Some("floating_con")),
-        // `fullscreen_mode`: 0 none / 1 real / 2 global — expose "is".
+        // `fullscreen_mode`: 0 none / 1 real / 2 global - expose "is".
         fullscreen: node
             .get("fullscreen_mode")
             .and_then(Value::as_i64)
@@ -334,7 +334,7 @@ fn node_to_info(node: &Value, workspace: i32, monitor: i64) -> WindowInfo {
 
 /// Workspace `num`, falling back to a numeric `name` (numbered
 /// workspaces always carry `num`; named ones may not). `-1` when
-/// neither parses — e.g. the `__i3_scratch` stash.
+/// neither parses - e.g. the `__i3_scratch` stash.
 fn workspace_num(node: &Value) -> i32 {
     node.get("num")
         .and_then(Value::as_i64)
@@ -368,9 +368,9 @@ fn walk(node: &Value, workspace: i32, monitor: i64, out: &mut Vec<WindowInfo>) {
     }
 }
 
-/// `GET_TREE` root → window list, in tree order (tiled `nodes` before
+/// `GET_TREE` root -> window list, in tree order (tiled `nodes` before
 /// `floating_nodes` per container). Non-tree-shaped replies yield an
-/// empty list rather than an error — sway's reply is authoritative.
+/// empty list rather than an error - sway's reply is authoritative.
 fn collect_windows(root: &Value) -> Vec<WindowInfo> {
     let mut out = Vec::new();
     if let Some(nodes) = root.get("nodes").and_then(Value::as_array) {
@@ -381,7 +381,7 @@ fn collect_windows(root: &Value) -> Vec<WindowInfo> {
                 monitor += 1;
             } else {
                 // Dock/panel surfaces live directly under root on some
-                // sway versions — walked without an output index.
+                // sway versions - walked without an output index.
                 walk(node, -1, -1, &mut out);
             }
         }
@@ -395,7 +395,7 @@ fn collect_windows(root: &Value) -> Vec<WindowInfo> {
 /// ASCII digits keeps criteria strings single-token and injection-safe.
 fn parse_con_id(id: &str) -> Result<u64> {
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
-        bail!("sway: invalid window id '{id}' — con ids are decimal")
+        bail!("sway: invalid window id '{id}' - con ids are decimal")
     }
     id.parse()
         .map_err(|_| anyhow!("sway: window id '{id}' out of range"))
@@ -406,7 +406,7 @@ fn arg_i64(args: &Value, key: &str) -> Option<i64> {
 }
 
 /// Build the ordered `RUN_COMMAND` payloads for an action. Fixed mapping
-/// only — `exec`/`exec_always`/`nop` and every other sway command can
+/// only - `exec`/`exec_always`/`nop` and every other sway command can
 /// never be produced here.
 fn command_plan(
     action: &str,
@@ -439,7 +439,7 @@ fn command_plan(
                 }
                 vec![format!("[con_id={con_id}] resize set {w} px {h} px")]
             } else {
-                // Relative resize maps to per-axis grow/shrink — sway
+                // Relative resize maps to per-axis grow/shrink - sway
                 // takes one dimension per command.
                 let mut cmds = Vec::new();
                 for (key, dim) in [("dw", "width"), ("dh", "height")] {
@@ -459,7 +459,7 @@ fn command_plan(
                 cmds
             }
         }
-        // sway has no minimized state — the scratchpad *is* the
+        // sway has no minimized state - the scratchpad *is* the
         // minimized stash (see module docs).
         "minimize" => vec![format!("[con_id={con_id}] move scratchpad")],
         "close" => vec![format!("[con_id={con_id}] kill")],
@@ -512,7 +512,7 @@ mod tests {
                             {
                                 "id": 10,
                                 "type": "con",
-                                "name": "devin: onboarding",
+                                "name": "notes: onboarding",
                                 "app_id": "kitty",
                                 "pid": 37381,
                                 "rect": {"x": 10, "y": 45, "width": 940, "height": 990},
@@ -526,7 +526,7 @@ mod tests {
                             {
                                 "id": 11,
                                 "type": "con",
-                                "name": "devin: planning",
+                                "name": "notes: planning",
                                 "app_id": "kitty",
                                 "pid": 37382,
                                 "rect": {"x": 960, "y": 45, "width": 940, "height": 990},
@@ -666,7 +666,7 @@ mod tests {
 
         let w = &windows[0];
         assert_eq!(w.id, "10");
-        assert_eq!(w.title, "devin: onboarding");
+        assert_eq!(w.title, "notes: onboarding");
         assert_eq!(w.class, "kitty");
         assert_eq!(w.workspace, 1);
         assert_eq!(
@@ -822,12 +822,12 @@ mod tests {
 
     // ---------- SWAYSOCK validation ----------
 
-    /// Serializes the env-mutating `new()` tests — they all touch the
+    /// Serializes the env-mutating `new()` tests - they all touch the
     /// same two vars and run on parallel test threads. Same convention
     /// as `security::history`'s `ENV_LOCK` (poison-tolerant).
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Save/set/restore for the env-mutating `new()` tests — the same
+    /// Save/set/restore for the env-mutating `new()` tests - the same
     /// convention the sibling gate tests use.
     struct SavedEnv {
         swaysock: Option<std::ffi::OsString>,
@@ -863,7 +863,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _env = SavedEnv::capture();
         let rt = tempfile::tempdir().unwrap();
-        // Bound but never accepted — the connect-probe succeeds on the
+        // Bound but never accepted - the connect-probe succeeds on the
         // listener backlog alone.
         let _listener =
             std::os::unix::net::UnixListener::bind(rt.path().join("sway.sock")).unwrap();
@@ -968,7 +968,7 @@ mod tests {
             .await
             .unwrap();
         let sent = cmds.lock().unwrap().clone();
-        // rect(10,45) + (100,100) → absolute 110,145.
+        // rect(10,45) + (100,100) -> absolute 110,145.
         assert_eq!(
             sent,
             vec!["[con_id=10] move absolute position 110 px 145 px"]
@@ -990,7 +990,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_rejects_bad_id_before_connect() {
-        // No server at all — validation must fail before any I/O.
+        // No server at all - validation must fail before any I/O.
         let w = SwayWindow {
             socket: PathBuf::from("/nonexistent.sock"),
         };

@@ -1,11 +1,11 @@
-//! Kernel-level input injection via `/dev/uinput` — rung two of the input
-//! fallback ladder (wlr virtual input → uinput → portal).
+//! Kernel-level input injection via `/dev/uinput` - rung two of the input
+//! fallback ladder (wlr virtual input -> uinput -> portal).
 //!
 //! Unlike [`super::wlr_input`], this backend is display-protocol agnostic:
 //! the virtual device it creates injects `input_event`s straight into the
 //! kernel input layer, so it works under Wayland, X11 and even the
 //! framebuffer console. The trade-off is that there is no compositor-side
-//! context — no keymap, no read channel for the cursor, and no output
+//! context - no keymap, no read channel for the cursor, and no output
 //! layout. Specifically:
 //!
 //! - `mouse_move` is *absolute*: `EV_ABS`/`ABS_X`/`ABS_Y` are registered at
@@ -16,7 +16,7 @@
 //!   `hyprctl -j monitors` (best effort), else `1920x1080`.
 //!   [`UinputInput::with_screen_size`] forces the bounds explicitly.
 //! - `type_text`/`key_event` resolve names and characters against a fixed
-//!   evdev (US-layout) code table — there is no xkb keymap at this level.
+//!   evdev (US-layout) code table - there is no xkb keymap at this level.
 //!   Characters without a binding fail *before* any event is emitted, so a
 //!   bad string can never leave a half-typed prefix behind.
 //! - `cursor_position` tries `hyprctl` first (live on Hyprland), then falls
@@ -37,7 +37,7 @@
 //! device (`/dev/input/event*`), which turns the daemon into a keylogger.
 //!
 //! SAFETY: unit tests in this module never call [`UinputInput::new`],
-//! [`UinputInput::with_screen_size`] or `create_device` — creating a real
+//! [`UinputInput::with_screen_size`] or `create_device` - creating a real
 //! uinput device injects kernel-level input on the host desktop. Tests
 //! cover only the pure mapping/parsing functions and the writability
 //! probe, which opens but never creates a device.
@@ -83,7 +83,7 @@ const REL_WHEEL: i32 = 0x08;
 pub struct UinputInput {
     inner: Arc<Mutex<Inner>>,
     /// Pinned `hyprctl` absolute path, when it was on `PATH` at
-    /// construction — the `cursor_position` helper (S-1). Spawned under
+    /// construction - the `cursor_position` helper (S-1). Spawned under
     /// the scrubbed environment + timeout of [`crate::security::spawn`].
     hyprctl: Option<PathBuf>,
 }
@@ -101,7 +101,7 @@ struct Inner {
     /// ABS range registered at creation; `mouse_move` clamps into it.
     width: i32,
     height: i32,
-    /// Last absolute position emitted — `cursor_position` fallback.
+    /// Last absolute position emitted - `cursor_position` fallback.
     last_pos: Option<(i32, i32)>,
     /// Sub-detent wheel remainders, so repeated fractional scrolls of
     /// e.g. 0.4 steps still accumulate into whole `REL_WHEEL` detents.
@@ -114,7 +114,7 @@ struct Inner {
 // ---------------------------------------------------------------------------
 
 /// Best-effort desktop extent via `hyprctl -j monitors` (sync; used only
-/// at construction time). `None` off Hyprland — the binary is the pinned
+/// at construction time). `None` off Hyprland - the binary is the pinned
 /// whitelisted path under a scrubbed env, and the wait is bounded so a
 /// wedged helper cannot stall provider detection.
 fn hyprctl_screen_size() -> Option<(i32, i32)> {
@@ -129,7 +129,7 @@ fn hyprctl_screen_size() -> Option<(i32, i32)> {
 // ---------------------------------------------------------------------------
 
 /// Returns true when `path` can be opened `O_WRONLY`. Opening the uinput
-/// control node for write does NOT create a device — `UI_DEV_CREATE`
+/// control node for write does NOT create a device - `UI_DEV_CREATE`
 /// happens only in [`create_device`].
 fn uinput_writable(path: &Path) -> bool {
     std::fs::OpenOptions::new().write(true).open(path).is_ok()
@@ -146,7 +146,7 @@ fn create_device(path: &Path, width: i32, height: i32) -> Result<uinput::Device>
         .context("open uinput")?
         .name("ultranix-mcp virtual input")
         .context("uinput set name")?
-        .bus(0x06) // BUS_VIRTUAL — honest provenance for a uinput device
+        .bus(0x06) // BUS_VIRTUAL - honest provenance for a uinput device
         .vendor(0x0001)
         .product(0x0001)
         .version(1);
@@ -171,7 +171,7 @@ fn create_device(path: &Path, width: i32, height: i32) -> Result<uinput::Device>
     }
 
     // Absolute axes take their range from the *previously* registered
-    // event — min()/max() apply to `self.abs`, so they must immediately
+    // event - min()/max() apply to `self.abs`, so they must immediately
     // follow each absolute `event()` call.
     builder = builder
         .event(absolute::Absolute::Position(absolute::Position::X))
@@ -189,7 +189,7 @@ fn create_device(path: &Path, width: i32, height: i32) -> Result<uinput::Device>
 
 impl UinputInput {
     /// Probe `/dev/uinput` (writable `O_WRONLY`) and create the virtual
-    /// device. Returns `None` when the node is missing or not writable —
+    /// device. Returns `None` when the node is missing or not writable -
     /// i.e. no `ultranix-input` group membership / udev rule.
     ///
     /// Screen bounds for the ABS range come from `ULTRANIX_SCREEN_SIZE`,
@@ -202,7 +202,7 @@ impl UinputInput {
         Self::open(Path::new(UINPUT_PATH), w, h)
     }
 
-    /// Like [`Self::new`] but with an explicit ABS range — for callers
+    /// Like [`Self::new`] but with an explicit ABS range - for callers
     /// that already know the desktop extent (e.g. `wlr_input` output
     /// layout or a `grim`/`xdpyinfo` measurement upstream).
     pub fn with_screen_size(width: i32, height: i32) -> Option<Self> {
@@ -211,7 +211,7 @@ impl UinputInput {
 
     /// Shared constructor: probe writability first (cheap, never creates
     /// a device), then build. Any failure is a debug-level `None`, not a
-    /// hard error — this is a fallback rung.
+    /// hard error - this is a fallback rung.
     fn open(path: &Path, width: i32, height: i32) -> Option<Self> {
         if !uinput_writable(path) {
             tracing::debug!(path = %path.display(), "uinput: node not writable, backend unavailable");
@@ -259,7 +259,7 @@ impl Inner {
             .context("uinput write event")
     }
 
-    /// `EV_SYN`/`SYN_REPORT` — flush the buffered frame.
+    /// `EV_SYN`/`SYN_REPORT` - flush the buffered frame.
     fn sync(&mut self) -> Result<()> {
         self.device.synchronize().context("uinput synchronize")
     }
@@ -298,7 +298,7 @@ impl Inner {
     /// `dx`/`dy` are wheel steps; positive scrolls right / down.
     ///
     /// Sign convention: wl_pointer axis positive = down/right, while
-    /// evdev `REL_WHEEL` positive = up (wheel away from user) — so
+    /// evdev `REL_WHEEL` positive = up (wheel away from user) - so
     /// vertical is inverted. `REL_HWHEEL` positive = right already.
     /// Sub-detent remainders carry across calls via `detents`.
     fn scroll(&mut self, dx: f64, dy: f64) -> Result<()> {
@@ -447,7 +447,7 @@ impl InputProvider for UinputInput {
 // Tests
 // ---------------------------------------------------------------------------
 //
-// SAFETY: these tests are structurally incapable of injecting input —
+// SAFETY: these tests are structurally incapable of injecting input -
 // none of them call `new()`, `with_screen_size()` or `create_device()`,
 // and `uinput_writable`/`open` only ever *open* a path (never
 // `UI_DEV_CREATE`). The `open` tests point at paths that cannot be a
@@ -649,14 +649,14 @@ mod tests {
             })
         );
         assert_eq!(b('é'), None);
-        assert_eq!(b('←'), None);
+        assert_eq!(b('\u{2190}'), None);
     }
 
     #[test]
     fn detents_carry_sub_step_remainder() {
         let mut acc = 0.0;
         assert_eq!(detents(0.4, &mut acc), 0);
-        assert_eq!(detents(0.4, &mut acc), 1); // 0.8 → one detent
+        assert_eq!(detents(0.4, &mut acc), 1); // 0.8 -> one detent
         assert_eq!(detents(0.4, &mut acc), 0); // 0.2 left
         assert_eq!(detents(-3.0, &mut acc), -3);
         assert_eq!(detents(2.5, &mut acc), 3); // rounds to nearest
@@ -736,15 +736,15 @@ mod tests {
 
     #[test]
     fn uinput_writable_probe() {
-        // Missing node → not writable.
+        // Missing node -> not writable.
         assert!(!uinput_writable(Path::new(
             "/dev/ultranix-nonexistent-uinput-node"
         )));
-        // A directory can never be opened O_WRONLY (EISDIR) — reliable
+        // A directory can never be opened O_WRONLY (EISDIR) - reliable
         // even when tests run as root.
         assert!(!uinput_writable(Path::new("/tmp")));
         // A plain writable file opens fine (it is never created into a
-        // device — this probe only tests open() success).
+        // device - this probe only tests open() success).
         let f = tempfile::NamedTempFile::new().expect("tempfile");
         assert!(uinput_writable(f.path()));
     }
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn open_rejects_nonpositive_bounds() {
-        // A writable path with an invalid ABS range → None through the
+        // A writable path with an invalid ABS range -> None through the
         // bounds gate, before `create_device` is ever reached.
         let f = tempfile::NamedTempFile::new().expect("tempfile");
         assert!(UinputInput::open(f.path(), 0, 1080).is_none());
@@ -770,7 +770,7 @@ mod tests {
     #[test]
     fn open_returns_none_for_non_uinput_file() {
         // A plain writable file passes the open-for-write probe, then
-        // `create_device` fails on the first uinput ioctl (ENOTTY) —
+        // `create_device` fails on the first uinput ioctl (ENOTTY) -
         // UI_DEV_CREATE is never reached, so no device can exist.
         let f = tempfile::NamedTempFile::new().expect("tempfile");
         assert!(UinputInput::open(f.path(), 1920, 1080).is_none());

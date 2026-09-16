@@ -3,12 +3,12 @@
 //! Every subprocess this crate launches goes through [`command`] /
 //! [`std_command`], which apply two rules:
 //!
-//! - **Scrubbed environment** — `env_clear()` plus a minimal allowlist
+//! - **Scrubbed environment**- `env_clear()` plus a minimal allowlist
 //!   of session variables the binaries genuinely need ([`PASS_ENV`]).
 //!   Process-local secrets (`ULTRANIX_MCP_API_KEY`,
 //!   `ULTRANIX_MCP_HISTORY_SECRET`, HTTP/SOCKS proxies, `LD_*`) never
 //!   reach a child's environment.
-//! - **Bounded wait** — [`output_within`] / [`std_output_within`] wrap
+//! - **Bounded wait**- [`output_within`] / [`std_output_within`] wrap
 //!   the wait in a timeout and kill the child on expiry, so a wedged
 //!   `grim`/`hyprctl` cannot hang a tool call.
 
@@ -18,12 +18,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
-/// Default subprocess budget — a healthy `grim`/`hyprctl` answers in
+/// Default subprocess budget - a healthy `grim`/`hyprctl` answers in
 /// milliseconds; five seconds bounds a wedged child without false
 /// positives.
 pub const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Budget for interactive helpers — `slurp` blocks on a user
+/// Budget for interactive helpers - `slurp` blocks on a user
 /// region-drag, so it gets a longer (still bounded) window.
 pub const INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -43,7 +43,7 @@ const PASS_ENV: &[&str] = &[
     "DBUS_SESSION_BUS_ADDRESS",
 ];
 
-/// `bin args…` as a [`tokio::process::Command`] under the scrubbed
+/// `bin args...` as a [`tokio::process::Command`] under the scrubbed
 /// environment, `kill_on_drop` set so a timed-out wait still reaps the
 /// child.
 pub fn command(bin: &Path, args: &[&str]) -> tokio::process::Command {
@@ -70,7 +70,7 @@ pub fn command(bin: &Path, args: &[&str]) -> tokio::process::Command {
 pub async fn output_within(cmd: &mut tokio::process::Command, dur: Duration) -> Result<Output> {
     use tokio::io::AsyncRead;
 
-    /// Read `stream` to EOF keeping at most [`MAX_STDOUT`] bytes — the
+    /// Read `stream` to EOF keeping at most [`MAX_STDOUT`] bytes - the
     /// drain must outlast the cap or a chatty child wedges on write.
     async fn drain_capped(mut stream: impl AsyncRead + Unpin) -> Vec<u8> {
         use tokio::io::AsyncReadExt;
@@ -105,7 +105,7 @@ pub async fn output_within(cmd: &mut tokio::process::Command, dur: Duration) -> 
         }
         Ok(result) => result.context("wait subprocess")?,
     };
-    // The child has exited, so both pipes are at EOF — the join awaits
+    // The child has exited, so both pipes are at EOF - the join awaits
     // return promptly. Bound the join anyway: a pipe-holding grandchild
     // could otherwise leave this "bounded" wait hanging indefinitely.
     const DRAIN_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -124,8 +124,8 @@ pub async fn output_within(cmd: &mut tokio::process::Command, dur: Duration) -> 
     })
 }
 
-/// `bin args…` as a blocking [`std::process::Command`] under the scrubbed
-/// environment — for the synchronous probes that run at provider
+/// `bin args...` as a blocking [`std::process::Command`] under the scrubbed
+/// environment - for the synchronous probes that run at provider
 /// construction time.
 pub fn std_command(bin: &Path, args: &[&str]) -> std::process::Command {
     let mut cmd = std::process::Command::new(bin);
@@ -138,11 +138,11 @@ pub fn std_command(bin: &Path, args: &[&str]) -> std::process::Command {
     cmd
 }
 
-/// Cap on captured stdout — bounds memory when a whitelisted helper
+/// Cap on captured stdout - bounds memory when a whitelisted helper
 /// misbehaves.
 const MAX_STDOUT: usize = 4 * 1024 * 1024;
 
-/// Blocking `output()` with a deadline — `std::process` has no timeout
+/// Blocking `output()` with a deadline - `std::process` has no timeout
 /// primitive, so this polls `try_wait` and kills the child on expiry.
 /// Stdout is drained *during* the wait: a child that emits more than a
 /// pipe buffer's worth would otherwise block on write and deadlock
@@ -158,7 +158,7 @@ pub fn std_output_within(cmd: &mut std::process::Command, dur: Duration) -> Opti
         .spawn()
         .ok()?;
     // Drain stdout on a dedicated thread: a child emitting more than a
-    // pipe buffer would otherwise block on write and never exit — and a
+    // pipe buffer would otherwise block on write and never exit - and a
     // blocking read in this loop would wedge on a silent-but-alive
     // child. The drainer unblocks when the child exits or is killed.
     let mut out = child.stdout.take()?;
@@ -217,7 +217,7 @@ mod tests {
         unsafe { std::env::remove_var("ULTRANIX_SPAWN_TEST_SECRET") };
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(!text.contains("ULTRANIX_SPAWN_TEST_SECRET"));
-        // PATH survives the scrub — children can still resolve helpers.
+        // PATH survives the scrub - children can still resolve helpers.
         assert!(text.contains("PATH="));
     }
 

@@ -1,4 +1,4 @@
-//! Mock providers — deterministic Phase-0 stand-ins for every trait.
+//! Mock providers - deterministic Phase-0 stand-ins for every trait.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -152,7 +152,7 @@ impl ClipboardProvider for MockClipboard {
 fn base64_png_1x1() -> Vec<u8> {
     // Smallest valid PNG (1x1 white RGBA). Generated once; static
     // content. The IDAT must hold a full 5-byte scanline (filter byte +
-    // RGBA) — a grayscale-length stream decodes as a corrupt deflate.
+    // RGBA) - a grayscale-length stream decodes as a corrupt deflate.
     const PNG: &[u8] = &[
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
         0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,

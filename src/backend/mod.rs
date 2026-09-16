@@ -1,4 +1,4 @@
-//! Backend auto-detection — session probing + the provider fallback ladder.
+//! Backend auto-detection - session probing + the provider fallback ladder.
 //!
 //! [`detect::SessionInfo`] snapshots the environment variables that decide
 //! which backends can work (Wayland vs. X11 vs. headless, Hyprland vs.

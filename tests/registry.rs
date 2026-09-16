@@ -32,7 +32,7 @@ fn every_frozen_name_present_exactly_once() {
     let tools = list_tools(None);
     let listed: BTreeSet<String> = names(&tools).into_iter().collect();
 
-    // No duplicates — set cardinality equals vector length.
+    // No duplicates - set cardinality equals vector length.
     assert_eq!(
         listed.len(),
         tools.len(),
@@ -146,7 +146,7 @@ fn category_filter_all_six_returns_40() {
 
 #[test]
 fn category_filter_unknown_returns_empty() {
-    // Per spec an unknown category yields no tools — the listing surface
+    // Per spec an unknown category yields no tools - the listing surface
     // shrinks rather than erroring (list_tools has no error channel).
     let tools = list_tools(Some(&cats(&["no_such_category"])));
     assert!(tools.is_empty(), "got {:?}", names(&tools));

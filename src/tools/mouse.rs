@@ -1,4 +1,4 @@
-//! Mouse tools (7) — all backed by `InputProvider`.
+//! Mouse tools (7) - all backed by `InputProvider`.
 //! Coordinates are Hyprland logical layout-space integers.
 
 use std::collections::HashSet;
@@ -18,7 +18,7 @@ use crate::providers::Providers;
 
 /// Session button-state tracker for `mouse_button_control`
 /// (docs/TOOLS.md: "the server tracks button state per session").
-/// Process-global — dispatch carries no session handle yet, so the held
+/// Process-global - dispatch carries no session handle yet, so the held
 /// set is shared across callers. `mouse_click`/`mouse_drag` are transient
 /// down+up sequences and do not enter the set.
 static HELD_BUTTONS: LazyLock<Mutex<HashSet<MouseButton>>> =
@@ -244,7 +244,7 @@ async fn mouse_get_position(
     providers: &Providers,
 ) -> Result<CallToolResult, ErrorData> {
     let _p: NoParams = parse_args("mouse_get_position", args)?;
-    // Pointer position is a compositor query, not an injection — prefer the
+    // Pointer position is a compositor query, not an injection - prefer the
     // input backend's read channel, fall back to the capture backend's.
     let (x, y) = if let Some(input) = providers.input.as_deref() {
         backend!(input.cursor_position().await)
@@ -253,7 +253,7 @@ async fn mouse_get_position(
     } else {
         return Err(provider_unavailable("InputProvider"));
     };
-    // `display` — output under the pointer, resolved by intersecting the
+    // `display` - output under the pointer, resolved by intersecting the
     // cursor position with the capture backend's output rects; `null`
     // when the pointer sits between outputs or no capture backend can
     // report the layout (spec-sanctioned).
@@ -316,7 +316,7 @@ async fn mouse_drag(
             tokio::time::sleep(step_delay).await;
         }
     }
-    // Always release the button before reporting — a stuck-down button is
+    // Always release the button before reporting - a stuck-down button is
     // worse than a failed drag.
     let release = input.mouse_button(p.button.as_str(), false).await;
     if let Some(e) = move_err {
@@ -341,7 +341,7 @@ async fn mouse_button_control(
     let p: ButtonControlParams = parse_args("mouse_button_control", args)?;
     let down = matches!(p.action, ButtonAction::Down);
     let held = button_is_held(p.button);
-    // Spec: "releasing an unpressed button is a no-op success" — and the
+    // Spec: "releasing an unpressed button is a no-op success" - and the
     // symmetric press of an already-held button is equally a no-op: the
     // requested end state already holds, so no event is injected.
     if down == held {

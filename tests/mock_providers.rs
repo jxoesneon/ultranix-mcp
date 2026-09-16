@@ -1,4 +1,4 @@
-//! Deterministic-value tests for the Phase-0 mock providers — each trait
+//! Deterministic-value tests for the Phase-0 mock providers - each trait
 //! method returns the canned values documented in src/providers/mock.rs.
 
 use serde_json::{Value, json};
@@ -16,7 +16,7 @@ use ultranix_mcp::traits::{
 async fn mock_capture_frame_is_1x1_png() {
     let frame = MockCapture.capture_frame(None).await.unwrap();
     assert_eq!((frame.width, frame.height), (1, 1));
-    // PNG magic bytes — the canned 1x1 white PNG.
+    // PNG magic bytes - the canned 1x1 white PNG.
     assert_eq!(
         &frame.png[..8],
         &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]

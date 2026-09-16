@@ -1,9 +1,9 @@
 # ADR 0010: Runtime Access-Control Policy
 
-- **Status:** Accepted
-- **Date:** v1.3.0 wave
-- **Deciders:** ultranix-mcp architecture council
-- **Related:** ENTERPRISE_PLAN §6 "Policy knobs roadmap", SECURITY.md
+- **Status:**Accepted
+- **Date:**v1.3.0 wave
+- **Deciders:**ultranix-mcp maintainers
+- **Related:**ENTERPRISE_PLAN §6 "Policy knobs roadmap", SECURITY.md
 
 ## Context
 
@@ -27,28 +27,28 @@ finer control:
   - `roles`: named `Role` definitions.
   - `keys`: mapping from key fingerprint (`key_id`) to role name.
 - A `Role` contains:
-  - `readonly: bool` — shortcut that allows only the non-mutating tool set.
-  - `allow_tools: Option<HashSet<String>>` — explicit allowlist.
-  - `deny_tools: HashSet<String>` — explicit denylist.
+  - `readonly: bool` - shortcut that allows only the non-mutating tool set.
+  - `allow_tools: Option<HashSet<String>>` - explicit allowlist.
+  - `deny_tools: HashSet<String>` - explicit denylist.
 - Evaluation order for a tool under a role:
-  1. If tool is in `deny_tools` → deny (deny always wins).
-  2. If `readonly` → allow only when the tool is in the readonly preset
-     **or** in `allow_tools` — the allowlist *unions* with the preset, so
+  1. If tool is in `deny_tools` -> deny (deny always wins).
+  2. If `readonly` -> allow only when the tool is in the readonly preset
+     **or**in `allow_tools` - the allowlist *unions* with the preset, so
      operators can opt individual mutating tools back in; otherwise deny.
   3. If `allow_tools` is `Some` (and `readonly` is false) and tool is not
-     in it → deny.
+     in it -> deny.
   4. Otherwise allow.
 - Policy loading is **fail-closed**:
   - An explicit `--policy` path that is missing or malformed aborts
-    startup — a typo'd path must never silently grant the permissive
+    startup - a typo'd path must never silently grant the permissive
     default. The auto-discovered default
     `~/.config/ultranix-mcp/policy.toml` is loaded only when the file
     exists.
   - `#[serde(deny_unknown_fields)]` on `Policy` and `Role` turns
     misspelled TOML keys into startup errors rather than silently
     ignored directives.
-  - Every `keys` entry must reference a defined role — a dangling
-    `keys` → role reference aborts startup (a typo'd role name would
+  - Every `keys` entry must reference a defined role - a dangling
+    `keys` -> role reference aborts startup (a typo'd role name would
     otherwise silently grant `default_role`).
 - Readonly allowlist (non-mutating catalog, 15 tools): `screenshot`,
   `screen_info`, `color_at`, `get_ui_tree`, `get_focused_element`,
@@ -57,7 +57,7 @@ finer control:
   `get_active_window`, `metrics`, `plugin_list`. The preset is strictly
   observation-only; the excluded tools are denied because they mutate or
   disclose state: all mouse/keyboard input, `invoke_element` (performs
-  AT-SPI actions — equivalent to input), `screen_highlight` (draws a
+  AT-SPI actions - equivalent to input), `screen_highlight` (draws a
   visible overlay), `set_spatial_focus` (writes process-global state),
   `screen_record` (writes files), `clipboard_get` and
   `get_action_history` (cross-caller disclosure of clipboard/history
@@ -73,7 +73,7 @@ finer control:
 - Per-key scoping for HTTP: the `key_id` recovered from the request
   extensions is looked up in `policy.keys`; missing keys fall back to
   `default_role`. Stdio sessions always use `default_role`.
-  `key_id` fingerprints are 8 hex chars (32 bits) — sufficient for tens of
+  `key_id` fingerprints are 8 hex chars (32 bits) - sufficient for tens of
   keys; deployments planning hundreds of mapped keys should note the
   birthday bound (a collision silently assigns the wrong role).
 - Startup warnings surface the remaining silent-degradation cases:

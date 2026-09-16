@@ -1,16 +1,16 @@
-//! Fallback capture backend — shells out to `grim` (and `slurp` for
+//! Fallback capture backend - shells out to `grim` (and `slurp` for
 //! interactive region selection). Works on any wlroots compositor that
 //! exposes wlr-screencopy, at the cost of a process spawn per frame.
 //!
 //! `grim` writes the PNG into a fresh private capture dir
 //! ([`crate::security::captures`]: `0700`, `O_NOFOLLOW` on create+read,
-//! leaf `0600`) which is deleted after the read — on error paths too —
+//! leaf `0600`) which is deleted after the read - on error paths too -
 //! so a capture can never be redirected through a planted symlink.
 //!
 //! Binary paths are the canonicalized absolute paths pinned by
 //! [`crate::security::whitelist`] at construction, spawned under the
 //! scrubbed environment and per-spawn timeouts of
-//! [`crate::security::spawn`] — a `PATH` hijack after construction
+//! [`crate::security::spawn`] - a `PATH` hijack after construction
 //! cannot substitute a trojan, and a wedged child cannot hang a call.
 
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ impl GrimCapture {
         Self::with_pins(&whitelist::resolve_binaries())
     }
 
-    /// [`Self::new`] against a caller-supplied pin set — the testable
+    /// [`Self::new`] against a caller-supplied pin set - the testable
     /// seam: hermetic tests resolve a fresh `PinnedBins` over a tempdir
     /// `PATH` instead of the process-wide snapshot.
     pub fn with_pins(pins: &whitelist::PinnedBins) -> Option<Self> {
@@ -55,7 +55,7 @@ fn rect_geometry(r: Rect) -> String {
 
 impl GrimCapture {
     /// Geometry for a region capture: interactive `slurp` when installed
-    /// (blocks for a user drag — intended UX for a region request; bounded
+    /// (blocks for a user drag - intended UX for a region request; bounded
     /// by [`spawn::INTERACTIVE_TIMEOUT`]), else the requested rect
     /// verbatim.
     async fn region_geometry(&self, r: Rect) -> Result<String> {
@@ -82,7 +82,7 @@ impl GrimCapture {
     async fn capture_into(&self, dir: &Path, region: Option<Rect>) -> Result<Frame> {
         let path = dir.join("capture.png");
         // Pre-create the leaf with O_NOFOLLOW at 0600 so `grim` can only
-        // write into a regular file we own — never a planted symlink.
+        // write into a regular file we own - never a planted symlink.
         drop(captures::open_nofollow(&path).context("create capture output")?);
 
         let mut cmd = spawn::command(&self.grim, &[]);
@@ -125,7 +125,7 @@ impl GrimCapture {
 #[async_trait]
 impl CaptureProvider for GrimCapture {
     async fn capture_frame(&self, region: Option<Rect>) -> Result<Frame> {
-        // A fresh unpredictable 0700 dir per capture — the file inside
+        // A fresh unpredictable 0700 dir per capture - the file inside
         // it cannot be preplanted, and the dir is removed no matter how
         // the capture resolves (success, grim failure, decode failure).
         let dir = captures::fresh_capture_dir().context("create capture dir")?;
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn pinned_paths_are_absolute() {
-        // Whatever pins resolve, they are canonicalized absolute paths —
+        // Whatever pins resolve, they are canonicalized absolute paths -
         // a later `PATH` edit cannot redirect a spawn.
         if let Some(cap) = GrimCapture::new() {
             assert!(cap.grim.is_absolute());

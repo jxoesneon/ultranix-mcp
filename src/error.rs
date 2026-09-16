@@ -1,11 +1,11 @@
-//! Canonical error surface — mirrors docs/TOOLS.md error taxonomy.
+//! Canonical error surface - mirrors docs/TOOLS.md error taxonomy.
 
 use rmcp::model::ErrorCode;
 
 /// JSON-RPC error codes used across the tool surface.
 pub mod codes {
     /// Command outside the whitelist / argument constraint violation
-    /// (docs/TOOLS.md error table — both share `-32003`).
+    /// (docs/TOOLS.md error table - both share `-32003`).
     pub const COMMAND_NOT_WHITELISTED: i32 = -32003;
     /// Argument rejected by the command whitelist.
     pub const ARG_CONSTRAINT_VIOLATION: i32 = -32003;

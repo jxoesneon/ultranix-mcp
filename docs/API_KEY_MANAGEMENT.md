@@ -1,8 +1,8 @@
-# API Key Management — ultranix-mcp
+# API Key Management - ultranix-mcp
 
-**Status**: Implemented (v1.2.0) — describes the shipped authentication
-design. Applies to the **streamable-HTTP transport only** (`:3010`). The
-stdio transport never requires a key — see §7 for why.
+**Status**: Implemented (v1.2.0) - describes the shipped authentication
+design. Applies to the **streamable-HTTP transport only**(`:3010`). The
+stdio transport never requires a key - see §7 for why.
 
 ---
 
@@ -14,7 +14,7 @@ uxcp_<64 lowercase hex chars>
 prefix      32 bytes from CSPRNG
 ```
 
-- `uxcp_` — fixed prefix ("ultranix control plane"), makes keys greppable in
+- `uxcp_` - fixed prefix ("ultranix control plane"), makes keys greppable in
   logs/configs and identifiable in secret scanners.
 - **Entropy**: 32 bytes (256 bits) generated from the OS CSPRNG
   (`getrandom`/`OsRng` in Rust; `openssl rand` for manual generation),
@@ -43,31 +43,29 @@ Alternative with `dd`/`/dev/urandom`:
 echo "uxcp_$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 ```
 
-The shipped `ultranix-mcp keygen` subcommand produces the identical format —
+The shipped `ultranix-mcp keygen` subcommand produces the identical format -
 it prints a fresh key to stdout and never writes to the key directory or any
 file; storing it (`ULTRANIX_MCP_API_KEY`, a key file, or a record under
 `~/.ultranix-mcp/api-keys/`) is the operator's job.
 
-**Do not** derive keys from passwords, timestamps, or `uuidgen` (128 bits,
+**Do not**derive keys from passwords, timestamps, or `uuidgen` (128 bits,
 weak RNG on some systems). Do not reuse keys across environments.
 
 ---
 
 ## 3. Key Sourcing & Precedence
 
-At startup the server resolves the active key set in this order — **first
+At startup the server resolves the active key set in this order - **first
 match wins**, and a warning is logged if a lower-precedence source is also
 configured (to surface stale keys):
 
 | Priority | Source | Notes |
 | -------- | ------ | ----- |
 | 1 | `ULTRANIX_MCP_API_KEY` environment variable | Single key, or comma-separated list `key1,key2` for rotation overlap |
-| 2 | `ULTRANIX_MCP_API_KEY_FILE` → path to a file containing one key per line | File must be mode `0600`; the server **refuses to start** if it is group/world-readable |
-| 3 | `~/.ultranix-mcp/api-keys/*.json` | Convention fallback: a **directory** of key-record files scanned in sorted order. Each `*.json` file holds either a JSON record/array (`{"key": "uxcp_…", "expires_at"?: "<RFC 3339>", "key_id"?: "…", "scopes"?: ["…"]}`) or the line format (`key [expires=<RFC 3339>]`, `#` comments allowed). `0600` enforced per file; non-`.json` entries are ignored |
+| 2 | `ULTRANIX_MCP_API_KEY_FILE` -> path to a file containing one key per line | File must be mode `0600`; the server **refuses to start**if it is group/world-readable |
+| 3 | `~/.ultranix-mcp/api-keys/*.json` | Convention fallback: a **directory**of key-record files scanned in sorted order. Each `*.json` file holds either a JSON record/array (`{"key": "uxcp_...", "expires_at"?: "<RFC 3339>", "key_id"?: "...", "scopes"?: ["..."]}`) or the line format (`key [expires=<RFC 3339>]`, `#` comments allowed). `0600` enforced per file; non-`.json` entries are ignored | Rules:
 
-Rules:
-
-- If **no** source yields a key and `ULTRANIX_MCP_DISABLE_AUTH` is not set,
+- If **no**source yields a key and `ULTRANIX_MCP_DISABLE_AUTH` is not set,
   the HTTP transport **fails closed**: it refuses to bind `:3010` and logs the
   reason. Stdio still works.
 - If both env and file sources exist, env wins and a `config.key.shadowed`
@@ -81,14 +79,14 @@ Rules:
 ## 4. Using the Key (client side)
 
 ```bash
-# X-API-Key header (canonical — keeps keys out of URLs/logs)
-curl -H "X-API-Key: uxcp_…" http://127.0.0.1:3010/mcp
+# X-API-Key header (canonical - keeps keys out of URLs/logs)
+curl -H "X-API-Key: uxcp_..." http://127.0.0.1:3010/mcp
 
 # Authorization: Bearer (accepted equivalent)
-curl -H "Authorization: Bearer uxcp_…" http://127.0.0.1:3010/mcp
+curl -H "Authorization: Bearer uxcp_..." http://127.0.0.1:3010/mcp
 ```
 
-**Query-parameter keys are not supported** — URLs leak into proxy logs, shell
+**Query-parameter keys are not supported**- URLs leak into proxy logs, shell
 history, and process lists.
 
 ---
@@ -96,7 +94,7 @@ history, and process lists.
 ## 5. Rate-Limit Identity
 
 - The token bucket (**10 req/s**) is keyed by **key-ID**, computed as the
-  first 8 hex chars of `SHA-256(key)` — the same ID printed in logs and audit
+  first 8 hex chars of `SHA-256(key)` - the same ID printed in logs and audit
   records. One key = one budget.
 - If a request somehow arrives authenticated but keyless in identity terms
   (shouldn't happen; defense-in-depth), the fallback identity is the remote
@@ -115,13 +113,13 @@ zero-downtime:
 # 1. Generate the replacement
 NEW_KEY="uxcp_$(openssl rand -hex 32)"
 
-# 2. Configure BOTH keys — old stays valid during cutover
+# 2. Configure BOTH keys - old stays valid during cutover
 export ULTRANIX_MCP_API_KEY="$OLD_KEY,$NEW_KEY"
 systemctl --user restart ultranix-mcp
 
 # 3. Update every client to NEW_KEY; verify in audit.jsonl that
-#    the OLD key-ID no longer appears:
-#    key-ID = sha256(key) first 8 chars — check with:
+# the OLD key-ID no longer appears:
+# key-ID = sha256(key) first 8 chars - check with:
 echo -n "$OLD_KEY" | sha256sum | cut -c1-8
 
 # 4. Remove the old key
@@ -129,10 +127,10 @@ export ULTRANIX_MCP_API_KEY="$NEW_KEY"
 systemctl --user restart ultranix-mcp
 ```
 
-- **Cadence**: rotate at least every **90 days**, and **immediately** on any
+- **Cadence**: rotate at least every **90 days**, and **immediately**on any
   suspected exposure (key in a committed file, paste, screenshot, ticket).
 - On restart, an `auth.keys.loaded` audit event records how many keys loaded
-  and their key-IDs — verify the old ID is gone.
+  and their key-IDs - verify the old ID is gone.
 
 ### Optional expiry metadata
 
@@ -142,7 +140,7 @@ self-enforcing rather than purely procedural:
 - In a key file (`ULTRANIX_MCP_API_KEY_FILE` or a `*.json` record under
   `~/.ultranix-mcp/api-keys/`), append `expires=<RFC 3339 timestamp>` after
   the key on the same line, whitespace-separated:
-  `uxcp_… expires=2025-09-01T00:00:00Z` — or use the JSON record's
+  `uxcp_... expires=2025-09-01T00:00:00Z` - or use the JSON record's
   `"expires_at"` field.
 - For the env source, `ULTRANIX_MCP_API_KEY_EXPIRES` takes a
   comma-separated list aligned positionally with `ULTRANIX_MCP_API_KEY`.
@@ -150,7 +148,7 @@ self-enforcing rather than purely procedural:
 Expired keys stay loaded but marked inactive: a request presenting one
 fails authentication with a distinct `auth.expired_key` audit event
 (`key_id`, expiry timestamp, remote addr) rather than a generic
-`auth.failure{reason:"unknown"}` — so a client left behind after rotation
+`auth.failure{reason:"unknown"}` - so a client left behind after rotation
 is distinguishable from an attacker guessing. `auth.keys.loaded` reports
 the active and expired-but-loaded counts separately. Combined with the
 90-day cadence, expiry turns "remember to revoke" into "the key revokes
@@ -160,7 +158,7 @@ itself".
 
 ## 7. Revocation
 
-There is no revocation list — a key is valid iff it is configured. To revoke:
+There is no revocation list - a key is valid iff it is configured. To revoke:
 
 1. Remove it from `ULTRANIX_MCP_API_KEY` / the key file.
 2. Restart (or send `SIGHUP` for config reload, where supported).
@@ -172,7 +170,7 @@ grep '"key_id":"<8-hex-id>"' ~/.ultranix-mcp/logs/audit.jsonl
 ```
 
 Emergency revocation = stop the server, strip the key, restart. Because keys
-are bearer tokens, a leaked key is live until this happens — keep revocation
+are bearer tokens, a leaked key is live until this happens - keep revocation
 fast, not clever.
 
 ---
@@ -181,15 +179,15 @@ fast, not clever.
 
 One escape hatch and one hard rule:
 
-- **`ULTRANIX_MCP_DISABLE_AUTH=true`** — disables HTTP auth entirely. At
-  startup the server emits a **loud stderr warning** *and* an
+- **`ULTRANIX_MCP_DISABLE_AUTH=true`**- disables HTTP auth entirely. At
+  startup the server emits a **loud stderr warning***and* an
   `auth.disabled` audit event on every boot, plus a periodic reminder in
   `audit.jsonl`. Use only on loopback-only development machines. **Anyone who
   can reach `:3010` then controls your mouse and keyboard.**
-- **No bootstrap or dev key — ever.** If no key is configured and auth is
+- **No bootstrap or dev key - ever.**If no key is configured and auth is
   not disabled, the HTTP transport fails closed: it refuses to bind
   `:3010` and logs the reason. The server never generates, prints, or
-  derives a key on your behalf — a key emitted to a terminal ends up in
+  derives a key on your behalf - a key emitted to a terminal ends up in
   scrollback, shell logs, and tmux capture-panes. Generating a real key
   (§2) is the only path, and it takes one shell command.
 
@@ -203,13 +201,11 @@ Every authentication outcome is recorded in
 | Event | When | Fields of note |
 | ----- | ---- | -------------- |
 | `auth.success` | Valid key presented | `key_id`, remote addr, transport |
-| `auth.failure` | Missing / malformed / unknown key | remote addr, reason (`missing`, `malformed`, `unknown`), key prefix if parseable — **never the full key** |
+| `auth.failure` | Missing / malformed / unknown key | remote addr, reason (`missing`, `malformed`, `unknown`), key prefix if parseable - **never the full key**|
 | `auth.disabled` | Server started with `ULTRANIX_MCP_DISABLE_AUTH=true` | timestamp, listener |
 | `auth.expired_key` | Valid-format key presented past its `expires=` timestamp | `key_id`, expiry timestamp, remote addr |
 | `auth.keys.loaded` | Startup / reload | active + expired-but-loaded counts, key-IDs of the active set |
-| `ratelimit.exceeded` | Bucket empty | `key_id`, remote addr |
-
-Audit records never contain plaintext keys — only the 8-char key-ID and, on
+| `ratelimit.exceeded` | Bucket empty | `key_id`, remote addr | Audit records never contain plaintext keys - only the 8-char key-ID and, on
 malformed attempts, the literal prefix substring (e.g. `uxcp_`) for
 diagnostics. Alert-worthy signals: `auth.failure` bursts from one address,
 `auth.failure` with `reason:"unknown"` after a rotation (a client left
@@ -219,12 +215,12 @@ behind), or `key_id` values you don't recognize.
 
 ## 10. Best-Practice Summary
 
-1. One `uxcp_` key **per client**, never shared — preserves rate-limit
+1. One `uxcp_` key **per client**, never shared - preserves rate-limit
    fairness and audit attribution.
 2. Generate with `openssl rand -hex 32` + prefix; never handcraft.
 3. Prefer `ULTRANIX_MCP_API_KEY_FILE` or systemd credentials over a plain env
    var where `/proc` exposure matters.
-4. Rotate ≥ every 90 days with the overlap procedure — zero downtime;
+4. Rotate ≥ every 90 days with the overlap procedure - zero downtime;
    stamp `expires=` so a forgotten key revokes itself.
 5. Never commit keys; add `uxcp_[0-9a-f]{64}` to your secret-scanner rules.
 6. Treat `ULTRANIX_MCP_DISABLE_AUTH=true` as a loaded gun: loopback dev only.
@@ -233,5 +229,5 @@ behind), or `key_id` values you don't recognize.
 ---
 
 *See also: [SECURITY.md](../SECURITY.md) (hardening checklist),
-[THREAT_MODEL.md](THREAT_MODEL.md) (R-1, R-3 — bearer-token residual risks),
+[THREAT_MODEL.md](THREAT_MODEL.md) (R-1, R-3 - bearer-token residual risks),
 [HEADLESS_AUTH.md](HEADLESS_AUTH.md) (SSH-tunneled deployments).*

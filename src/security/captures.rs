@@ -1,11 +1,11 @@
-//! Capture scratch directories and no-follow opens — docs/TOOLS.md
+//! Capture scratch directories and no-follow opens - docs/TOOLS.md
 //! "Capture Output Writes" and THREAT_MODEL.md §4.6.
 //!
 //! Capture tools and capture-adjacent whitelist binaries (`grim`, `scrot`)
 //! never write to a caller-chosen path. The server creates a **fresh
-//! `mktemp`-style directory** (mode `0700`) per capture under
-//! `~/.ultranix-mcp/captures/` (preferred) — falling back to `/tmp` when
-//! the state directory is unavailable — and passes the spawned binary a
+//! `mktemp`-style directory**(mode `0700`) per capture under
+//! `~/.ultranix-mcp/captures/` (preferred) - falling back to `/tmp` when
+//! the state directory is unavailable - and passes the spawned binary a
 //! path inside it. Because the directory is freshly created, unpredictable,
 //! and owner-only, a same-UID attacker cannot pre-place a symlink inside
 //! it: this closes the canonicalize-then-write TOCTOU window that spawned
@@ -13,7 +13,7 @@
 //!
 //! When the *server* opens the capture file (e.g. to return image content
 //! to the client) it uses [`open_nofollow`]: `O_NOFOLLOW` at mode `0600`.
-//! `O_NOFOLLOW` guards only the leaf component — parent-dir traversal
+//! `O_NOFOLLOW` guards only the leaf component - parent-dir traversal
 //! resistance comes from the fresh unpredictable `0700` dir, which is why
 //! capture paths must always live inside one. Files are unlinked after
 //! the tool returns, including on error paths (callers' duty).
@@ -24,22 +24,22 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-/// Random bytes carried in a capture-dir suffix — 16 bytes = 128 bits of
+/// Random bytes carried in a capture-dir suffix - 16 bytes = 128 bits of
 /// CSPRNG entropy (the same budget as consent tokens). Unpredictability
 /// is the security property: a same-UID attacker cannot pre-place a
 /// symlink inside a directory it cannot name.
 const SUFFIX_BYTES: usize = 16;
 
-/// `EEXIST` retry budget — effectively unreachable at 128 bits of
+/// `EEXIST` retry budget - effectively unreachable at 128 bits of
 /// entropy, but bounded so a pathological RNG fails instead of spinning.
 const MAX_ATTEMPTS: usize = 32;
 
-/// Directory-name prefix — makes capture scratch dirs greppable under
+/// Directory-name prefix - makes capture scratch dirs greppable under
 /// the captures dir and `/tmp`.
 const DIR_PREFIX: &str = "capture-";
 
 /// Directory-name prefix for bounded screen recordings (`screen_record`)
-/// — `rec-<ulid>` sorts chronologically and greps separately from
+/// - `rec-<ulid>` sorts chronologically and greps separately from
 /// single-shot `capture-` scratch dirs.
 const REC_PREFIX: &str = "rec-";
 
@@ -48,8 +48,8 @@ const REC_PREFIX: &str = "rec-";
 ///
 /// Preferred base: `<state-dir>/captures` where `<state-dir>` resolves
 /// per [`crate::state::StateDir::resolve_root`] (`ULTRANIX_MCP_STATE_DIR`
-/// → `~/.ultranix-mcp` → `./.ultranix-mcp`; `XDG_STATE_HOME` is
-/// deliberately *not* consulted — see state.rs module docs).
+/// -> `~/.ultranix-mcp` -> `./.ultranix-mcp`; `XDG_STATE_HOME` is
+/// deliberately *not* consulted - see state.rs module docs).
 /// The state root and the `captures/` leaf are created/tightened to
 /// `0700` as needed.
 ///
@@ -74,7 +74,7 @@ fn fresh_capture_dir_at(preferred: &Path, fallback: &Path) -> anyhow::Result<Pat
             tracing::warn!(
                 error = %err,
                 dir = %preferred.display(),
-                "preferred captures dir unusable — falling back to /tmp"
+                "preferred captures dir unusable - falling back to /tmp"
             );
         }
     }
@@ -85,10 +85,10 @@ fn fresh_capture_dir_at(preferred: &Path, fallback: &Path) -> anyhow::Result<Pat
 /// Create a fresh, unpredictable, owner-only (`0700`) directory for one
 /// bounded screen recording's frame files (`screen_record`). Same
 /// preferred-`<state-dir>/captures`-then-`/tmp` flow as
-/// [`fresh_capture_dir`]; the leaf is `rec-<ULID>` — time-sortable, and
+/// [`fresh_capture_dir`]; the leaf is `rec-<ULID>` - time-sortable, and
 /// the ULID's 80 random bits serve the same anti-symlink-preplacement
 /// role as the capture-dir suffix. Unlike `capture-` dirs, recording
-/// dirs are **kept** after the tool returns (the frames are the result).
+/// dirs are **kept**after the tool returns (the frames are the result).
 pub fn fresh_recording_dir() -> anyhow::Result<PathBuf> {
     let preferred = preferred_captures_base();
     match fresh_recording_dir_at(&preferred, Path::new("/tmp")) {
@@ -106,7 +106,7 @@ fn fresh_recording_dir_at(preferred: &Path, fallback: &Path) -> anyhow::Result<P
             tracing::warn!(
                 error = %err,
                 dir = %preferred.display(),
-                "preferred captures dir unusable — falling back to /tmp"
+                "preferred captures dir unusable - falling back to /tmp"
             );
         }
     }
@@ -127,13 +127,13 @@ fn preferred_captures_base() -> PathBuf {
 }
 
 /// Ensure `captures_base` and its parent (the state root) exist and are
-/// owner-only. Only used for the *preferred* location — the `/tmp`
+/// owner-only. Only used for the *preferred* location - the `/tmp`
 /// fallback base is pre-existing system ground and must not be touched.
 ///
 /// `create_dir_all`/`set_permissions` follow symlinks, so a pre-planted
 /// symlink at the base would have its *target* tightened to `0700` and
 /// then receive capture frames. `lstat` *before* creating/chmod'ing and
-/// refuse to operate through a link — the caller falls back to `/tmp`
+/// refuse to operate through a link - the caller falls back to `/tmp`
 /// instead.
 fn ensure_private_tree(captures_base: &Path) -> anyhow::Result<()> {
     if let Some(root) = captures_base.parent()
@@ -144,7 +144,7 @@ fn ensure_private_tree(captures_base: &Path) -> anyhow::Result<()> {
     if let Ok(meta) = fs::symlink_metadata(captures_base) {
         anyhow::ensure!(
             !meta.file_type().is_symlink(),
-            "captures dir {} is a symlink — refusing to follow",
+            "captures dir {} is a symlink - refusing to follow",
             captures_base.display()
         );
     }
@@ -185,7 +185,7 @@ fn mktemp_leaf_named(base: &Path, mut name: impl FnMut() -> String) -> anyhow::R
     )
 }
 
-/// 16 CSPRNG bytes, hex-encoded → a 32-char unpredictable suffix.
+/// 16 CSPRNG bytes, hex-encoded -> a 32-char unpredictable suffix.
 fn random_suffix() -> String {
     let mut bytes = [0u8; SUFFIX_BYTES];
     rand::fill(&mut bytes);
@@ -196,14 +196,14 @@ fn random_suffix() -> String {
     s
 }
 
-/// Open `path` server-side with symlink-following disabled — `O_NOFOLLOW`
+/// Open `path` server-side with symlink-following disabled - `O_NOFOLLOW`
 /// makes a final-component symlink fail with `ELOOP` instead of silently
 /// redirecting the open. The file is created (if missing) and forced to
 /// mode `0600`, including pre-existing files left looser by a spawned
 /// binary's umask.
 ///
 /// Scope note: `O_NOFOLLOW` protects the leaf only. Parent-component
-/// symlinks still resolve — the defense for those is that capture paths
+/// symlinks still resolve - the defense for those is that capture paths
 /// always live inside a [`fresh_capture_dir`] directory, freshly created
 /// and owner-only.
 pub fn open_nofollow(path: &Path) -> anyhow::Result<File> {
@@ -213,7 +213,7 @@ pub fn open_nofollow(path: &Path) -> anyhow::Result<File> {
     let file = opts
         .open(path)
         .with_context(|| format!("open {} (O_NOFOLLOW)", path.display()))?;
-    // fchmod via the fd — avoids a second path lookup racing a swap.
+    // fchmod via the fd - avoids a second path lookup racing a swap.
     file.set_permissions(private_file_permissions())
         .with_context(|| format!("chmod 0600 {}", path.display()))?;
     Ok(file)
@@ -227,7 +227,7 @@ fn apply_nofollow(opts: &mut OpenOptions) {
 
 #[cfg(not(unix))]
 fn apply_nofollow(_opts: &mut OpenOptions) {
-    // No O_NOFOLLOW — Linux-only crate, kept for check builds.
+    // No O_NOFOLLOW - Linux-only crate, kept for check builds.
 }
 
 #[cfg(unix)]
@@ -289,7 +289,7 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let d1 = mktemp_leaf(base.path()).unwrap();
         let d2 = mktemp_leaf(base.path()).unwrap();
-        assert_ne!(d1, d2, "fresh dir per capture — never reused");
+        assert_ne!(d1, d2, "fresh dir per capture - never reused");
         for d in [&d1, &d2] {
             assert!(d.is_dir());
             assert_eq!(mode_of(d), 0o700);
@@ -340,7 +340,7 @@ mod tests {
         symlink(&real, &preferred).unwrap();
 
         assert!(ensure_private_tree(&preferred).is_err());
-        // …and the full flow falls back rather than writing into `real`.
+        // ...and the full flow falls back rather than writing into `real`.
         let fallback = tempfile::tempdir().unwrap();
         let dir = fresh_capture_dir_at(&preferred, fallback.path()).unwrap();
         assert!(dir.starts_with(fallback.path()), "must land under fallback");
@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn falls_back_when_preferred_unusable() {
         let tmp = tempfile::tempdir().unwrap();
-        // A regular file where the preferred base should be — mkdir fails.
+        // A regular file where the preferred base should be - mkdir fails.
         let preferred = tmp.path().join("not-a-dir");
         fs::write(&preferred, b"x").unwrap();
         let fallback = tempfile::tempdir().unwrap();
@@ -386,7 +386,7 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let d1 = recording_leaf(base.path()).unwrap();
         let d2 = recording_leaf(base.path()).unwrap();
-        assert_ne!(d1, d2, "fresh dir per recording — never reused");
+        assert_ne!(d1, d2, "fresh dir per recording - never reused");
         for d in [&d1, &d2] {
             assert!(d.is_dir());
             assert_eq!(mode_of(d), 0o700);
@@ -467,7 +467,7 @@ mod tests {
         symlink(&secret, &link).unwrap();
 
         let err = open_nofollow(&link).unwrap_err();
-        // ELOOP → the open fails rather than following the link.
+        // ELOOP -> the open fails rather than following the link.
         assert!(
             err.to_string().contains("O_NOFOLLOW"),
             "error should identify the no-follow open: {err:#}"
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn rejects_dangling_symlink_leaf() {
-        // ELOOP fires even when the link target does not exist — without
+        // ELOOP fires even when the link target does not exist - without
         // O_NOFOLLOW this would happily create the target.
         use std::os::unix::fs::symlink;
         let tmp = tempfile::tempdir().unwrap();

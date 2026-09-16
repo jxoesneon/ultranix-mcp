@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# nested-test.sh — Phase-5 nested-compositor integration rig
+# nested-test.sh - Phase-5 nested-compositor integration rig
 # (ROADMAP Phase 5 "Nested-Hyprland integration test rig for real-Wayland CI";
-# docs/TESTING_STRATEGY.md §2.2 "Tier 2 — session integration").
+# docs/TESTING_STRATEGY.md §2.2 "Tier 2 - session integration").
 #
 # Spawns a disposable Wayland compositor, launches
 # `ultranix-mcp --transport stdio` bound to it, and drives the read-only
 # MCP flow over JSON-RPC:
 #
-#   initialize → tools/list (assert exactly 40 tools) → get_windows
-#   → screen_info → screenshot (assert PNG magic bytes) → get_ui_tree
-#   → stdin EOF (shutdown; stdio MCP has no `shutdown` method — EOF is
+#   initialize -> tools/list (assert exactly 40 tools) -> get_windows
+#   -> screen_info -> screenshot (assert PNG magic bytes) -> get_ui_tree
+#   -> stdin EOF (shutdown; stdio MCP has no `shutdown` method - EOF is
 #   the spec'd teardown and rmcp exits 0 on it)
 #
 # Compositor selection (first found on PATH; override with --compositor
 # or ULTRANIX_NESTED_COMPOSITOR):
 #
-#   hyprland  `Hyprland -c <minimal>` — nested under the running Wayland
+#   hyprland  `Hyprland -c <minimal>` - nested under the running Wayland
 #             session when the parent WAYLAND_DISPLAY resolves, else
 #             WLR_BACKENDS=headless (CI runners). Full assertion set.
 #   sway      `WLR_BACKENDS=headless sway -c <minimal>`; a HEADLESS output
@@ -23,19 +23,19 @@
 #             works, so the PNG assertion is fully exercised; the window
 #             provider is `SwayWindow` over sway IPC, so get_windows must
 #             succeed the same as under Hyprland.
-#   weston    `weston --backend=headless-backend.so` — last resort:
+#   weston    `weston --backend=headless-backend.so` - last resort:
 #             weston lacks wlr-screencopy, so screenshot/screen_info
 #             accept -32010 / isError instead of a PNG (documented
 #             degradation).
 #
 # SAFETY
-#   * Read-only tools only — the rig never calls input-injection tools
+#   * Read-only tools only - the rig never calls input-injection tools
 #     (no mouse_*, type_text, key_control, window_control, invoke_*).
 #   * The compositor gets a PRIVATE XDG_RUNTIME_DIR ($WORK/runtime): its
 #     hypr/<HIS>/ dir and wayland-* socket are the only entries there, so
 #     the ambient session's sockets are unreachable by construction. The
 #     spawned server likewise gets that private runtime dir + the nested
-#     HYPRLAND_INSTANCE_SIGNATURE — never the ambient value — and a
+#     HYPRLAND_INSTANCE_SIGNATURE - never the ambient value - and a
 #     scratch HOME so ~/.ultranix-mcp state lands in the workdir.
 #   * The trap kills only the compositor PID it spawned.
 #
@@ -43,7 +43,7 @@
 #   scripts/nested-test.sh [--compositor hyprland|sway|weston] [--bin PATH]
 #
 # Env:
-#   ULTRANIX_MCP_BIN           server binary (default: cargo build → target/debug)
+#   ULTRANIX_MCP_BIN           server binary (default: cargo build -> target/debug)
 #   ULTRANIX_NESTED_COMPOSITOR same as --compositor
 #   ULTRANIX_NESTED_TIMEOUT    per-stage wait budget, seconds (default 20)
 #   ULTRANIX_NESTED_KEEP=1     preserve the workdir (compositor/server logs)
@@ -97,7 +97,7 @@ done
 # Scratch workdir + private runtime dir (0700 as libwayland requires).
 #
 # The path must stay SHORT: Hyprland builds
-# `$XDG_RUNTIME_DIR/hypr/<HIS>/.socket2.sock` — the ~64-char HIS plus a
+# `$XDG_RUNTIME_DIR/hypr/<HIS>/.socket2.sock` - the ~64-char HIS plus a
 # long prefix overflows the ~108-byte unix sockaddr limit and Hyprland
 # silently disables IPC ("Socket2 path is too long"). `uxn.XXXXXX` keeps
 # RUNTIME ≈ 18 bytes so the composed socket path stays ≈ 100.
@@ -138,7 +138,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ---------------------------------------------------------------------------
-# wait_for <description> <cmd...> — poll cmd each 200ms up to $TIMEOUT,
+# wait_for <description> <cmd...> - poll cmd each 200ms up to $TIMEOUT,
 # bailing early if the spawned compositor already died.
 # ---------------------------------------------------------------------------
 wait_for() {
@@ -178,7 +178,7 @@ first_hypr_instance() {
 }
 
 # Absolute path to the parent session's Wayland socket, or "" when there is
-# no display to nest under (CI → headless backend).
+# no display to nest under (CI -> headless backend).
 parent_wayland_socket() {
     local wl="${WAYLAND_DISPLAY:-}"
     [[ -z ${wl} ]] && return 1
@@ -195,7 +195,7 @@ parent_wayland_socket() {
 
 # ---------------------------------------------------------------------------
 # Compositor launchers. Every one runs with the private XDG_RUNTIME_DIR and
-# with HYPRLAND_INSTANCE_SIGNATURE explicitly stripped from the launch env —
+# with HYPRLAND_INSTANCE_SIGNATURE explicitly stripped from the launch env -
 # the nested instance generates its own signature and ambient inheritance
 # must never alias the real session.
 # ---------------------------------------------------------------------------
@@ -228,7 +228,7 @@ EOF
         log "nesting Hyprland under parent socket ${parent}"
     else
         env_args+=("WLR_BACKENDS=headless" "WLR_RENDERER=pixman")
-        log "no parent Wayland session — Hyprland headless backend"
+        log "no parent Wayland session - Hyprland headless backend"
     fi
 
     env -u HYPRLAND_INSTANCE_SIGNATURE -u DISPLAY "${env_args[@]}" \
@@ -238,7 +238,7 @@ EOF
     wait_for "Hyprland instance dir under ${RUNTIME}/hypr" any_hypr_instance
     HIS="$(first_hypr_instance)"
     [[ -n ${HIS} ]] || die "empty HYPRLAND_INSTANCE_SIGNATURE discovered"
-    # Never alias the real session (should be impossible — private dir).
+    # Never alias the real session (should be impossible - private dir).
     if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} && ${HIS} == "${HYPRLAND_INSTANCE_SIGNATURE}" ]]; then
         die "nested HIS collides with the ambient session signature"
     fi
@@ -257,13 +257,13 @@ EOF
     if [[ -z ${parent} ]] && command -v hyprctl >/dev/null 2>&1; then
         XDG_RUNTIME_DIR="${RUNTIME}" HYPRLAND_INSTANCE_SIGNATURE="${HIS}" \
             hyprctl output create headless >>"$COMP_LOG" 2>&1 ||
-            log "WARN: 'hyprctl output create headless' failed — capture assertions may fail"
+            log "WARN: 'hyprctl output create headless' failed - capture assertions may fail"
     fi
 }
 
 launch_sway() {
     command -v swaymsg >/dev/null 2>&1 ||
-        log "WARN: swaymsg not found — cannot create a headless output; capture assertions may fail"
+        log "WARN: swaymsg not found - cannot create a headless output; capture assertions may fail"
     local cfg="$WORK/sway.conf"
     printf '# Minimal nested-test config: defaults, no exec lines.\n' >"$cfg"
 
@@ -279,13 +279,13 @@ launch_sway() {
     WL="$(first_wayland_socket)"
     HIS=""
 
-    # wlroots headless starts with zero outputs — create one via IPC.
+    # wlroots headless starts with zero outputs - create one via IPC.
     local sway_sock=""
     wait_for "sway IPC socket" any_sway_ipc
     sway_sock="$(find "$RUNTIME" -maxdepth 1 -name 'sway-ipc.*.sock' -type s | head -n1)"
     if command -v swaymsg >/dev/null 2>&1; then
         SWAYSOCK="${sway_sock}" swaymsg create_output >>"$COMP_LOG" 2>&1 ||
-            log "WARN: 'swaymsg create_output' failed — capture assertions may fail"
+            log "WARN: 'swaymsg create_output' failed - capture assertions may fail"
     fi
 }
 
@@ -357,12 +357,12 @@ export ULTRANIX_NESTED_TIMEOUT="${TIMEOUT}"
 
 # ---------------------------------------------------------------------------
 # JSON-RPC driver. Speaks MCP-over-stdio: newline-delimited JSON-RPC on
-# stdin/stdout (server diagnostics are on stderr → $SERVER_LOG).
+# stdin/stdout (server diagnostics are on stderr -> $SERVER_LOG).
 #
 # Step expectations are mode-aware: the window provider exists under
 # Hyprland (hyprctl IPC) and sway (sway IPC); capture works where
 # wlr-screencopy/grim can work (hyprland, sway). Under weston those calls
-# must still fail *cleanly* — structured -32010 or an isError result, never
+# must still fail *cleanly* - structured -32010 or an isError result, never
 # a transport failure. get_ui_tree is informational: AT-SPI2 availability
 # depends on the session bus, not the compositor.
 # ---------------------------------------------------------------------------
@@ -425,7 +425,7 @@ results = []
 def step(ok, name, detail=""):
     results.append((ok, name))
     tag = "PASS" if ok else "FAIL"
-    print(f"[nested-test] {tag} {name}" + (f" — {detail}" if detail else ""), flush=True)
+    print(f"[nested-test] {tag} {name}" + (f" - {detail}" if detail else ""), flush=True)
 
 
 def send(msg):
@@ -523,7 +523,7 @@ try:
         # Sway now has a real window provider; weston/wlroots compositors
         # without a known IPC fall back to ProviderUnavailable.
         step(rpc_error_code(r) == PROVIDER_UNAVAILABLE or is_error_result(tool_result(r)),
-             "get_windows → structured unavailable (no window IPC under this compositor)",
+             "get_windows -> structured unavailable (no window IPC under this compositor)",
              f"code={rpc_error_code(r)}")
 
     # --- screen_info --------------------------------------------------------
@@ -542,7 +542,7 @@ try:
         step(ok, "screen_info (wlr capture)", detail or json.dumps(r)[:160])
     else:
         step(rpc_error_code(r) == PROVIDER_UNAVAILABLE or is_error_result(tool_result(r)),
-             "screen_info → structured unavailable (weston has no wlr-screencopy)",
+             "screen_info -> structured unavailable (weston has no wlr-screencopy)",
              f"code={rpc_error_code(r)}")
 
     # --- screenshot ---------------------------------------------------------
@@ -559,12 +559,12 @@ try:
                 ok = (img.get("mimeType") == "image/png"
                       and raw[:8] == b"\x89PNG\r\n\x1a\n")
                 detail = f"{len(raw)}B PNG, magic ok"
-            except Exception as exc:  # noqa: BLE001 — report, not crash
+            except Exception as exc:  # noqa: BLE001 - report, not crash
                 detail = f"bad image payload: {exc}"
         step(ok, "screenshot (PNG magic)", detail)
     else:
         step(rpc_error_code(r) == PROVIDER_UNAVAILABLE or is_error_result(tool_result(r)),
-             "screenshot → structured unavailable (weston has no wlr-screencopy)",
+             "screenshot -> structured unavailable (weston has no wlr-screencopy)",
              f"code={rpc_error_code(r)}")
 
     # --- get_ui_tree (informational) ----------------------------------------
@@ -586,7 +586,7 @@ try:
     except subprocess.TimeoutExpired:
         step(False, "shutdown on stdin EOF", "server did not exit within 10s")
 
-except Exception as exc:  # noqa: BLE001 — any driver failure = rig failure
+except Exception as exc:  # noqa: BLE001 - any driver failure = rig failure
     step(False, "driver", f"{type(exc).__name__}: {exc}")
 finally:
     if proc.poll() is None:
@@ -595,8 +595,8 @@ finally:
 
 failed = [n for ok, n in results if not ok]
 print(f"[nested-test] {len(results) - len(failed)}/{len(results)} steps passed"
-      + (f" — failed: {', '.join(failed)}" if failed else ""), flush=True)
+      + (f" - failed: {', '.join(failed)}" if failed else ""), flush=True)
 sys.exit(1 if failed else 0)
 PYEOF
 
-log "PASS — compositor=${MODE} wayland=${WL} his=${HIS:-none} (read-only flow, nested session only)"
+log "PASS - compositor=${MODE} wayland=${WL} his=${HIS:-none} (read-only flow, nested session only)"

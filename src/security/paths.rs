@@ -1,18 +1,18 @@
-//! Path whitelist — canonicalize-then-check against a deliberately narrow
+//! Path whitelist - canonicalize-then-check against a deliberately narrow
 //! root set (SECURITY.md "Request pipeline", THREAT_MODEL.md §4.6):
 //!
 //! - `$XDG_RUNTIME_DIR` (per-user tmpfs, already `0700`)
 //! - `/tmp`
 //! - `~/.ultranix-mcp/**`
 //!
-//! `$HOME` at large is **not** an allowed root — a `scrot -o ~/.bashrc`-style
+//! `$HOME` at large is **not**an allowed root - a `scrot -o ~/.bashrc`-style
 //! call would turn a capture tool into a dotfile-overwrite vector. Symlinks
 //! are resolved *before* the prefix check, so a symlink inside `/tmp` that
 //! points at `$HOME` is rejected.
 
 use std::path::{Component, Path, PathBuf};
 
-/// Rejection reasons — callers map these to `-32004 PathNotWhitelisted`.
+/// Rejection reasons - callers map these to `-32004 PathNotWhitelisted`.
 #[derive(Debug, thiserror::Error)]
 pub enum PathWhitelistError {
     /// The path (or its nearest existing ancestor) cannot be canonicalized.
@@ -28,11 +28,11 @@ pub enum PathWhitelistError {
 
 /// The canonicalized allowed roots for this process, in check order.
 ///
-/// Roots that cannot be canonicalized are skipped — except the
+/// Roots that cannot be canonicalized are skipped - except the
 /// `~/.ultranix-mcp` root, which may legitimately not exist yet (first run):
 /// for it we fall back to `canonicalize($HOME)/.ultranix-mcp` so that a
 /// not-yet-created state dir is still a valid root. A lexical `$HOME` is
-/// never trusted directly — `$HOME` itself may be a symlink.
+/// never trusted directly - `$HOME` itself may be a symlink.
 fn allowed_roots() -> Vec<PathBuf> {
     let mut roots = Vec::with_capacity(3);
 
@@ -66,7 +66,7 @@ fn allowed_roots() -> Vec<PathBuf> {
 ///
 /// `fs::canonicalize` requires the whole path to exist; output paths inside
 /// a fresh captures dir do not. When the leaf does not exist we canonicalize
-/// the nearest existing ancestor and re-append the remaining lexical tail —
+/// the nearest existing ancestor and re-append the remaining lexical tail -
 /// which is safe because the tail is verified to contain only `Normal`
 /// components (no `..`, no root re-anchor).
 fn canonicalize_lenient(path: &Path) -> Result<PathBuf, PathWhitelistError> {
@@ -88,7 +88,7 @@ fn canonicalize_lenient(path: &Path) -> Result<PathBuf, PathWhitelistError> {
                 let name = cursor
                     .file_name()
                     .ok_or_else(|| PathWhitelistError::NoLeaf(path.to_path_buf()))?;
-                // Reject anything that is not a plain path component — a
+                // Reject anything that is not a plain path component - a
                 // `..` or separator smuggled into the tail would let the
                 // re-attached path escape the canonicalized ancestor.
                 let mut comps = Path::new(name).components();
@@ -115,13 +115,13 @@ fn canonicalize_lenient(path: &Path) -> Result<PathBuf, PathWhitelistError> {
 /// Canonicalize `path` (resolving every symlink first) and require the
 /// result to live under `$XDG_RUNTIME_DIR`, `/tmp`, or `~/.ultranix-mcp/**`.
 ///
-/// Returns the canonicalized path on success — callers should use the
+/// Returns the canonicalized path on success - callers should use the
 /// returned value, not the input, to avoid a check/use mismatch.
 pub fn check_path(path: &Path) -> Result<PathBuf, PathWhitelistError> {
     check_path_with_roots(path, &allowed_roots())
 }
 
-/// [`check_path`] against an explicit root set — factored out so tests can
+/// [`check_path`] against an explicit root set - factored out so tests can
 /// run hermetically without mutating process env.
 pub(crate) fn check_path_with_roots(
     path: &Path,
@@ -209,7 +209,7 @@ mod tests {
         fs::create_dir(&sub).unwrap();
         let outside = tmp.path().join("..").join("escape-target");
         let roots = vec![sub.clone()];
-        // `..` canonicalizes out of `sub` → outside the root.
+        // `..` canonicalizes out of `sub` -> outside the root.
         assert!(matches!(
             check_path_with_roots(&outside, &roots),
             Err(PathWhitelistError::OutsideRoots(_))
@@ -225,7 +225,7 @@ mod tests {
         let link = tmp.path().join("innocent.txt");
         symlink(&secret, &link).unwrap();
         let roots = vec![tmp.path().to_path_buf()];
-        // Canonicalizes to the real file outside the root → denied.
+        // Canonicalizes to the real file outside the root -> denied.
         let err = check_path_with_roots(&link, &roots).unwrap_err();
         assert!(matches!(err, PathWhitelistError::OutsideRoots(_)));
     }
@@ -279,7 +279,7 @@ mod tests {
         // `..` as the final component has no usable Normal leaf.
         let p = tmp.path().join("sub").join("..");
         fs::create_dir(tmp.path().join("sub")).unwrap();
-        // This canonicalizes to tmp itself — which IS under the root; fine.
+        // This canonicalizes to tmp itself - which IS under the root; fine.
         assert!(check_path_with_roots(&p, &roots).is_ok());
         // A missing chain ending in `..` is rejected instead of resolved.
         let bad = tmp.path().join("missing").join("..");

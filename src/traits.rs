@@ -1,4 +1,4 @@
-//! Provider traits — the dependency-injection contract every backend
+//! Provider traits - the dependency-injection contract every backend
 //! implements. Mirrors the sibling `ultrawin-mcp` pattern: each provider is
 //! held as `Option<Arc<dyn Trait>>`, fully mockable in tests, and tools
 //! degrade to typed `ProviderUnavailable` errors when a backend is `None`.
@@ -55,13 +55,13 @@ pub struct WindowInfo {
     pub workspace: i32,
     pub rect: Rect,
     pub focused: bool,
-    /// Floating (vs tiled) state — `None` when the backend can't report it.
+    /// Floating (vs tiled) state - `None` when the backend can't report it.
     pub floating: Option<bool>,
-    /// Fullscreen state — `None` when the backend can't report it.
+    /// Fullscreen state - `None` when the backend can't report it.
     pub fullscreen: Option<bool>,
-    /// Owning process id — `None` when the backend can't report it.
+    /// Owning process id - `None` when the backend can't report it.
     pub pid: Option<i64>,
-    /// Monitor/output index or id — `None` when the backend can't report it.
+    /// Monitor/output index or id - `None` when the backend can't report it.
     pub monitor: Option<i64>,
 }
 
@@ -121,7 +121,7 @@ pub trait UIAutomationProvider: Send + Sync {
     }
     /// Invoke the element's default action (AT-SPI `Action` interface).
     async fn invoke_element(&self, query: &str) -> Result<bool>;
-    /// Invoke a *named* action on the matched element — the
+    /// Invoke a *named* action on the matched element - the
     /// `invoke_element` `action` enum: `"press"`, `"focus"`, `"expand"`,
     /// `"collapse"` (docs/TOOLS.md). Backends that can enumerate the AT-SPI
     /// `Action` interface's action names should override; the default maps
@@ -143,7 +143,7 @@ pub trait WindowProvider: Send + Sync {
     /// Backend-native window op: `focus|move|resize|minimize|close`.
     async fn dispatch(&self, action: &str, window_id: &str, args: &Value) -> Result<()>;
     /// Selector token that addresses the *focused view* directly,
-    /// bypassing `list_windows`/`active_window` resolution — for
+    /// bypassing `list_windows`/`active_window` resolution - for
     /// compositors (river) that can act on the focused view but cannot
     /// enumerate or identify it. `None` (default) means selectors always
     /// resolve through the window list.
@@ -165,7 +165,7 @@ pub trait VisionProvider: Send + Sync {
 #[async_trait]
 pub trait OverlayProvider: Send + Sync {
     /// Draw a translucent rectangle over `rect` for `duration_ms`, then
-    /// remove it. Purely visual — implementations must not affect
+    /// remove it. Purely visual - implementations must not affect
     /// capture or input.
     async fn highlight(&self, rect: Rect, duration_ms: u64) -> Result<()>;
 }
@@ -182,7 +182,7 @@ pub trait BrowserProvider: Send + Sync {
 
 /// Clipboard access (wl-clipboard on Wayland, xclip/xsel on X11).
 ///
-/// The contract is text-first: reads surface UTF-8 text only — binary
+/// The contract is text-first: reads surface UTF-8 text only - binary
 /// payloads are never moved through the provider boundary (a clipboard
 /// can carry arbitrary secrets; the tool layer is not a file bridge).
 #[async_trait]
@@ -192,7 +192,7 @@ pub trait ClipboardProvider: Send + Sync {
     async fn get_text(&self) -> Result<Option<String>>;
     /// Overwrite the clipboard with `text`.
     async fn set_text(&self, text: &str) -> Result<()>;
-    /// Drop the selection entirely — subsequent reads report empty.
+    /// Drop the selection entirely - subsequent reads report empty.
     async fn clear(&self) -> Result<()>;
     /// MIME types the clipboard owner currently offers (empty when the
     /// clipboard is empty).

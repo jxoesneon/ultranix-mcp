@@ -1,12 +1,12 @@
-//! XDG Desktop Portal capture backend — the universal last-resort rung of
-//! the capture fallback ladder (`wlr-screencopy` → `grim` → portal; ADR
+//! XDG Desktop Portal capture backend - the universal last-resort rung of
+//! the capture fallback ladder (`wlr-screencopy` -> `grim` -> portal; ADR
 //! 0004, ARCHITECTURE.md §5).
 //!
 //! Speaks `org.freedesktop.portal.Screenshot` on the session bus over
 //! `zbus` (re-exported through `atspi`, already in the tree). This is the
 //! only capture path that works on compositors that expose neither
-//! `zwlr_screencopy_manager_v1` nor a `grim` binary — GNOME, KDE Plasma,
-//! COSMIC — at the price of a **consent prompt**.
+//! `zwlr_screencopy_manager_v1` nor a `grim` binary - GNOME, KDE Plasma,
+//! COSMIC - at the price of a **consent prompt**.
 //!
 //! ## PipeWire fallback (RemoteDesktop portal)
 //!
@@ -17,25 +17,25 @@
 //! RemoteDesktop session per capture:
 //!
 //! ```text
-//! CreateSession ──► SelectSources(types = monitor) ──► Start
+//! CreateSession --> SelectSources(types = monitor) --> Start
 //!      │ consent dialog (Response, up to 120s)
-//!      ▼
-//! OpenPipeWireRemote ──► pw_context_connect_fd ──► one video buffer
-//!      ▼
-//! disconnect stream ──► Session.Close
+//!      v
+//! OpenPipeWireRemote --> pw_context_connect_fd --> one video buffer
+//!      v
+//! disconnect stream --> Session.Close
 //! ```
 //!
 //! The PipeWire main loop runs on a `spawn_blocking` worker bounded by
 //! [`PIPEWIRE_TIMEOUT`]; the first `MemFd`/`MemPtr` BGRA/BGRx/RGBA/RGBx
 //! buffer is converted to RGBA and encoded PNG. Like the Screenshot
-//! path, no `persist_mode`/`restore_token` is ever sent — every capture
+//! path, no `persist_mode`/`restore_token` is ever sent - every capture
 //! consents afresh (same policy as `portal_input`).
 //!
-//! ## Consent behavior (per backend — the spec leaves it implementation-
+//! ## Consent behavior (per backend - the spec leaves it implementation-
 //! defined)
 //!
 //! `capture_frame` always calls `Screenshot` with `interactive: false` and
-//! an empty `parent_window` — it never asks the portal for an interactive
+//! an empty `parent_window` - it never asks the portal for an interactive
 //! selection dialog. What the user sees is still backend-dependent:
 //!
 //! - `xdg-desktop-portal-gnome` shows a one-shot "share screen" consent
@@ -44,12 +44,12 @@
 //! - `xdg-desktop-portal-kde` shows its own dialog with a "remember"
 //!   option.
 //! - `xdg-desktop-portal-hyprland`/`wlr` may answer non-interactively at
-//!   once or decline `interactive: false` entirely — the failure surfaces
+//!   once or decline `interactive: false` entirely - the failure surfaces
 //!   as a structured `CaptureFailed`, never a retry loop.
 //!
-//! The Screenshot portal has **no `persist_mode`/restore token** (that is
+//! The Screenshot portal has **no `persist_mode`/restore token**(that is
 //! a RemoteDesktop/ScreenCast feature), so there is nothing to persist
-//! here — token persistence lives in [`super::portal_input`]. A user
+//! here - token persistence lives in [`super::portal_input`]. A user
 //! cancelling the dialog produces a `Response` code `1`, mapped to an
 //! error that names the cancellation explicitly.
 //!
@@ -60,7 +60,7 @@
 //! signal on that object. We subscribe to `Response` signals **before**
 //! issuing the call and match on the returned request path, so a fast
 //! non-interactive reply can never race past the subscription. Responses
-//! are awaited with [`RESPONSE_TIMEOUT`] (120s) — consent dialogs block on
+//! are awaited with [`RESPONSE_TIMEOUT`] (120s) - consent dialogs block on
 //! a human.
 //!
 //! ## Region capture
@@ -74,7 +74,7 @@
 //! the `hyprctl` helpers (live on Hyprland) and degrade to the last
 //! captured frame's geometry / `ULTRANIX_SCREEN_SIZE` elsewhere.
 //!
-//! SAFETY: unit tests in this module never place a portal call — every
+//! SAFETY: unit tests in this module never place a portal call - every
 //! `Screenshot`/`Start` invocation can raise a GUI consent dialog, and no
 //! test opens a PipeWire stream. Tests cover the pure halves (URI
 //! handling, options, response mapping, cropping, pixel conversion);
@@ -121,19 +121,19 @@ pub(crate) const REQUEST_IFACE: &str = "org.freedesktop.portal.Request";
 /// The Screenshot portal interface on [`PORTAL_DESKTOP_PATH`].
 const SCREENSHOT_IFACE: &str = "org.freedesktop.portal.Screenshot";
 /// `org.freedesktop.portal.RemoteDesktop` interface on
-/// [`PORTAL_DESKTOP_PATH`] — PipeWire frame source when Screenshot is
+/// [`PORTAL_DESKTOP_PATH`] - PipeWire frame source when Screenshot is
 /// absent. Ungated: the portal probe reports it regardless of the
 /// `pipewire` feature.
 const REMOTE_DESKTOP_IFACE: &str = "org.freedesktop.portal.RemoteDesktop";
 /// `org.freedesktop.portal.Session` interface, implemented by the
-/// session object returned from `CreateSession` — used for `Close`.
+/// session object returned from `CreateSession` - used for `Close`.
 #[cfg(feature = "pipewire")]
 const SESSION_IFACE: &str = "org.freedesktop.portal.Session";
 
 /// `SelectSources` `types` bitmask: monitor(1) only.
 #[cfg(feature = "pipewire")]
 const SOURCE_MONITOR: u32 = 1;
-/// `cursor_mode`: hidden(1) — the captured stream composites no cursor.
+/// `cursor_mode`: hidden(1) - the captured stream composites no cursor.
 #[cfg(feature = "pipewire")]
 const CURSOR_HIDDEN: u32 = 1;
 
@@ -152,7 +152,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Per-call D-Bus budget for portal plumbing (proxy build, method call,
-/// signal subscription, `Get` property) — distinct from
+/// signal subscription, `Get` property) - distinct from
 /// [`RESPONSE_TIMEOUT`], which waits on a human at a consent dialog. A
 /// wedged portal must not hang a tool call.
 pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -182,7 +182,7 @@ pub(crate) type Options = HashMap<&'static str, Value<'static>>;
 ///
 /// The probe runs on a private thread + throwaway runtime, exactly like
 /// `atspi::AtspiUi::new`: `zbus::Connection` binds to the ambient tokio
-/// runtime, so a connection made here could not be reused anyway — the
+/// runtime, so a connection made here could not be reused anyway - the
 /// real one is established lazily on first use via `OnceCell`.
 pub(crate) fn portal_name_owned() -> bool {
     std::thread::spawn(|| {
@@ -226,7 +226,7 @@ struct PortalCaps {
 }
 
 /// Scan the portal's `Introspect` XML for the capture interfaces.
-/// Interface names appear exactly once as `name="…"` attributes; a
+/// Interface names appear exactly once as `name="..."` attributes; a
 /// plain substring check is sufficient (the XML carries no prose).
 fn caps_from_introspection(xml: &str) -> PortalCaps {
     PortalCaps {
@@ -238,7 +238,7 @@ fn caps_from_introspection(xml: &str) -> PortalCaps {
 /// Probe which portal capture paths exist: `Some(caps)` when the portal
 /// is owned and at least one of Screenshot/RemoteDesktop is
 /// advertised. When introspection itself fails we fall back to
-/// `screenshot: true` — preserving pre-introspection behavior (the
+/// `screenshot: true` - preserving pre-introspection behavior (the
 /// `Screenshot` call then surfaces the real error at capture time).
 fn portal_capture_caps() -> Option<PortalCaps> {
     std::thread::spawn(|| {
@@ -262,7 +262,7 @@ fn portal_capture_caps() -> Option<PortalCaps> {
                 if !reply.body().deserialize::<bool>().ok()? {
                     return None;
                 }
-                // org.freedesktop.DBus.Introspectable.Introspect() → s xml
+                // org.freedesktop.DBus.Introspectable.Introspect() -> s xml
                 let reply = bus
                     .call_method(
                         Some(PORTAL_BUS_NAME),
@@ -279,12 +279,12 @@ fn portal_capture_caps() -> Option<PortalCaps> {
                     Some(xml) => {
                         let caps = caps_from_introspection(&xml);
                         // RemoteDesktop is only a capture source when the
-                        // `pipewire` feature is compiled in — without it
+                        // `pipewire` feature is compiled in - without it
                         // a RemoteDesktop-only portal yields no provider.
                         (caps.screenshot || (cfg!(feature = "pipewire") && caps.remote_desktop))
                             .then_some(caps)
                     }
-                    // Introspection unavailable — assume the historical
+                    // Introspection unavailable - assume the historical
                     // Screenshot-only surface rather than probing out.
                     None => Some(PortalCaps {
                         screenshot: true,
@@ -312,7 +312,7 @@ pub(crate) fn new_handle_token() -> String {
     )
 }
 
-/// Whether `token` is legal inside a D-Bus object path element — the
+/// Whether `token` is legal inside a D-Bus object path element - the
 /// portal copies our token into request/session paths verbatim.
 /// (Used by tests to pin the `new_handle_token` charset.)
 #[cfg(test)]
@@ -337,7 +337,7 @@ pub(crate) async fn portal_proxy(
 }
 
 /// Stream of `org.freedesktop.portal.Request::Response` signals from the
-/// portal frontend — *any* request object. Created **before** the method
+/// portal frontend - *any* request object. Created **before**the method
 /// call it pairs with, so the reply cannot race the subscription; the
 /// caller filters on the returned request path via [`await_response`].
 pub(crate) async fn response_stream(conn: &zbus::Connection) -> Result<zbus::MessageStream> {
@@ -386,7 +386,7 @@ pub(crate) async fn await_response(
 }
 
 /// Map a portal response code onto `Ok(results)` / a descriptive error.
-/// Pure — unit-tested without a bus.
+/// Pure - unit-tested without a bus.
 pub(crate) fn response_result(
     code: u32,
     results: HashMap<String, OwnedValue>,
@@ -420,7 +420,7 @@ pub(crate) fn get_u32(results: &HashMap<String, OwnedValue>, key: &str) -> Optio
 /// XDG portal `Screenshot` backend for [`CaptureProvider`].
 ///
 /// The `zbus::Connection` binds to whatever tokio runtime created it, so
-/// it is established lazily on the ambient runtime at first capture — the
+/// it is established lazily on the ambient runtime at first capture - the
 /// `new()` probe only answers "is a portal there".
 pub struct PortalCapture {
     conn: tokio::sync::OnceCell<zbus::Connection>,
@@ -430,7 +430,7 @@ pub struct PortalCapture {
     /// Geometry of the last captured frame; `screen_info` degrades to it.
     last_frame: Mutex<Option<(u32, u32)>>,
     /// Pinned `hyprctl` absolute path, when it was on `PATH` at
-    /// construction — the `cursor_position`/`screen_info` helpers (S-1).
+    /// construction - the `cursor_position`/`screen_info` helpers (S-1).
     hyprctl: Option<PathBuf>,
 }
 
@@ -443,7 +443,7 @@ const _: () = {
 impl PortalCapture {
     /// `Some` only when the session bus is up, the portal name is owned,
     /// and the portal object advertises at least one capture interface
-    /// (Screenshot or RemoteDesktop). Probe only — `NameHasOwner` plus
+    /// (Screenshot or RemoteDesktop). Probe only - `NameHasOwner` plus
     /// read-only `Introspect`; no portal method that can raise a consent
     /// dialog is invoked.
     pub fn new() -> Option<Self> {
@@ -473,7 +473,7 @@ impl PortalCapture {
             .await
     }
 
-    /// One `Screenshot` round-trip → decoded PNG bytes + dimensions.
+    /// One `Screenshot` round-trip -> decoded PNG bytes + dimensions.
     async fn screenshot(&self) -> Result<(Vec<u8>, u32, u32)> {
         let conn = self.conn().await?;
         // Subscribe before calling: the non-interactive reply can land
@@ -484,7 +484,7 @@ impl PortalCapture {
         let token = new_handle_token();
         let options = screenshot_options(&token);
         // `Screenshot(IN s handle_token, IN a{sv} options, OUT o request)`
-        // — the token is the leading `s` arg (kept in the options dict as
+        // - the token is the leading `s` arg (kept in the options dict as
         // well for backends that still read it from there).
         let request: OwnedObjectPath =
             portal_call(proxy.call("Screenshot", &(token.as_str(), &options)))
@@ -505,9 +505,9 @@ impl PortalCapture {
         Ok((png, img.width(), img.height()))
     }
 
-    /// One RemoteDesktop session → PipeWire buffer → PNG bytes +
+    /// One RemoteDesktop session -> PipeWire buffer -> PNG bytes +
     /// dimensions. The session is ephemeral: created, used for exactly
-    /// one frame, then `Close`d — no `persist_mode`/`restore_token` is
+    /// one frame, then `Close`d - no `persist_mode`/`restore_token` is
     /// ever sent, so every capture re-consents through `Start`
     /// (identical policy to `portal_input`).
     #[cfg(feature = "pipewire")]
@@ -518,7 +518,7 @@ impl PortalCapture {
         // is matched on its returned request path.
         let mut responses = response_stream(conn).await?;
 
-        // CreateSession(a{sv}) → request → Response{session_handle}
+        // CreateSession(a{sv}) -> request -> Response{session_handle}
         let opts = create_session_options(new_handle_token(), new_handle_token());
         let req: OwnedObjectPath = portal_call(proxy.call("CreateSession", &(&opts,)))
             .await
@@ -529,7 +529,7 @@ impl PortalCapture {
         // Everything below needs the session torn down on any outcome;
         // `Close` is best-effort (the object also dies with the bus).
         let outcome = async {
-            // SelectSources(o, a{sv}) — monitor only. Unlike
+            // SelectSources(o, a{sv}) - monitor only. Unlike
             // `portal_input` (where sources are optional geometry), the
             // stream *is* the frame source: failure is fatal.
             let opts = select_sources_options(new_handle_token());
@@ -539,7 +539,7 @@ impl PortalCapture {
                     .context("portal SelectSources call")?;
             await_response(&mut responses, &req).await?;
 
-            // Start(o, s parent_window, a{sv}) — the consent dialog.
+            // Start(o, s parent_window, a{sv}) - the consent dialog.
             let opts = start_options(new_handle_token());
             let req: OwnedObjectPath =
                 portal_call(proxy.call("Start", &(&session_path, "", &opts)))
@@ -551,7 +551,7 @@ impl PortalCapture {
                 .next()
                 .ok_or_else(|| anyhow!("portal RemoteDesktop granted no streams"))?;
 
-            // OpenPipeWireRemote(o, a{sv}) → h fd
+            // OpenPipeWireRemote(o, a{sv}) -> h fd
             let opts = Options::new();
             let fd: zvariant::OwnedFd =
                 portal_call(proxy.call("OpenPipeWireRemote", &(&session_path, &opts)))
@@ -577,14 +577,14 @@ impl PortalCapture {
     }
 
     /// `pipewire` feature off: RemoteDesktop is still introspected, but
-    /// the stream cannot be consumed — error honestly rather than
+    /// the stream cannot be consumed - error honestly rather than
     /// pretend the capture path exists.
     #[cfg(not(feature = "pipewire"))]
     async fn pipewire_screenshot(&self) -> Result<(Vec<u8>, u32, u32)> {
         bail!("portal Screenshot unavailable and the `pipewire` cargo feature is compiled out")
     }
 
-    /// `org.freedesktop.portal.Session.Close()` — best-effort; the
+    /// `org.freedesktop.portal.Session.Close()` - best-effort; the
     /// session object also disappears when our connection drops.
     #[cfg(feature = "pipewire")]
     async fn close_session(&self, conn: &zbus::Connection, path: &OwnedObjectPath) {
@@ -606,7 +606,7 @@ impl PortalCapture {
 }
 
 /// `Screenshot` options: non-interactive, no parent window, handle token.
-/// `interactive: false` asks the backend to skip its selection UI —
+/// `interactive: false` asks the backend to skip its selection UI -
 /// consent may still be enforced by the backend (see module docs).
 fn screenshot_options(token: &str) -> Options {
     let mut o = Options::new();
@@ -621,11 +621,11 @@ fn screenshot_options(token: &str) -> Options {
 //
 // Capture-only subset of the `portal_input` handshake. Those helpers are
 // private to portal_input (read-only for this change), so minimal copies
-// live here — keep the two in sync: same tokens, same "no persist" rule.
+// live here - keep the two in sync: same tokens, same "no persist" rule.
 // ---------------------------------------------------------------------------
 
 /// `CreateSession` options: request + session handle tokens only. No
-/// `persist_mode`/`restore_token` — every `Start` re-consents (module
+/// `persist_mode`/`restore_token` - every `Start` re-consents (module
 /// docs; THREAT_MODEL.md §4.2).
 #[cfg(feature = "pipewire")]
 fn create_session_options(handle_token: String, session_token: String) -> Options {
@@ -684,23 +684,23 @@ fn stream_node_ids(results: &HashMap<String, OwnedValue>) -> Vec<u32> {
 }
 
 // ---------------------------------------------------------------------------
-// PipeWire one-frame grab (runs on a blocking worker — pw objects are
+// PipeWire one-frame grab (runs on a blocking worker - pw objects are
 // !Send and the pw main loop must be pumped by hand)
 // ---------------------------------------------------------------------------
 
 /// The 32-bit RGB buffer layouts this consumer offers the stream. Any
-/// other negotiated format is an explicit error — never silently wrong
+/// other negotiated format is an explicit error - never silently wrong
 /// pixels.
 #[cfg(feature = "pipewire")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PixelLayout {
-    /// B,G,R,X — swap B/R, alpha forced opaque (X is padding).
+    /// B,G,R,X - swap B/R, alpha forced opaque (X is padding).
     Bgrx,
-    /// B,G,R,A — swap B/R, keep alpha.
+    /// B,G,R,A - swap B/R, keep alpha.
     Bgra,
-    /// R,G,B,X — keep order, alpha forced opaque.
+    /// R,G,B,X - keep order, alpha forced opaque.
     Rgbx,
-    /// R,G,B,A — pass through.
+    /// R,G,B,A - pass through.
     Rgba,
 }
 
@@ -782,7 +782,7 @@ fn convert_frame(
     Ok(out)
 }
 
-/// Tightly packed RGBA → PNG bytes (the [`Frame`] payload).
+/// Tightly packed RGBA -> PNG bytes (the [`Frame`] payload).
 #[cfg(feature = "pipewire")]
 fn encode_frame(width: u32, height: u32, rgba: Vec<u8>) -> Result<(Vec<u8>, u32, u32)> {
     let img = image::RgbaImage::from_raw(width, height, rgba)
@@ -913,7 +913,7 @@ fn pipewire_frame(fd: OwnedFd, node_id: u32) -> Result<(Vec<u8>, u32, u32)> {
                     }
                     None => st.error = Some("chunk range outside mapped plane".into()),
                 },
-                // e.g. an unmapped DmaBuf plane — cannot read pixels.
+                // e.g. an unmapped DmaBuf plane - cannot read pixels.
                 None => st.error = Some(format!("unmapped pipewire buffer (type {:?})", d.type_())),
             }
         })
@@ -1012,7 +1012,7 @@ fn pipewire_frame(fd: OwnedFd, node_id: u32) -> Result<(Vec<u8>, u32, u32)> {
 }
 
 // ---------------------------------------------------------------------------
-// file:// URI → path (pure)
+// file:// URI -> path (pure)
 // ---------------------------------------------------------------------------
 
 /// Decode a `file://` URI to a local path. Handles the empty authority
@@ -1023,9 +1023,9 @@ fn file_uri_to_path(uri: &str) -> Result<PathBuf> {
         .strip_prefix("file://")
         .ok_or_else(|| anyhow!("portal URI {uri:?} is not file://"))?;
     let path_part = match rest.strip_prefix('/') {
-        Some(p) => p, // file:///abs/path — empty authority
+        Some(p) => p, // file:///abs/path - empty authority
         None => match rest.find('/') {
-            // file://host/abs/path — only localhost is meaningfully local.
+            // file://host/abs/path - only localhost is meaningfully local.
             Some(i) if rest[..i].eq_ignore_ascii_case("localhost") => &rest[i + 1..],
             _ => bail!("portal URI {uri:?} has a non-local authority"),
         },
@@ -1103,7 +1103,7 @@ fn ensure_nonempty(x0: u32, y0: u32, x1: u32, y1: u32) -> Result<()> {
     Ok(())
 }
 
-/// `"WxH"` (or `"W,H"`) → positive pixel dimensions; backs the
+/// `"WxH"` (or `"W,H"`) -> positive pixel dimensions; backs the
 /// `ULTRANIX_SCREEN_SIZE`/`ULTRANIX_SCREEN_WIDTH`/`HEIGHT` fallback for
 /// `screen_info` off-Hyprland.
 fn parse_screen_size(s: &str) -> Option<(i32, i32)> {
@@ -1165,7 +1165,7 @@ impl CaptureProvider for PortalCapture {
     }
 
     /// No portal read channel exists: `hyprctl cursorpos` when on
-    /// Hyprland, else a typed error (portal is the last-resort rung —
+    /// Hyprland, else a typed error (portal is the last-resort rung -
     /// on other compositors `InputProvider::cursor_position` may still
     /// answer via its own tracking).
     async fn cursor_position(&self) -> Result<(i32, i32)> {
@@ -1215,7 +1215,7 @@ impl CaptureProvider for PortalCapture {
 // Tests
 // ---------------------------------------------------------------------------
 //
-// SAFETY: no test in this module places a portal method call — only the
+// SAFETY: no test in this module places a portal method call - only the
 // read-only `NameHasOwner` probe runs (and only `portal_name_owned`
 // itself, never `Screenshot`). The ignored live test additionally
 // requires ULTRANIX_MCP_LIVE_TESTS=1.
@@ -1235,7 +1235,7 @@ mod tests {
         assert_ne!(a, b);
         assert!(valid_handle_token(&a));
         assert!(a.starts_with("ultranix_mcp_"));
-        // Would survive verbatim inside /org/freedesktop/portal/desktop/…
+        // Would survive verbatim inside /org/freedesktop/portal/desktop/...
         assert!(!a.contains('/'));
     }
 
@@ -1296,13 +1296,13 @@ mod tests {
             file_uri_to_path("file:///tmp/a%2Fb.png").unwrap(),
             PathBuf::from("/tmp/a/b.png")
         );
-        // file:// with no authority and no path → just "/".
+        // file:// with no authority and no path -> just "/".
         assert_eq!(file_uri_to_path("file:///").unwrap(), PathBuf::from("/"));
         // A bare '%' at the tail is a truncated escape.
         assert!(file_uri_to_path("file:///tmp/x%").is_err());
-        // "file://" alone has no path at all → non-local error.
+        // "file://" alone has no path at all -> non-local error.
         assert!(file_uri_to_path("file://").is_err());
-        // "file://x" — a bare authority with no path → rejected.
+        // "file://x" - a bare authority with no path -> rejected.
         assert!(file_uri_to_path("file://x").is_err());
     }
 
@@ -1405,7 +1405,7 @@ mod tests {
         .unwrap();
         assert_eq!(full, png);
 
-        // Fully outside → error.
+        // Fully outside -> error.
         assert!(
             crop_png(
                 &png,
@@ -1482,7 +1482,7 @@ mod tests {
             r#"<interface name="org.freedesktop.portal.ScreenshotExtra"/>"#,
         );
         // Note: "ScreenshotExtra" contains the full interface name as a
-        // substring — the plain `contains` check reports it present.
+        // substring - the plain `contains` check reports it present.
         assert!(near.screenshot);
         let only_prefix =
             caps_from_introspection(r#"<interface name="org.freedesktop.portal.Screensh"/>"#);
@@ -1533,7 +1533,7 @@ mod tests {
         );
         assert!(session_path_from(&r).is_ok());
         assert!(session_path_from(&HashMap::new()).is_err());
-        // Present but the wrong type entirely → error, not a panic.
+        // Present but the wrong type entirely -> error, not a panic.
         let mut bad: HashMap<String, OwnedValue> = HashMap::new();
         bad.insert("session_handle".into(), owned(42u32));
         assert!(session_path_from(&bad).is_err());
@@ -1657,13 +1657,13 @@ mod tests {
         assert_eq!((w, h), (2, 1));
         let img = image::load_from_memory(&png).unwrap();
         assert_eq!((img.width(), img.height()), (2, 1));
-        // Wrong byte count → error, not panic.
+        // Wrong byte count -> error, not panic.
         assert!(encode_frame(2, 2, vec![0; 4]).is_err());
     }
 
     #[test]
     fn new_probe_is_bounded_and_pure() {
-        // Only NameHasOwner + read-only Introspect — no portal methods,
+        // Only NameHasOwner + read-only Introspect - no portal methods,
         // no dialogs, ~3s cap. Result is environment-dependent (None
         // headless, maybe Some on a desktop); the contract is "does not
         // panic or hang".
@@ -1676,14 +1676,14 @@ mod tests {
         if std::env::var("ULTRANIX_MCP_LIVE_TESTS").ok().as_deref() != Some("1") {
             return;
         }
-        // Probe only — deliberately NOT calling capture_frame: Screenshot
+        // Probe only - deliberately NOT calling capture_frame: Screenshot
         // raises a GUI consent dialog.
         let p = PortalCapture::new();
         tracing::info!("portal capture probe: {:?}", p.is_some());
     }
 
     /// Full RemoteDesktop + PipeWire capture against a live desktop.
-    /// `Start` raises the consent dialog — a human must answer.
+    /// `Start` raises the consent dialog - a human must answer.
     #[tokio::test]
     #[cfg(feature = "pipewire")]
     #[ignore = "raises a GUI consent dialog; set ULTRANIX_MCP_LIVE_TESTS=1"]

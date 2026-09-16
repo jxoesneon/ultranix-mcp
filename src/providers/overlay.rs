@@ -1,10 +1,10 @@
 //! On-screen highlight overlay via `zwlr_layer_shell_v1`
-//! (wlr-layer-shell-unstable-v1) — in-process, no external binaries.
+//! (wlr-layer-shell-unstable-v1) - in-process, no external binaries.
 //!
 //! Connects to `$WAYLAND_DISPLAY`, binds `wl_compositor` + `wl_shm` + the
 //! layer shell, and draws a short-lived translucent rectangle on the
-//! `overlay` layer. The surface gets an **empty input region** so clicks
-//! pass straight through — the highlight is purely visual feedback and
+//! `overlay` layer. The surface gets an **empty input region**so clicks
+//! pass straight through - the highlight is purely visual feedback and
 //! never affects capture or input.
 //!
 //! Stateless like [`wlr_capture`](crate::providers::wlr_capture): every
@@ -43,7 +43,7 @@ pub struct Overlay {
 impl Overlay {
     /// Probe the session for layer-shell support. Returns `None` on
     /// headless sessions and on compositors without
-    /// `zwlr_layer_shell_v1` — `screen_highlight` then reports
+    /// `zwlr_layer_shell_v1` - `screen_highlight` then reports
     /// `ProviderUnavailable` rather than silently no-oping.
     pub fn new() -> Option<Self> {
         std::env::var_os("WAYLAND_DISPLAY")?;
@@ -174,7 +174,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for State {
             // `configure` MUST be acked before the next commit or the
             // compositor kills the client (wlr-layer-shell error
             // invalid_surface_state). The size it dictates is advisory
-            // for our fixed-geometry use — we keep our own.
+            // for our fixed-geometry use - we keep our own.
             zwlr_layer_surface_v1::Event::Configure { serial, .. } => {
                 layer_surface.ack_configure(serial);
                 state.configured = true;
@@ -185,7 +185,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for State {
     }
 }
 
-// Event-emitting interfaces get explicit swallow-everything impls —
+// Event-emitting interfaces get explicit swallow-everything impls -
 // `delegate_noop!` is not safe on objects that can receive events
 // (wl_shm `format`, wl_surface `enter`/`leave`, wl_buffer `release`).
 impl Dispatch<wl_shm::WlShm, ()> for State {
@@ -264,7 +264,7 @@ fn probe() -> Result<()> {
 /// Pick the `wl_output` whose logical rect contains `rect`'s centre and
 /// return it with the top-left margin relative to that output. Falls
 /// back to `None` (the compositor chooses) with the raw coordinates when
-/// no output geometry matches — e.g. a compositor that never reports it.
+/// no output geometry matches - e.g. a compositor that never reports it.
 fn pick_output(state: &State, rect: &Rect) -> (Option<wl_output::WlOutput>, i32, i32) {
     match pick_output_idx(&state.output_info, rect) {
         Some((i, mx, my)) => (Some(state.outputs[i].clone()), mx, my),
@@ -293,16 +293,16 @@ fn pick_output_idx(infos: &[OutputInfo], rect: &Rect) -> Option<(usize, i32, i32
 }
 
 /// Fill `buf` (w*h*4 bytes) with a translucent fill + opaque border in
-/// premultiplied ARGB8888 — `wl_shm::Format::Argb8888` is mandatory in
+/// premultiplied ARGB8888 - `wl_shm::Format::Argb8888` is mandatory in
 /// every compositor and the byte order is little-endian 0xAARRGGBB.
 fn paint_highlight(buf: &mut [u8], w: u32, h: u32) {
-    /// rgba 0x3399ff66 — accent blue at ~40 % alpha.
+    /// rgba 0x3399ff66 - accent blue at ~40 % alpha.
     const FILL: (u8, u8, u8, u8) = (0x33, 0x99, 0xFF, 0x66);
     /// Same hue, fully opaque, for the edge.
     const EDGE: (u8, u8, u8, u8) = (0x33, 0x99, 0xFF, 0xFF);
     let fill = premul_argb(FILL).to_le_bytes();
     let edge = premul_argb(EDGE).to_le_bytes();
-    // ~6 % of the short side as border, 1–6 px, never more than half
+    // ~6 % of the short side as border, 1-6 px, never more than half
     // the rect (a 1×1 highlight is a solid edge pixel).
     let border = (w.min(h) / 16).clamp(1, 6).min(w.min(h).div_ceil(2));
     for y in 0..h {
@@ -318,7 +318,7 @@ fn paint_highlight(buf: &mut [u8], w: u32, h: u32) {
     }
 }
 
-/// (r, g, b, a) → premultiplied `0xAARRGGBB` (wl_shm ARGB8888 requires
+/// (r, g, b, a) -> premultiplied `0xAARRGGBB` (wl_shm ARGB8888 requires
 /// premultiplied alpha).
 fn premul_argb((r, g, b, a): (u8, u8, u8, u8)) -> u32 {
     let p = |c: u8| (u32::from(c) * u32::from(a) + 127) / 255;
@@ -379,7 +379,7 @@ fn highlight_blocking(rect: Rect, duration_ms: u64) -> Result<()> {
     let (output, mx, my) = pick_output(&state, &rect);
 
     let surface = compositor.create_surface(&qh, ());
-    // Empty input region → the overlay is click-through.
+    // Empty input region -> the overlay is click-through.
     let region = compositor.create_region(&qh, ());
     surface.set_input_region(Some(&region));
 
@@ -413,7 +413,7 @@ fn highlight_blocking(rect: Rect, duration_ms: u64) -> Result<()> {
             .context("layer-surface configure")?;
     }
     if state.closed {
-        // Compositor dismissed the surface before first configure —
+        // Compositor dismissed the surface before first configure -
         // clean exit per the tool contract.
         return Ok(());
     }
@@ -443,7 +443,7 @@ fn highlight_blocking(rect: Rect, duration_ms: u64) -> Result<()> {
             break;
         }
         let Some(guard) = queue.prepare_read() else {
-            // Events already queued — loop dispatches them above.
+            // Events already queued - loop dispatches them above.
             continue;
         };
         let fd = guard.connection_fd();
@@ -461,7 +461,7 @@ fn highlight_blocking(rect: Rect, duration_ms: u64) -> Result<()> {
         } else if n > 0 && pfd.revents & (libc::POLLERR | libc::POLLHUP) != 0 {
             bail!("wayland socket closed mid-highlight");
         }
-        // n == 0 → this poll slice timed out; the loop head re-checks
+        // n == 0 -> this poll slice timed out; the loop head re-checks
         // the deadline. Dropping the guard cancels the read prep.
     }
 
@@ -490,7 +490,7 @@ impl OverlayProvider for Overlay {
 }
 
 // ---------------------------------------------------------------------------
-// Tests — paint math and the probe only. `highlight_blocking` never runs
+// Tests - paint math and the probe only. `highlight_blocking` never runs
 // in automated tests; the live smoke test is opt-in.
 // ---------------------------------------------------------------------------
 
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn pick_output_idx_finds_containing_output() {
         let infos = vec![out(0, 0, 1920, 1080, 1), out(1920, 0, 2560, 1440, 1)];
-        // Rect centred on the second output → index 1, margin relative
+        // Rect centred on the second output -> index 1, margin relative
         // to that output's origin.
         let r = Rect {
             x: 2000,
@@ -581,7 +581,7 @@ mod tests {
             h: 10,
         };
         assert_eq!(pick_output_idx(&infos, &inside), Some((0, 1000, 500)));
-        // Centre beyond the logical extent → no output.
+        // Centre beyond the logical extent -> no output.
         let outside = Rect {
             x: 2000,
             y: 500,
@@ -603,7 +603,7 @@ mod tests {
     #[test]
     fn pick_output_idx_skips_degenerate_and_misses() {
         // An output that never reported a mode (0x0) cannot contain a
-        // point — the later real output still wins.
+        // point - the later real output still wins.
         let infos = vec![out(0, 0, 0, 0, 1), out(500, 0, 800, 600, 1)];
         let r = Rect {
             x: 600,
@@ -613,7 +613,7 @@ mod tests {
         };
         assert_eq!(pick_output_idx(&infos, &r), Some((1, 100, 10)));
 
-        // Centre outside every output → compositor chooses (None).
+        // Centre outside every output -> compositor chooses (None).
         let infos = vec![out(0, 0, 100, 100, 1)];
         let r = Rect {
             x: -200,
@@ -636,7 +636,7 @@ mod tests {
             w: 200,
             h: 200,
         };
-        // centre = (150,150) inside the output; raw margins -50 → 0.
+        // centre = (150,150) inside the output; raw margins -50 -> 0.
         assert_eq!(pick_output_idx(&infos, &r), Some((0, 0, 0)));
     }
 
@@ -649,7 +649,7 @@ mod tests {
         }
     }
 
-    /// Live compositor smoke test — opt-in via
+    /// Live compositor smoke test - opt-in via
     /// `ULTRANIX_MCP_LIVE_TESTS`, never part of `cargo test` runs.
     #[test]
     #[ignore = "requires a live wlr-layer-shell compositor"]

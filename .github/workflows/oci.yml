@@ -2,7 +2,7 @@ name: OCI image
 
 # Builds and publishes ghcr.io/jxoesneon/ultranix-mcp on every version tag.
 # The image reference is consumed by server.json
-# (`ghcr.io/jxoesneon/ultranix-mcp:<version>` — note the registry tag drops
+# (`ghcr.io/jxoesneon/ultranix-mcp:<version>` - note the registry tag drops
 # the `v` prefix, matching the schema's package `version` field).
 on:
   push:
@@ -22,7 +22,7 @@ env:
 
 jobs:
   publish:
-    # `env` is not in `jobs.<id>.name`'s allowed contexts — literal only.
+    # `env` is not in `jobs.<id>.name`'s allowed contexts - literal only.
     name: Build & push ghcr.io/jxoesneon/ultranix-mcp
     runs-on: ubuntu-latest
     steps:
@@ -38,12 +38,12 @@ jobs:
         with:
           images: ${{ env.IMAGE }}
           # latest=auto: a prerelease tag (v1.5.0-rc.1) publishes only
-          # its semver tag — `latest` moves on final releases (and
+          # its semver tag - `latest` moves on final releases (and
           # manual default-branch runs), never on prereleases.
           flavor: |
             latest=auto
           # v1.4.0 -> 1.4.0 (server.json identifier has no `v` prefix).
-          # A `#` line inside the block scalar would be literal input —
+          # A `#` line inside the block scalar would be literal input -
           # keep comments outside `tags:`.
           tags: |
             type=semver,pattern={{version}}
@@ -67,7 +67,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke test — `ultranix-mcp --help`
+      - name: Smoke test - `ultranix-mcp --help`
         run: docker run --rm ultranix-mcp:smoke --help
 
       - name: Build & push ${{ env.IMAGE }}

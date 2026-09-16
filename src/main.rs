@@ -1,4 +1,4 @@
-//! ultranix-mcp entrypoint — transport selection, provider bootstrap,
+//! ultranix-mcp entrypoint - transport selection, provider bootstrap,
 //! stderr tracing (stdout is reserved for MCP JSON-RPC).
 
 use std::path::PathBuf;
@@ -63,7 +63,7 @@ struct Cli {
     /// allowed to call. Replaces the policy file's default-role
     /// allowlist (under `--readonly` it merges into the union of the
     /// readonly preset and the file allowlist); every unlisted tool is
-    /// denied. Scopes to the default role only — named roles in a
+    /// denied. Scopes to the default role only - named roles in a
     /// policy file are unaffected.
     #[arg(long, value_delimiter = ',')]
     allow_tools: Vec<String>,
@@ -77,7 +77,7 @@ struct Cli {
     /// Path to a TOML policy file defining named roles and per-key
     /// mappings (`~/.config/ultranix-mcp/policy.toml` is the default
     /// when this flag is omitted and the file exists). An explicitly
-    /// named file that is missing or malformed aborts startup —
+    /// named file that is missing or malformed aborts startup -
     /// fail-closed.
     #[arg(long)]
     policy: Option<PathBuf>,
@@ -104,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Optional Sentry error reporting: initialised only when
-    // ULTRANIX_MCP_SENTRY_DSN is set *and* parses — unset, empty, or
+    // ULTRANIX_MCP_SENTRY_DSN is set *and* parses - unset, empty, or
     // malformed means no client is ever built (zero cost, no transport
     // threads). The DSN is resolved before subscriber init so the
     // sentry-tracing layer can be attached in the same registry; the raw
@@ -115,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "sentry")]
     let sentry_dsn = sentry_dsn_raw.as_deref().and_then(parse_sentry_dsn);
 
-    // stdout is the JSON-RPC channel on stdio — diagnostics go to stderr.
+    // stdout is the JSON-RPC channel on stdio - diagnostics go to stderr.
     let base = tracing_subscriber::registry()
         .with(
             EnvFilter::try_from_env("ULTRANIX_MCP_LOG_LEVEL")
@@ -125,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
 
     // `Option<layer>` is itself a `Layer`: the sentry-tracing layer
     // forwards `tracing::error!` events to Sentry only when a DSN is
-    // configured; `None` adds nothing. `sentry` feature off → no layer.
+    // configured; `None` adds nothing. `sentry` feature off -> no layer.
     #[cfg(feature = "sentry")]
     let base = base.with(
         sentry_dsn
@@ -207,7 +207,7 @@ async fn main() -> anyhow::Result<()> {
         let default = &policy.default_role;
         if !default.readonly && default.allow_tools.is_none() && default.deny_tools.is_empty() {
             tracing::warn!(
-                "policy keys map is configured but default_role is unrestricted — unmapped keys get the full tool surface"
+                "policy keys map is configured but default_role is unrestricted - unmapped keys get the full tool surface"
             );
         }
     }
@@ -222,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(false);
     if keys_configured && (use_stdio || auth_disabled) {
         tracing::warn!(
-            "policy keys map is configured but per-key scoping will never resolve — caller identity is absent on stdio and when auth is disabled"
+            "policy keys map is configured but per-key scoping will never resolve - caller identity is absent on stdio and when auth is disabled"
         );
     }
     if use_stdio {
@@ -233,7 +233,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Parse a configured DSN; `None` for empty or unparsable values (the
-/// server then runs exactly as if the variable were absent). Pure — the
+/// server then runs exactly as if the variable were absent). Pure - the
 /// caller reports the malformed case once tracing is live.
 #[cfg(feature = "sentry")]
 fn parse_sentry_dsn(raw: &str) -> Option<sentry::types::Dsn> {
@@ -267,7 +267,7 @@ fn scrub_keys(s: &str) -> String {
     out
 }
 
-/// Absolute path → `<basename>#<8-hex hash of parent>` (PRIVACY.md).
+/// Absolute path -> `<basename>#<8-hex hash of parent>` (PRIVACY.md).
 #[cfg(feature = "sentry")]
 fn hash_path(p: &str) -> String {
     let path = std::path::Path::new(p);
@@ -313,7 +313,7 @@ fn sentry_redact(
         }
     }
     event.contexts.remove("device");
-    // `sentry-contexts` fills server_name with the machine hostname —
+    // `sentry-contexts` fills server_name with the machine hostname -
     // drop it too (PRIVACY.md redaction contract).
     event.server_name = None;
     Some(event)
@@ -326,7 +326,7 @@ mod tests {
     #[test]
     #[cfg(feature = "sentry")]
     fn sentry_disabled_when_dsn_unset_or_empty() {
-        // The common case: no env var → no DSN → `sentry::init` never
+        // The common case: no env var -> no DSN -> `sentry::init` never
         // runs. (Skipped if the ambient environment happens to set one.)
         if std::env::var_os("ULTRANIX_MCP_SENTRY_DSN").is_none() {
             assert!(
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     #[cfg(feature = "sentry")]
     fn sentry_disabled_on_malformed_dsn() {
-        // Set-but-broken must behave like unset — init is opt-in only
+        // Set-but-broken must behave like unset - init is opt-in only
         // for values that actually parse.
         assert!(parse_sentry_dsn("not a dsn").is_none());
         assert!(parse_sentry_dsn("uxcp_deadbeef").is_none());
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn cli_stdio_flag_conflicts_with_transport() {
-        // `--stdio --transport http` is contradictory → clap error.
+        // `--stdio --transport http` is contradictory -> clap error.
         assert!(Cli::try_parse_from(["ultranix-mcp", "--stdio", "--transport", "http"]).is_err());
         // `--stdio --transport stdio` is also a conflict (explicit
         // `--transport` collides with the alias flag regardless of value).

@@ -1,24 +1,24 @@
 //! Tier-2 nested-compositor integration rig (docs/TESTING_STRATEGY.md
 //! §2.2, ROADMAP Phase 5 "Nested-Hyprland integration test rig").
 //!
-//! The compositor lifecycle — spawn, `HYPRLAND_INSTANCE_SIGNATURE`/
-//! `wayland-*` socket discovery, teardown — is inherently shell-shaped,
+//! The compositor lifecycle - spawn, `HYPRLAND_INSTANCE_SIGNATURE`/
+//! `wayland-*` socket discovery, teardown - is inherently shell-shaped,
 //! so it lives in `scripts/nested-test.sh` together with the JSON-RPC
-//! stdio driver (initialize → `tools/list` == 40 → `get_windows` →
-//! `screen_info` → `screenshot` PNG-magic → `get_ui_tree` → EOF
+//! stdio driver (initialize -> `tools/list` == 40 -> `get_windows` ->
+//! `screen_info` -> `screenshot` PNG-magic -> `get_ui_tree` -> EOF
 //! shutdown). This file is the cargo-facing entry point.
 //!
 //! Two tests:
 //!
-//! * [`stdio_mock_transport_smoke`] — hermetic, runs in default `cargo
+//! * [`stdio_mock_transport_smoke`] - hermetic, runs in default `cargo
 //!   test`. Drives the same wire protocol over a spawned
 //!   `ultranix-mcp --mock --transport stdio`, so the JSON-RPC contract the
 //!   live rig asserts is exercised on every CI run (Tier-1 §1.2 "stdio
 //!   transport" row).
-//! * [`nested_compositor_live`] — `#[ignore]`d and inert unless
+//! * [`nested_compositor_live`] - `#[ignore]`d and inert unless
 //!   `ULTRANIX_MCP_LIVE_TESTS=1`: shells `scripts/nested-test.sh`, which
 //!   spawns a nested Hyprland (or headless sway/weston fallback) under a
-//!   private `XDG_RUNTIME_DIR` — the real session's sockets are
+//!   private `XDG_RUNTIME_DIR` - the real session's sockets are
 //!   unreachable by construction, and only read-only tools are called.
 //!
 //! Run live: `ULTRANIX_MCP_LIVE_TESTS=1 cargo test --test nested -- --ignored`
@@ -196,7 +196,7 @@ fn drive_readonly_flow(client: &mut StdioClient, expect_providers: bool) {
             }
         } else {
             // Mock providers still answer every call; assert only the
-            // envelope (a structured result or error — never silence).
+            // envelope (a structured result or error - never silence).
             assert!(
                 r.get("result").is_some() || r.get("error").is_some(),
                 "{name}: malformed reply {r}"
@@ -207,7 +207,7 @@ fn drive_readonly_flow(client: &mut StdioClient, expect_providers: bool) {
 
 /// Hermetic Tier-1 stdio smoke: spawn `ultranix-mcp --mock`, drive the
 /// JSON-RPC handshake + read-only calls, assert 40 tools and a PNG.
-/// Needs no display — runs on every `cargo test`.
+/// Needs no display - runs on every `cargo test`.
 #[test]
 fn stdio_mock_transport_smoke() {
     let bin = server_bin();
@@ -223,14 +223,14 @@ fn stdio_mock_transport_smoke() {
     )
     .expect("spawn ultranix-mcp --mock");
 
-    // Mock providers resolve every slot — same assertions as the live
+    // Mock providers resolve every slot - same assertions as the live
     // rig, including the PNG magic prefix.
     drive_readonly_flow(&mut client, true);
     client.shutdown();
 }
 
 /// Tier-2 live rig: shell `scripts/nested-test.sh`, which owns the
-/// compositor lifecycle + assertions. Inert unless explicitly opted in —
+/// compositor lifecycle + assertions. Inert unless explicitly opted in -
 /// `cargo test` never runs ignored tests, and `-- --ignored` runs skip
 /// cleanly without `ULTRANIX_MCP_LIVE_TESTS=1`.
 #[test]

@@ -1,11 +1,11 @@
-//! Wayfire `WindowProvider` — direct `ipc`/`ipc-rules` socket transport
+//! Wayfire `WindowProvider` - direct `ipc`/`ipc-rules` socket transport
 //! (`$WAYFIRE_SOCKET`).
 //!
 //! Wayfire's `ipc` plugin speaks a length-prefixed JSON protocol: every
 //! message is a 4-byte little-endian payload length followed by a UTF-8
-//! JSON object. Requests are `{"method": "<name>", "data": {…}}`; the
-//! reply is the method's result JSON (`{"result":"ok",…}` from
-//! `wf::ipc::json_ok()`) or an error object (`{"error":"…"}` —
+//! JSON object. Requests are `{"method": "<name>", "data": {...}}`; the
+//! reply is the method's result JSON (`{"result":"ok",...}` from
+//! `wf::ipc::json_ok()`) or an error object (`{"error":"..."}` -
 //! `{"error":"No such method found!"}` when the plugin registering the
 //! method is not loaded). Asynchronous event pushes carry an `"event"`
 //! key and are skipped while awaiting a reply.
@@ -15,46 +15,46 @@
 //! enabled in `core/plugins`, so an absent plugin surfaces as an
 //! `error` reply, not a wrong result):
 //!
-//! * `window-rules/list-views` — bare array of `view_to_json` records:
+//! * `window-rules/list-views` - bare array of `view_to_json` records:
 //!   `id`, `pid`, `title`, `app-id`, `geometry` `{x,y,width,height}`,
 //!   `output-id`, `role`, `layer`, `type`, `mapped`, `tiled-edges`,
 //!   `fullscreen`, `minimized`, `activated`, `sticky`, `wset-index`.
 //!   Field names are probed defensively (`app_id`, `state.focused`
 //!   nesting) so older/foreign record shapes degrade to defaults
 //!   instead of failing.
-//! * `window-rules/get-focused-view` → `{"info": <view|null>}` — the
+//! * `window-rules/get-focused-view` -> `{"info": <view|null>}` - the
 //!   active window (`list-views` carries no focus field of its own;
 //!   `activated` is the per-view focus flag).
-//! * `window-rules/view-info` `{id}` → `{"info": <view>}` — the
+//! * `window-rules/view-info` `{id}` -> `{"info": <view>}` - the
 //!   geometry anchor for `configure-view`, which always takes a full
 //!   rect.
 //! * `window-rules/focus-view` / `window-rules/close-view` `{id}`.
 //! * `window-rules/configure-view` `{id, geometry:{x,y,width,height}}`
-//!   — applied as one pending-state transaction server-side.
-//! * `wm-actions/set-minimized` `{view_id, state}` — registered by the
+//!   - applied as one pending-state transaction server-side.
+//! * `wm-actions/set-minimized` `{view_id, state}` - registered by the
 //!   `wm-actions` plugin, separate from `ipc-rules`; on builds without
 //!   it `minimize` returns the compositor's `error` reply honestly.
 //!
 //! Semantics notes (honest mappings):
 //!
-//! * `WindowInfo.workspace` ← `wset-index`, the index of the view's
-//!   workspace set — views carry no workspace coordinate (the 2D grid
+//! * `WindowInfo.workspace` <- `wset-index`, the index of the view's
+//!   workspace set - views carry no workspace coordinate (the 2D grid
 //!   position is a property of the workspace set and is reported on
 //!   outputs/wsets, not on views). `-1` when unassigned. When a record
-//!   instead carries `workspace: {x,y,grid_width,…}` (other shapes),
+//!   instead carries `workspace: {x,y,grid_width,...}` (other shapes),
 //!   the flat `y*grid_width+x` index is used.
-//! * `focused` ← `activated`, probed before `focused` and the nested
+//! * `focused` <- `activated`, probed before `focused` and the nested
 //!   `state.*` spellings other builds emit.
-//! * `monitor` ← `output-id` (`-1`/absent → `None`); `pid` ← `pid`
-//!   (wayfire reports `-1` for views with no client pid → `None`);
-//!   `fullscreen` ← `fullscreen`.
+//! * `monitor` <- `output-id` (`-1`/absent -> `None`); `pid` <- `pid`
+//!   (wayfire reports `-1` for views with no client pid -> `None`);
+//!   `fullscreen` <- `fullscreen`.
 //! * `floating` is always `None`: wayfire has no floating-vs-tiled
-//!   window class — `tiled-edges` is a snap bitmask, not a layout
+//!   window class - `tiled-edges` is a snap bitmask, not a layout
 //!   class.
 //! * Only `toplevel` views are listed: panels, desktop widgets and
 //!   unmanaged surfaces cannot be addressed by `window-rules` methods
 //!   anyway (`focus-view` rejects non-toplevel views server-side).
-//!   When neither `role` nor `type` is present the view is kept —
+//!   When neither `role` nor `type` is present the view is kept -
 //!   listing an unparseable view beats silently dropping it.
 //!
 //! Transport mirrors `sway_window.rs`: a fresh short-lived connection
@@ -63,12 +63,12 @@
 //! stall a tool call or grow memory unboundedly.
 //!
 //! Socket discovery: `WAYFIRE_SOCKET` (wayfire exports it to its
-//! session when `ipc` loads) is authoritative — a stale value declines
+//! session when `ipc` loads) is authoritative - a stale value declines
 //! rather than guessing another session's socket, and the path must
 //! live under the same root discovery would scan (`valid_socket`
 //! canonicalizes and confines it). When unset, discovery probes
-//! `$XDG_RUNTIME_DIR/wayfire-<display>…​.socket`, falling back to
-//! `/tmp/…` only when `XDG_RUNTIME_DIR` is absent — the root wayfire
+//! `$XDG_RUNTIME_DIR/wayfire-<display>...​.socket`, falling back to
+//! `/tmp/...` only when `XDG_RUNTIME_DIR` is absent - the root wayfire
 //! itself falls back to.
 
 use std::path::{Path, PathBuf};
@@ -85,7 +85,7 @@ use crate::traits::{Rect, WindowInfo, WindowProvider};
 /// synchronously, so a healthy reply is effectively instant.
 const IPC_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Cap on a reply payload — a view record is well under a kilobyte, so
+/// Cap on a reply payload - a view record is well under a kilobyte, so
 /// 1 MiB covers ~1000-window sessions while bounding a hostile/buggy
 /// reply.
 const MAX_REPLY_LEN: u32 = 1024 * 1024;
@@ -111,7 +111,7 @@ impl WayfireWindow {
     /// Construct only inside a live wayfire session: `WAYFIRE_SOCKET`
     /// (the path the `ipc` plugin exports) is authoritative; when it is
     /// absent the known on-disk socket names are probed in order.
-    /// Either way the path must be a socket that accepts a connection —
+    /// Either way the path must be a socket that accepts a connection -
     /// a connect-and-drop probe, harmless since wayfire idles waiting
     /// for the length prefix.
     pub fn new() -> Option<Self> {
@@ -129,7 +129,7 @@ impl WayfireWindow {
         None
     }
 
-    /// Construct against an explicit socket path — the hermetic-test
+    /// Construct against an explicit socket path - the hermetic-test
     /// seam (a fake length-prefixed-JSON responder) and a hook for
     /// embedders that pin a known socket.
     pub fn with_socket_path(path: PathBuf) -> Option<Self> {
@@ -142,7 +142,7 @@ impl WayfireWindow {
         Some(Self { socket: path })
     }
 
-    /// One method call → its reply JSON. An `{"error":…}` reply is a
+    /// One method call -> its reply JSON. An `{"error":...}` reply is a
     /// compositor-side failure and surfaces as `Err`.
     async fn call(&self, method: &str, data: Value) -> Result<Value> {
         let body = ipc_request(&self.socket, &json!({"method": method, "data": data})).await?;
@@ -153,7 +153,7 @@ impl WayfireWindow {
         Ok(reply)
     }
 
-    /// `window-rules/list-views` → the view records.
+    /// `window-rules/list-views` -> the view records.
     async fn list_views(&self) -> Result<Vec<Value>> {
         let reply = self.call("window-rules/list-views", json!({})).await?;
         reply
@@ -162,7 +162,7 @@ impl WayfireWindow {
             .ok_or_else(|| anyhow!("wayfire: list-views reply is not an array"))
     }
 
-    /// Current geometry of view `view_id` — `configure-view` always
+    /// Current geometry of view `view_id` - `configure-view` always
     /// takes a full rect, so relative *and* absolute move/resize anchor
     /// on the live record.
     async fn view_geometry(&self, view_id: u64) -> Result<Rect> {
@@ -195,7 +195,7 @@ impl WindowProvider for WayfireWindow {
 
     async fn dispatch(&self, action: &str, window_id: &str, args: &Value) -> Result<()> {
         let view_id = parse_view_id(window_id)?;
-        // configure-view always wants the full rect — the anchor is
+        // configure-view always wants the full rect - the anchor is
         // fetched lazily so non-geometry actions stay single-request.
         let rect = if matches!(action, "move" | "resize") {
             Some(self.view_geometry(view_id).await?)
@@ -209,11 +209,11 @@ impl WindowProvider for WayfireWindow {
     }
 }
 
-/// `WAYFIRE_SOCKET` is process environment — a hostile value must not
+/// `WAYFIRE_SOCKET` is process environment - a hostile value must not
 /// steer the provider onto an arbitrary filesystem entry. Accept only
 /// an existing unix socket canonically under wayfire's own socket
 /// root: `XDG_RUNTIME_DIR` when set, `/tmp` otherwise (wayfire's ipc
-/// plugin picks exactly those dirs — see `guess_sockets`). Anything
+/// plugin picks exactly those dirs - see `guess_sockets`). Anything
 /// else declines the provider rather than connecting.
 /// (`with_socket_path` skips this: it is the explicit pin/test seam.)
 fn valid_socket(path: &Path) -> Option<PathBuf> {
@@ -234,11 +234,11 @@ fn valid_socket(path: &Path) -> Option<PathBuf> {
         .then_some(canonical)
 }
 
-/// Candidate socket paths when `WAYFIRE_SOCKET` is unset — the names
-/// wayfire's `ipc` plugin picks itself: `wayfire-<display>-…​.socket`
+/// Candidate socket paths when `WAYFIRE_SOCKET` is unset - the names
+/// wayfire's `ipc` plugin picks itself: `wayfire-<display>-...​.socket`
 /// under `XDG_RUNTIME_DIR`, or under `/tmp` when the runtime dir is
 /// absent (matching `valid_socket`'s root). `<display>`
-/// is `WAYLAND_DISPLAY` (basename — an absolute-path display name must
+/// is `WAYLAND_DISPLAY` (basename - an absolute-path display name must
 /// not escape the scan dir); without it the `wayfire-` prefix alone
 /// matches. Socket files only, sorted for determinism.
 fn guess_sockets() -> Vec<PathBuf> {
@@ -250,7 +250,7 @@ fn guess_sockets() -> Vec<PathBuf> {
         None => "wayfire-".to_string(),
     };
     // Scan exactly the root `valid_socket` would accept: the runtime
-    // dir when set, `/tmp` only when it is not — a same-UID drop in
+    // dir when set, `/tmp` only when it is not - a same-UID drop in
     // `/tmp` must not shadow a real runtime-dir socket.
     let dirs: Vec<PathBuf> = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(rt) if !rt.is_empty() => vec![PathBuf::from(rt)],
@@ -302,7 +302,7 @@ async fn ipc_request(path: &Path, request: &Value) -> Result<Vec<u8>> {
             }
             let mut buf = vec![0u8; len as usize];
             stream.read_exact(&mut buf).await?;
-            // Subscription pushes (`{"event":…}`) are not replies —
+            // Subscription pushes (`{"event":...}`) are not replies -
             // skip them, bounded, while awaiting the real answer.
             if skipped < MAX_EVENT_SKIPS
                 && serde_json::from_slice::<Value>(&buf)
@@ -324,8 +324,8 @@ async fn ipc_request(path: &Path, request: &Value) -> Result<Vec<u8>> {
 
 /// A record is a managed window when it is a toplevel. Other roles
 /// (`desktop-environment` panels, `unmanaged` override-redirects) are
-/// never addressable through `window-rules` — excluded. When neither
-/// `role` nor `type` exists the record is kept (unknown shape — the
+/// never addressable through `window-rules` - excluded. When neither
+/// `role` nor `type` exists the record is kept (unknown shape - the
 /// fields below simply degrade).
 fn is_window(view: &Value) -> bool {
     match (
@@ -337,7 +337,7 @@ fn is_window(view: &Value) -> bool {
     }
 }
 
-/// `geometry`-shaped field → [`Rect`]. Values arrive as JSON numbers
+/// `geometry`-shaped field -> [`Rect`]. Values arrive as JSON numbers
 /// (doubles on the compositor side) so `as_f64` covers both spellings.
 fn field_rect(view: &Value, key: &str) -> Option<Rect> {
     let g = view.get(key)?;
@@ -372,7 +372,7 @@ fn flag(view: &Value, keys: &[&str]) -> Option<bool> {
 }
 
 /// `wset-index` first (the scalar views actually carry), then the flat
-/// `y*grid_width+x` index of a `workspace{x,y,grid_width,…}` object
+/// `y*grid_width+x` index of a `workspace{x,y,grid_width,...}` object
 /// other shapes may report. `-1` when neither is usable.
 fn workspace_index(view: &Value) -> i32 {
     if let Some(i) = view.get("wset-index").and_then(Value::as_i64) {
@@ -386,7 +386,7 @@ fn workspace_index(view: &Value) -> i32 {
     }
 }
 
-/// One view record → [`WindowInfo`]. `focused` is supplied by the
+/// One view record -> [`WindowInfo`]. `focused` is supplied by the
 /// caller (`activated` in list views; always true from
 /// `get-focused-view`); unreported fields keep honest defaults.
 fn view_to_info(view: &Value, focused: bool) -> WindowInfo {
@@ -428,7 +428,7 @@ fn view_to_info(view: &Value, focused: bool) -> WindowInfo {
     }
 }
 
-/// `list-views` array → window list, toplevels only, in compositor
+/// `list-views` array -> window list, toplevels only, in compositor
 /// order.
 fn collect_windows(views: &[Value]) -> Vec<WindowInfo> {
     views
@@ -448,7 +448,7 @@ fn collect_windows(views: &[Value]) -> Vec<WindowInfo> {
 /// compositor's `json_get_view_id` expects.
 fn parse_view_id(id: &str) -> Result<u64> {
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
-        bail!("wayfire: invalid window id '{id}' — view ids are decimal")
+        bail!("wayfire: invalid window id '{id}' - view ids are decimal")
     }
     id.parse()
         .map_err(|_| anyhow!("wayfire: window id '{id}' out of range"))
@@ -469,7 +469,7 @@ fn configure(id: u64, r: Rect) -> (&'static str, Value) {
 }
 
 /// Build the ordered `(method, data)` requests for an action. Fixed
-/// mapping only — the `command/register-binding` exec primitives and
+/// mapping only - the `command/register-binding` exec primitives and
 /// every other registered method are unreachable through
 /// [`WindowProvider::dispatch`].
 fn request_plan(
@@ -481,7 +481,7 @@ fn request_plan(
     let requests = match action {
         "focus" => vec![("window-rules/focus-view", json!({"id": view_id}))],
         "close" => vec![("window-rules/close-view", json!({"id": view_id}))],
-        // `wm-actions/set-minimized` (wm-actions plugin) — wayfire's
+        // `wm-actions/set-minimized` (wm-actions plugin) - wayfire's
         // real minimized state, not a scratchpad approximation.
         "minimize" => vec![(
             "wm-actions/set-minimized",
@@ -551,7 +551,7 @@ mod tests {
         {
             "id": 4,
             "pid": 37381,
-            "title": "devin: onboarding",
+            "title": "notes: onboarding",
             "app-id": "kitty",
             "base-geometry": {"x": 10, "y": 45, "width": 940, "height": 990},
             "parent": -1,
@@ -577,7 +577,7 @@ mod tests {
         {
             "id": 5,
             "pid": 37382,
-            "title": "devin: planning",
+            "title": "notes: planning",
             "app-id": "kitty",
             "geometry": {"x": 960, "y": 45, "width": 940, "height": 990},
             "output-id": 1,
@@ -645,7 +645,7 @@ mod tests {
         let handler = Arc::new(handler);
         // std listener + a thread per connection keeps the responder
         // alive for the whole test without a runtime handle at bind
-        // time — same convention as sway_window's fake server.
+        // time - same convention as sway_window's fake server.
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut s) = stream else { break };
@@ -712,7 +712,7 @@ mod tests {
 
         let w = &windows[0];
         assert_eq!(w.id, "4");
-        assert_eq!(w.title, "devin: onboarding");
+        assert_eq!(w.title, "notes: onboarding");
         assert_eq!(w.class, "kitty");
         assert_eq!(w.workspace, 0);
         assert_eq!(
@@ -749,7 +749,7 @@ mod tests {
         let w = &windows[0];
         assert_eq!(w.id, "9");
         assert_eq!(w.class, "foot");
-        // workspace {x:1,y:2,grid_width:3} → flat 2*3+1.
+        // workspace {x:1,y:2,grid_width:3} -> flat 2*3+1.
         assert_eq!(w.workspace, 7);
         assert_eq!(
             w.rect,
@@ -886,7 +886,7 @@ mod tests {
 
     // ---------- WAYFIRE_SOCKET / discovery ----------
 
-    /// Serializes the env-mutating `new()` tests — same convention as
+    /// Serializes the env-mutating `new()` tests - same convention as
     /// sway_window's `ENV_LOCK` (poison-tolerant).
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -931,7 +931,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _env = SavedEnv::capture();
         let dir = tempfile::tempdir().unwrap();
-        // Bound but never accepted — the connect-probe succeeds on the
+        // Bound but never accepted - the connect-probe succeeds on the
         // listener backlog alone.
         let _listener = std::os::unix::net::UnixListener::bind(dir.path().join("wf.sock")).unwrap();
         unsafe {
@@ -953,7 +953,7 @@ mod tests {
             std::os::unix::net::UnixListener::bind(other.path().join("wf.sock")).unwrap();
         unsafe {
             std::env::set_var("WAYFIRE_SOCKET", other.path().join("wf.sock"));
-            // XDG_RUNTIME_DIR set → sockets outside it are not
+            // XDG_RUNTIME_DIR set -> sockets outside it are not
             // wayfire's; `new` declines rather than connecting.
             std::env::set_var("XDG_RUNTIME_DIR", dir.path());
         }
@@ -1067,9 +1067,9 @@ mod tests {
                 json!({"method": "window-rules/focus-view", "data": {"id": 5}}),
                 json!({"method": "window-rules/close-view", "data": {"id": 4}}),
                 json!({"method": "wm-actions/set-minimized", "data": {"view_id": 5, "state": true}}),
-                // move/resize fetch the live geometry anchor first…
+                // move/resize fetch the live geometry anchor first...
                 json!({"method": "window-rules/view-info", "data": {"id": 4}}),
-                // …then send the full rect: (10,45)+(100,100), size kept.
+                // ...then send the full rect: (10,45)+(100,100), size kept.
                 json!({"method": "window-rules/configure-view", "data": {"id": 4, "geometry": {"x": 110, "y": 145, "width": 940, "height": 990}}}),
                 json!({"method": "window-rules/view-info", "data": {"id": 4}}),
                 json!({"method": "window-rules/configure-view", "data": {"id": 4, "geometry": {"x": 10, "y": 45, "width": 800, "height": 600}}}),
@@ -1098,7 +1098,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_reply_is_an_error() {
-        // Announces a payload beyond the cap, then closes — the cap
+        // Announces a payload beyond the cap, then closes - the cap
         // check must reject before the read.
         let dir = tempfile::tempdir().unwrap();
         let listener = std::os::unix::net::UnixListener::bind(dir.path().join("big.sock")).unwrap();
@@ -1132,7 +1132,7 @@ mod tests {
     #[tokio::test]
     async fn event_pushes_are_skipped_for_the_reply() {
         let dir = tempfile::tempdir().unwrap();
-        // Two event pushes on the wire ahead of the real reply — the
+        // Two event pushes on the wire ahead of the real reply - the
         // reply scan must skip frames carrying an "event" key.
         let (path, _reqs) = fake_wayfire_multi(
             dir.path(),
@@ -1147,7 +1147,7 @@ mod tests {
         assert_eq!(windows.len(), 2);
     }
 
-    /// Fake server writing each `replies` entry as its own frame —
+    /// Fake server writing each `replies` entry as its own frame -
     /// exercises the event-skip loop over real message boundaries.
     fn fake_wayfire_multi(
         dir: &Path,
@@ -1194,7 +1194,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_rejects_bad_id_before_connect() {
-        // No server at all — validation must fail before any I/O.
+        // No server at all - validation must fail before any I/O.
         let w = WayfireWindow {
             socket: PathBuf::from("/nonexistent.sock"),
         };

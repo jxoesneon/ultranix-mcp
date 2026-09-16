@@ -1,4 +1,4 @@
-//! X11-native capture backend — `scrot` for frames, `xdotool`/`xrandr`
+//! X11-native capture backend - `scrot` for frames, `xdotool`/`xrandr`
 //! for the read channels (pointer position, monitor inventory).
 //!
 //! This is the X11 rung of the capture fallback ladder (`CaptureBackend::
@@ -8,24 +8,24 @@
 //!
 //! `scrot` writes the PNG into a fresh private capture dir
 //! ([`crate::security::captures`]: `0700`, unpredictable name) which is
-//! deleted after the read — on error paths too. Unlike
-//! [`super::grim_capture`], the leaf is deliberately **not** pre-created:
+//! deleted after the read - on error paths too. Unlike
+//! [`super::grim_capture`], the leaf is deliberately **not**pre-created:
 //! `scrot` refuses to overwrite an existing file (older versions prompt
-//! on stdin, which is `/dev/null` under [`crate::security::spawn`] — a
+//! on stdin, which is `/dev/null` under [`crate::security::spawn`] - a
 //! guaranteed failure). The fresh unpredictable `0700` dir is itself the
-//! anti-symlink defense — a same-UID attacker cannot pre-place a symlink
-//! inside a directory it cannot name — and the read-back still goes
+//! anti-symlink defense - a same-UID attacker cannot pre-place a symlink
+//! inside a directory it cannot name - and the read-back still goes
 //! through [`captures::open_nofollow`], so even a malicious `scrot`
 //! dropping a symlink leaf is caught.
 //!
 //! Binary paths are the canonicalized absolute paths pinned by
 //! [`crate::security::whitelist`] at construction, spawned under the
 //! scrubbed environment and per-spawn timeouts of
-//! [`crate::security::spawn`] — a `PATH` hijack after construction
+//! [`crate::security::spawn`] - a `PATH` hijack after construction
 //! cannot substitute a trojan, and a wedged child cannot hang a call.
 //!
 //! NOTE: `xrandr` is pinned for provider use (in
-//! [`whitelist::WHITELIST`]) but has no `validate_command` arm — it is
+//! [`whitelist::WHITELIST`]) but has no `validate_command` arm - it is
 //! never invocable through `system_command`. When pinned, `screen_info`
 //! uses `xrandr --query` for real per-monitor geometry; otherwise it
 //! falls back to `xdotool getdisplaygeometry` (single virtual-screen
@@ -43,9 +43,9 @@ use crate::traits::{CaptureProvider, Frame, Rect};
 /// Capture via the `scrot` CLI (`scrot [-a x,y,w,h] <file>`), X11-only.
 pub struct X11Capture {
     scrot: PathBuf,
-    /// Pinned `xdotool` — `cursor_position`, `screen_info` fallback.
+    /// Pinned `xdotool` - `cursor_position`, `screen_info` fallback.
     xdotool: Option<PathBuf>,
-    /// Pinned `xrandr` — `screen_info` preferred path (see module docs);
+    /// Pinned `xrandr` - `screen_info` preferred path (see module docs);
     /// `None` when `xrandr` was absent at pin time.
     xrandr: Option<PathBuf>,
 }
@@ -62,7 +62,7 @@ fn x11_display() -> Option<()> {
     (!d.is_empty()).then_some(())
 }
 
-/// Pinned `<bin> <args>` → stdout bytes; non-zero exit is an error.
+/// Pinned `<bin> <args>` -> stdout bytes; non-zero exit is an error.
 /// (Sibling copies live in `x11_input.rs` / `x11_window.rs`.)
 async fn run(bin: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let mut cmd = spawn::command(bin, args);
@@ -85,7 +85,7 @@ impl X11Capture {
     }
 
     /// [`Self::new`] against a caller-supplied pin set, minus the
-    /// `DISPLAY` session gate — the testable seam: hermetic tests resolve
+    /// `DISPLAY` session gate - the testable seam: hermetic tests resolve
     /// a fresh `PinnedBins` over a tempdir `PATH` and exercise the real
     /// spawn paths without mutating process env.
     pub fn with_pins(pins: &whitelist::PinnedBins) -> Option<Self> {
@@ -107,7 +107,7 @@ impl X11Capture {
             if r.w < 1 || r.h < 1 {
                 bail!("scrot: region requires w,h >= 1");
             }
-            // `scrot -a x,y,w,h` — non-interactive area capture (scrot
+            // `scrot -a x,y,w,h` - non-interactive area capture (scrot
             // ≥ 1.7); older scrots exit non-zero and surface as an error.
             cmd.arg("-a")
                 .arg(format!("{},{},{},{}", r.x, r.y, r.w, r.h));
@@ -139,7 +139,7 @@ impl X11Capture {
 #[async_trait]
 impl CaptureProvider for X11Capture {
     async fn capture_frame(&self, region: Option<Rect>) -> Result<Frame> {
-        // A fresh unpredictable 0700 dir per capture — the file inside
+        // A fresh unpredictable 0700 dir per capture - the file inside
         // it cannot be preplanted, and the dir is removed no matter how
         // the capture resolves (success, scrot failure, decode failure).
         let dir = captures::fresh_capture_dir().context("create capture dir")?;
@@ -148,7 +148,7 @@ impl CaptureProvider for X11Capture {
         result
     }
 
-    /// `xdotool getmouselocation --shell` → `X=`/`Y=` pair.
+    /// `xdotool getmouselocation --shell` -> `X=`/`Y=` pair.
     async fn cursor_position(&self) -> Result<(i32, i32)> {
         let xdotool = self
             .xdotool
@@ -197,7 +197,7 @@ impl CaptureProvider for X11Capture {
     }
 }
 
-/// `NAME=value` line in `--shell` output → integer value. Kept in sync
+/// `NAME=value` line in `--shell` output -> integer value. Kept in sync
 /// with the sibling copy in `x11_input.rs`.
 fn shell_var_i64(s: &str, key: &str) -> Option<i64> {
     for line in s.lines() {
@@ -212,12 +212,12 @@ fn shell_var_i64(s: &str, key: &str) -> Option<i64> {
     None
 }
 
-/// `xdotool getmouselocation --shell` output → `(x, y)`.
+/// `xdotool getmouselocation --shell` output -> `(x, y)`.
 fn parse_getmouselocation(s: &str) -> Option<(i32, i32)> {
     Some((shell_var_i64(s, "X")? as i32, shell_var_i64(s, "Y")? as i32))
 }
 
-/// `WxH+X+Y` → `(w, h, x, y)`; the offsets may carry a sign.
+/// `WxH+X+Y` -> `(w, h, x, y)`; the offsets may carry a sign.
 fn parse_xrandr_geometry(tok: &str) -> Option<(i64, i64, i64, i64)> {
     let (ws, rest) = tok.split_once('x')?;
     let w: i64 = ws.parse().ok()?;
@@ -231,7 +231,7 @@ fn parse_xrandr_geometry(tok: &str) -> Option<(i64, i64, i64, i64)> {
     (w > 0 && h > 0).then_some((w, h, x, y))
 }
 
-/// `xrandr --query` `NAME connected [primary] WxH+X+Y …` header lines →
+/// `xrandr --query` `NAME connected [primary] WxH+X+Y ...` header lines ->
 /// monitor records. `disconnected` outputs and the `Screen N:` line are
 /// skipped; `primary` maps onto `focused` (X11 has no per-output focus).
 fn parse_xrandr_monitors(text: &str) -> Vec<Value> {
@@ -327,7 +327,7 @@ mod tests {
         std::fs::rename(&tmp, &path).unwrap();
     }
 
-    /// Fake `scrot`: writes the PNG fixture to its last argv — the same
+    /// Fake `scrot`: writes the PNG fixture to its last argv - the same
     /// `while/shift/printf` shape the grim hermetic fake uses.
     fn scrot_script() -> String {
         use std::fmt::Write as _;
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn with_pins_requires_scrot() {
         let dir = tempfile::tempdir().unwrap();
-        // resolve_in over an explicit dir list — no PATH mutation needed.
+        // resolve_in over an explicit dir list - no PATH mutation needed.
         let pins = whitelist::PinnedBins::resolve_in(&[dir.path().to_path_buf()]);
         assert!(X11Capture::with_pins(&pins).is_none());
 
@@ -454,7 +454,7 @@ mod tests {
         let err = cap.capture_frame(None).await.unwrap_err();
         assert!(err.to_string().contains("scrot exited"), "{err}");
 
-        // Exit 0 but non-PNG output — the decode guard must reject it.
+        // Exit 0 but non-PNG output - the decode guard must reject it.
         write_exe(
             dir.path(),
             "scrot",
@@ -481,7 +481,7 @@ mod tests {
         let cap = X11Capture::with_pins(&pins).unwrap();
 
         assert_eq!(cap.cursor_position().await.unwrap(), (11, 22));
-        // xrandr is absent from the tempdir PATH → the xdotool
+        // xrandr is absent from the tempdir PATH -> the xdotool
         // fallback path is what runs here.
         let info = cap.screen_info().await.unwrap();
         assert_eq!(info["monitors"][0]["width"], json!(1920));
@@ -496,7 +496,7 @@ mod tests {
     async fn read_channels_error_without_helpers() {
         let dir = tempfile::tempdir().unwrap();
         write_exe(dir.path(), "scrot", &scrot_script());
-        // Only scrot resolves — xdotool/xrandr unpinned.
+        // Only scrot resolves - xdotool/xrandr unpinned.
         let pins = whitelist::PinnedBins::resolve_in(&[dir.path().to_path_buf()]);
         let cap = X11Capture::with_pins(&pins).unwrap();
         let err = cap.cursor_position().await.unwrap_err();

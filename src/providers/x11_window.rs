@@ -1,13 +1,13 @@
-//! X11-native `WindowProvider` — `wmctrl` (EWMH window list, activate,
+//! X11-native `WindowProvider` - `wmctrl` (EWMH window list, activate,
 //! close, move/resize) plus `xdotool` (active-window id, minimize, pid)
-//! and `xprop` (`_NET_WM_STATE` → fullscreen). The X11 rung of the window
+//! and `xprop` (`_NET_WM_STATE` -> fullscreen). The X11 rung of the window
 //! fallback ladder (`WindowBackend::Wmctrl`), live only when
 //! [`X11Window::new`] sees a non-empty `DISPLAY`.
 //!
 //! Every helper is a canonicalized absolute path pinned by
 //! [`crate::security::whitelist`] at construction and spawned under the
 //! scrubbed environment + per-spawn timeout of
-//! [`crate::security::spawn`]. No shell is involved — window ids pass
+//! [`crate::security::spawn`]. No shell is involved - window ids pass
 //! straight through argv, and [`valid_window_id`] still restricts them
 //! to `0x`-hex / decimal shapes so a malformed id fails before any
 //! spawn.
@@ -16,7 +16,7 @@
 //!
 //! - `wmctrl -lG` gives `id desktop x y w h host title` (bundled short
 //!   flags keep the field layout fixed: geometry always follows the
-//!   desktop column). `class` comes from a separate `wmctrl -lx` pass —
+//!   desktop column). `class` comes from a separate `wmctrl -lx` pass -
 //!   with `-x` alone the WM_CLASS column always sits right after the
 //!   desktop column regardless of the `-G`/`-x` field-order interaction,
 //!   which has differed across wmctrl builds. `wmctrl -lp` adds `pid`
@@ -24,9 +24,9 @@
 //!   helper degrades the field, never the listing.
 //! - `fullscreen` comes from `xprop -id <id> _NET_WM_STATE` per window
 //!   when `xprop` is pinned (it is in [`whitelist::WHITELIST`] for
-//!   provider use but has no `validate_command` arm — never invocable
+//!   provider use but has no `validate_command` arm - never invocable
 //!   through `system_command`). When absent the field reports `None`.
-//! - `floating`/`monitor` have no portable EWMH readout → always `None`.
+//! - `floating`/`monitor` have no portable EWMH readout -> always `None`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -41,11 +41,11 @@ use crate::traits::{Rect, WindowInfo, WindowProvider};
 /// EWMH window management via `wmctrl` + `xdotool` (+ optional `xprop`).
 pub struct X11Window {
     wmctrl: PathBuf,
-    /// Pinned `xdotool` — active-window id, `windowminimize`,
+    /// Pinned `xdotool` - active-window id, `windowminimize`,
     /// `getwindowname` fallback. Optional at construction; the methods
     /// that need it error clearly when it was absent at pin time.
     xdotool: Option<PathBuf>,
-    /// Pinned `xprop` — `_NET_WM_STATE` fullscreen detection and the
+    /// Pinned `xprop` - `_NET_WM_STATE` fullscreen detection and the
     /// `_NET_ACTIVE_WINDOW` fallback for the active id (see module docs).
     xprop: Option<PathBuf>,
 }
@@ -62,7 +62,7 @@ fn x11_display() -> Option<()> {
     (!d.is_empty()).then_some(())
 }
 
-/// Pinned `<bin> <args>` → stdout bytes; non-zero exit is an error.
+/// Pinned `<bin> <args>` -> stdout bytes; non-zero exit is an error.
 /// (Sibling copies live in `x11_capture.rs` / `x11_input.rs`.)
 async fn run(bin: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let mut cmd = spawn::command(bin, args);
@@ -90,7 +90,7 @@ impl X11Window {
     }
 
     /// [`Self::new`] against a caller-supplied pin set, minus the
-    /// `DISPLAY` session gate — the testable seam: hermetic tests resolve
+    /// `DISPLAY` session gate - the testable seam: hermetic tests resolve
     /// a fresh `PinnedBins` over a tempdir `PATH` and exercise the real
     /// spawn paths without mutating process env.
     pub fn with_pins(pins: &whitelist::PinnedBins) -> Option<Self> {
@@ -119,13 +119,13 @@ impl X11Window {
         None
     }
 
-    /// `xprop -id <id> _NET_WM_STATE` → `Some(is_fullscreen)`; `None`
+    /// `xprop -id <id> _NET_WM_STATE` -> `Some(is_fullscreen)`; `None`
     /// when the property read itself fails (dead window, helper error).
     async fn window_fullscreen(&self, id: &str) -> Option<bool> {
         let xprop = self.xprop.as_ref()?;
         let out = run(xprop, &["-id", id, "_NET_WM_STATE"]).await.ok()?;
         let text = String::from_utf8_lossy(&out);
-        // `_NET_WM_STATE(ATOM) = …` on success, "not found" otherwise —
+        // `_NET_WM_STATE(ATOM) = ...` on success, "not found" otherwise -
         // both mean "read succeeded", the atom list is just empty.
         if text.contains("_NET_WM_STATE") {
             Some(text.contains("_NET_WM_STATE_FULLSCREEN"))
@@ -149,7 +149,7 @@ impl X11Window {
         if let Ok(out) = run(&self.wmctrl, &["-lp"]).await {
             let pids = parse_wmctrl_third_field(&String::from_utf8_lossy(&out));
             for w in windows.iter_mut() {
-                // wmctrl prints 0 when the WM has no _NET_WM_PID — treat
+                // wmctrl prints 0 when the WM has no _NET_WM_PID - treat
                 // non-positive as "unknown", not as pid 0 (the kernel's
                 // scheduler placeholder, never an X11 client).
                 w.pid = pids
@@ -170,7 +170,7 @@ impl X11Window {
         }
     }
 
-    /// `xdotool getwindowname <id>` — title for windows absent from the
+    /// `xdotool getwindowname <id>` - title for windows absent from the
     /// EWMH client list (override-redirect panels, docks).
     async fn window_name(&self, id: &str) -> Option<String> {
         let out = run(self.xdotool.as_ref()?, &["getwindowname", id])
@@ -201,7 +201,7 @@ impl WindowProvider for X11Window {
             w.focused = true;
             return Ok(Some(w));
         }
-        // Not in the EWMH client list — a minimal record is still more
+        // Not in the EWMH client list - a minimal record is still more
         // useful than dropping the window entirely.
         Ok(Some(WindowInfo {
             title: self.window_name(&id).await.unwrap_or_default(),
@@ -245,7 +245,7 @@ enum DispatchCmd {
     Xdotool(Vec<String>),
 }
 
-/// Window ids arrive as `0x<hex>` (wmctrl-style) or bare decimals —
+/// Window ids arrive as `0x<hex>` (wmctrl-style) or bare decimals -
 /// restrict to those shapes so a malformed id fails before any spawn.
 fn valid_window_id(id: &str) -> bool {
     if let Some(hex) = id.strip_prefix("0x").or_else(|| id.strip_prefix("0X")) {
@@ -259,9 +259,9 @@ fn arg_i64(args: &Value, key: &str) -> Option<i64> {
     args.get(key)?.as_i64()
 }
 
-/// Build the argv for a `dispatch` action. Fixed mapping only — there is
+/// Build the argv for a `dispatch` action. Fixed mapping only - there is
 /// no path from this function to `wmctrl`'s session-mutating options
-/// (`-o`, `-n`, `-s` desktop switches, …) or `xdotool`'s exec primitives.
+/// (`-o`, `-n`, `-s` desktop switches, ...) or `xdotool`'s exec primitives.
 fn dispatch_argv(action: &str, id: &str, args: &Value) -> Result<DispatchCmd> {
     Ok(match action {
         // `-i` = interpret the window argument as a numeric window id.
@@ -269,7 +269,7 @@ fn dispatch_argv(action: &str, id: &str, args: &Value) -> Result<DispatchCmd> {
         "close" => DispatchCmd::Wmctrl(vec!["-i".into(), "-c".into(), id.into()]),
         "minimize" => DispatchCmd::Xdotool(vec!["windowminimize".into(), id.into()]),
         "move" | "resize" => {
-            // `wmctrl -e gravity,X,Y,W,H` — `-1` keeps the current value,
+            // `wmctrl -e gravity,X,Y,W,H` - `-1` keeps the current value,
             // gravity 0 is the EWMH default.
             let mut geom: [String; 4] = std::array::from_fn(|_| "-1".to_string());
             if action == "move" {
@@ -300,9 +300,9 @@ fn dispatch_argv(action: &str, id: &str, args: &Value) -> Result<DispatchCmd> {
     })
 }
 
-/// `wmctrl -lG` → window list (base fields only; enrichment is layered
+/// `wmctrl -lG` -> window list (base fields only; enrichment is layered
 /// on by [`X11Window::enrich`]). Line shape:
-/// `id desktop x y w h host title…` — the host is column 7, everything
+/// `id desktop x y w h host title...` - the host is column 7, everything
 /// after it is the title.
 fn parse_wmctrl_list(text: &str) -> Vec<WindowInfo> {
     text.lines()
@@ -336,7 +336,7 @@ fn parse_wmctrl_list(text: &str) -> Vec<WindowInfo> {
         .collect()
 }
 
-/// `wmctrl -lx`/`-lp` → window id → the third column (`WM_CLASS` /
+/// `wmctrl -lx`/`-lp` -> window id -> the third column (`WM_CLASS` /
 /// `_NET_WM_PID`). With exactly one extra flag the column position is
 /// fixed regardless of the `-G`/`-x` field-order question (see module
 /// docs).
@@ -352,7 +352,7 @@ fn parse_wmctrl_third_field(text: &str) -> HashMap<String, String> {
         .collect()
 }
 
-/// `xprop -root _NET_ACTIVE_WINDOW` → `Some("0x%08x")`. Output looks
+/// `xprop -root _NET_ACTIVE_WINDOW` -> `Some("0x%08x")`. Output looks
 /// like `_NET_ACTIVE_WINDOW(WINDOW): window id # 0x560000c`; `0x0` /
 /// "not found" mean nothing is focused.
 fn parse_xprop_active_window(s: &str) -> Option<String> {
@@ -394,22 +394,22 @@ mod tests {
 
     /// Shape mirrors a live `wmctrl -lG` capture.
     const WMCTRL_LG: &str = "\
-0x05600007  0 10   45   625  745   testhost  devin: onboarding
-0x0560000c  1 645  45   625  745   testhost  devin: planning
+0x05600007  0 10   45   625  745   testhost  notes: onboarding
+0x0560000c  1 645  45   625  745   testhost  notes: planning
 0x02800003 -1 0    0    1920 24    testhost  panel
 ";
 
-    /// `wmctrl -lx` — WM_CLASS sits in the third column.
+    /// `wmctrl -lx` - WM_CLASS sits in the third column.
     const WMCTRL_LX: &str = "\
-0x05600007  0 kitty.kitty              testhost  devin: onboarding
-0x0560000c  1 kitty.kitty              testhost  devin: planning
+0x05600007  0 kitty.kitty              testhost  notes: onboarding
+0x0560000c  1 kitty.kitty              testhost  notes: planning
 0x02800003 -1 plasmashell.plasmashell  testhost  panel
 ";
 
-    /// `wmctrl -lp` — pid sits in the third column (0 = unknown).
+    /// `wmctrl -lp` - pid sits in the third column (0 = unknown).
     const WMCTRL_LP: &str = "\
-0x05600007  0 37381  testhost  devin: onboarding
-0x0560000c  1 37382  testhost  devin: planning
+0x05600007  0 37381  testhost  notes: onboarding
+0x0560000c  1 37382  testhost  notes: planning
 0x02800003 -1 0      testhost  panel
 ";
 
@@ -433,8 +433,8 @@ mod tests {
         )
     }
 
-    /// Fake `xdotool`: `getactivewindow` → decimal id of 0x0560000c;
-    /// `getwindowname`/`getwindowpid` → canned values; everything else is
+    /// Fake `xdotool`: `getactivewindow` -> decimal id of 0x0560000c;
+    /// `getwindowname`/`getwindowpid` -> canned values; everything else is
     /// logged to `<dir>/xdotool.log`.
     fn xdotool_script(dir: &Path) -> String {
         format!(
@@ -483,7 +483,7 @@ mod tests {
         let w = parse_wmctrl_list(WMCTRL_LG);
         assert_eq!(w.len(), 3);
         assert_eq!(w[0].id, "0x05600007");
-        assert_eq!(w[0].title, "devin: onboarding");
+        assert_eq!(w[0].title, "notes: onboarding");
         assert_eq!(w[0].workspace, 0);
         assert_eq!(
             w[0].rect,
@@ -507,7 +507,7 @@ mod tests {
                     0x3 0 0 0 100 100 host\n";
         let w = parse_wmctrl_list(text);
         // The no-host line is malformed (skipped); the last line is
-        // short-but-valid — host present, title empty.
+        // short-but-valid - host present, title empty.
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].id, "0x3");
         assert_eq!(w[0].title, "");
@@ -634,10 +634,10 @@ mod tests {
         assert_eq!(windows[0].class, "kitty.kitty");
         assert_eq!(windows[0].pid, Some(37381));
         assert_eq!(windows[2].pid, None); // wmctrl reported 0
-        // getactivewindow → 90177548 = 0x0560000c → the planning window.
+        // getactivewindow -> 90177548 = 0x0560000c -> the planning window.
         assert!(windows[1].focused);
         assert!(!windows[0].focused);
-        // xprop absent from the tempdir PATH → fullscreen stays None.
+        // xprop absent from the tempdir PATH -> fullscreen stays None.
         assert!(windows.iter().all(|x| x.fullscreen.is_none()));
         assert!(
             windows
@@ -655,11 +655,11 @@ mod tests {
 
         let active = w.active_window().await.unwrap().unwrap();
         assert_eq!(active.id, "0x0560000c");
-        assert_eq!(active.title, "devin: planning");
+        assert_eq!(active.title, "notes: planning");
         assert!(active.focused);
         assert_eq!(active.pid, Some(37382));
 
-        // An id absent from the EWMH list → minimal record via
+        // An id absent from the EWMH list -> minimal record via
         // getwindowname rather than a dropped window.
         std::fs::write(dir.path().join("list-lG"), "").unwrap();
         let active = w.active_window().await.unwrap().unwrap();
@@ -710,7 +710,7 @@ mod tests {
                 "-i -r 0x0560000c -e 0,-1,-1,3,4",
             ]
         );
-        // `getactivewindow` also logs to xdotool.log — filter it out.
+        // `getactivewindow` also logs to xdotool.log - filter it out.
         let xdotool_lines: Vec<String> = xdotool_log(dir.path())
             .into_iter()
             .filter(|l| !l.starts_with("getactivewindow"))

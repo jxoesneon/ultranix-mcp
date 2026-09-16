@@ -1,33 +1,33 @@
-//! Continuous live screen streaming — `screen_stream` (the live
+//! Continuous live screen streaming - `screen_stream` (the live
 //! counterpart to `screen_record`'s bounded burst).
 //!
 //! Lifecycle: `start` spawns a background capture task on the tokio
 //! runtime that grabs one frame per `fps` interval into a fresh
 //! `stream-<ulid>` `0700` dir under the captures root, keeping a bounded
-//! *rolling window* on disk — when `max_frames` or `max_bytes` would be
-//! crossed the **oldest** frames are evicted and counted as
+//! *rolling window* on disk - when `max_frames` or `max_bytes` would be
+//! crossed the **oldest**frames are evicted and counted as
 //! `dropped_frames`. `status` reports shared stats; `latest` returns the
 //! newest frame as image content (same wire shape as `screenshot`, so
 //! clients can poll frames); `stop` cancels the task, joins it under a
 //! 15 s wall-clock bound (aborting a task that refuses to die, reported
 //! as `"aborted": true`), and returns final stats. The task writes
-//! `manifest.json` on every exit path — stop, capture error, io error —
+//! `manifest.json` on every exit path - stop, capture error, io error -
 //! and a drop guard writes a best-effort manifest (`stop_reason`
 //! `"terminated"`/`"panic"`) even on unwind, so a stream that died on
 //! its own is still self-describing on disk.
 //!
-//! **Single stream server-wide.** The registry is process-global (HTTP
+//! **Single stream server-wide.**The registry is process-global (HTTP
 //! and stdio callers share it); a second `start` while a task is alive
-//! is rejected. A dead task does not block a fresh `start` — its
+//! is rejected. A dead task does not block a fresh `start` - its
 //! finished handle is displaced, and `stop`/`status` still report the
 //! dead stream's stats until then.
 //!
 //! Shutdown: there is no server-level cancel hook (the registry lives
 //! here so `server.rs` needs no changes); dropping the tokio runtime
-//! aborts the task. Frames already on disk survive — recording dirs are
+//! aborts the task. Frames already on disk survive - recording dirs are
 //! kept by design, matching `screen_record`.
 //!
-//! Not consent-gated — same posture as `screen_record`: pixels are read
+//! Not consent-gated - same posture as `screen_record`: pixels are read
 //! and written only into a fresh server-owned `0700` directory; nothing
 //! caller-chosen is written or destroyed.
 
@@ -51,18 +51,18 @@ use super::{
 use crate::providers::Providers;
 use crate::traits::CaptureProvider;
 
-/// `fps` bounds — spec: default 2, 1..=10. Ten fps is the fastest cadence
+/// `fps` bounds - spec: default 2, 1..=10. Ten fps is the fastest cadence
 /// real capture backends sustain; tests exercise the high end so a
-/// `start`→`sleep`→`status` cycle produces several frames.
+/// `start`->`sleep`->`status` cycle produces several frames.
 const MIN_FPS: u64 = 1;
 const MAX_FPS: u64 = 10;
 const DEFAULT_FPS: u64 = 2;
-/// Rolling-window frame bound — spec: default 600, 1..=1800 (3×
+/// Rolling-window frame bound - spec: default 600, 1..=1800 (3×
 /// `screen_record`'s hard cap: eviction, not the window, is the guard).
 const MIN_MAX_FRAMES: u64 = 1;
 const MAX_MAX_FRAMES: u64 = 1_800;
 const DEFAULT_MAX_FRAMES: u64 = 600;
-/// `max_bytes` bounds — default and hard ceiling 512 MiB, the same
+/// `max_bytes` bounds - default and hard ceiling 512 MiB, the same
 /// server-side byte cap `screen_record` enforces ([`MAX_RECORD_BYTES`]
 /// in record.rs). The window can never hold more than this on disk.
 const DEFAULT_MAX_BYTES: u64 = 512 * 1024 * 1024;
@@ -141,7 +141,7 @@ struct Stats {
 struct StreamHandle {
     id: String,
     dir: PathBuf,
-    /// Basename only — the full path never crosses the wire.
+    /// Basename only - the full path never crosses the wire.
     dir_name: String,
     started_at: String,
     fps: u64,
@@ -152,7 +152,7 @@ struct StreamHandle {
 
 /// Process-global single-slot stream registry. `Mutex::const_new` keeps
 /// this a plain `static` (no OnceCell dance); the lock serializes
-/// concurrent `start`/`stop` pairs and is held only for bookkeeping —
+/// concurrent `start`/`stop` pairs and is held only for bookkeeping -
 /// never across the task join.
 static REGISTRY: Mutex<Option<StreamHandle>> = Mutex::const_new(None);
 
@@ -161,7 +161,7 @@ fn lock_stats(s: &StdMutex<Stats>) -> std::sync::MutexGuard<'_, Stats> {
 }
 
 /// `providers.backend_names` is pushed capture-slot-first by both
-/// `detect_providers` and `all_mocks` — same convention record.rs uses.
+/// `detect_providers` and `all_mocks` - same convention record.rs uses.
 fn capture_backend_name(providers: &Providers) -> &'static str {
     providers
         .backend_names
@@ -170,7 +170,7 @@ fn capture_backend_name(providers: &Providers) -> &'static str {
         .unwrap_or("unknown")
 }
 
-/// `-32603` for stream-dir plumbing faults — same mapping record.rs
+/// `-32603` for stream-dir plumbing faults - same mapping record.rs
 /// gives its recording-dir creation.
 fn stream_dir_error(e: anyhow::Error) -> ErrorData {
     ErrorData::new(
@@ -186,7 +186,7 @@ fn stream_dir_error(e: anyhow::Error) -> ErrorData {
 /// ([`crate::security::captures::fresh_recording_dir`] /
 /// [`crate::security::captures::recording_leaf`]); renaming the fresh
 /// leaf inside the same parent is atomic, preserves the `0700` mode, and
-/// keeps the anti-symlink-preplacement properties — so streams get their
+/// keeps the anti-symlink-preplacement properties - so streams get their
 /// own greppable `stream-` prefix without new allocation logic there.
 fn stream_dir() -> Result<PathBuf, ErrorData> {
     let dir = {
@@ -232,7 +232,7 @@ pub(super) fn tools() -> Vec<Tool> {
         "screen_stream",
         "Continuous live screen capture with a start/status/latest/stop lifecycle. `start` \
          spawns a background task capturing one PNG frame per fps into a fresh stream-<ulid> \
-         dir under the captures root, keeping a rolling window (max_frames / max_bytes — \
+         dir under the captures root, keeping a rolling window (max_frames / max_bytes - \
          oldest frames evicted, counted as dropped_frames). `latest` returns the newest frame \
          as image content like `screenshot`; `stop` writes manifest.json and returns stats. \
          One stream at a time server-wide.",
@@ -250,7 +250,7 @@ pub(super) async fn dispatch(
     })
 }
 
-/// `screen_stream` entry point — same signature as `screen_record`'s
+/// `screen_stream` entry point - same signature as `screen_record`'s
 /// handler so the mod.rs dispatch arm is mechanical.
 pub async fn screen_stream(
     args: &Map<String, Value>,
@@ -285,7 +285,7 @@ async fn stream_start(
             "screen_stream: max_bytes must be between 1 and {MAX_STREAM_BYTES}"
         )));
     }
-    // The task needs a 'static capture handle — clone the Arc slot
+    // The task needs a 'static capture handle - clone the Arc slot
     // directly rather than borrowing through `capture_provider`.
     let capture = providers
         .capture
@@ -301,13 +301,13 @@ async fn stream_start(
             && !h.join.is_finished()
         {
             return Ok(tool_error(format!(
-                "screen_stream: stream {} already active — stop it before starting another",
+                "screen_stream: stream {} already active - stop it before starting another",
                 h.id
             )));
         }
     }
 
-    // Minting the dir does blocking std::fs work (mkdir + rename) — it
+    // Minting the dir does blocking std::fs work (mkdir + rename) - it
     // must happen *outside* the registry lock so a slow filesystem never
     // stalls status/latest/stop for the live stream.
     let dir = stream_dir()?;
@@ -344,10 +344,10 @@ async fn stream_start(
             // into the manifest.
             *reg = None;
         } else {
-            // Lost a start race — another stream grabbed the slot while
+            // Lost a start race - another stream grabbed the slot while
             // we minted. Release the registry before cleanup: abort,
             // await (so the drop-guard manifest write can't race the
-            // dir removal), then remove the dir — it may already hold
+            // dir removal), then remove the dir - it may already hold
             // a first-tick frame.
             let winner = h.id.clone();
             drop(reg);
@@ -356,7 +356,7 @@ async fn stream_start(
             let _ = join.await;
             let _ = std::fs::remove_dir_all(&dir);
             return Ok(tool_error(format!(
-                "screen_stream: stream {winner} already active — stop it before starting another"
+                "screen_stream: stream {winner} already active - stop it before starting another"
             )));
         }
     }
@@ -405,7 +405,7 @@ async fn stream_status() -> CallToolResult {
     }))
 }
 
-/// Newest frame file as image content — same two-block wire shape as
+/// Newest frame file as image content - same two-block wire shape as
 /// `screenshot` (text description + base64 PNG) so clients can poll.
 async fn stream_latest() -> CallToolResult {
     // Snapshot under the lock, drop it, then do file IO: the read must
@@ -413,7 +413,7 @@ async fn stream_latest() -> CallToolResult {
     let (dir, id, file, w, h) = {
         let reg = REGISTRY.lock().await;
         let Some(h) = reg.as_ref() else {
-            return tool_error("screen_stream: no stream — start one first");
+            return tool_error("screen_stream: no stream - start one first");
         };
         let s = lock_stats(&h.stats);
         let Some(file) = s.latest_frame.clone() else {
@@ -439,7 +439,7 @@ async fn stream_latest() -> CallToolResult {
 /// Leaf-open with `O_NOFOLLOW`, the async mirror of
 /// [`crate::security::captures::open_nofollow`]: stream dirs are
 /// long-lived and `frame_%05d.png`/`manifest.json` are predictable, so a
-/// same-UID process could pre-place a symlink — the leaf flag fails the
+/// same-UID process could pre-place a symlink - the leaf flag fails the
 /// open with `ELOOP` instead of silently redirecting the read or write.
 /// `write` opens read+write+create at `0600` (forcing the mode on
 /// pre-existing leaves, same as `open_nofollow`).
@@ -452,7 +452,7 @@ async fn open_leaf(path: &std::path::Path, write: bool) -> anyhow::Result<tokio:
     #[cfg(unix)]
     {
         // `mode`/`custom_flags` are inherent unix methods on tokio's
-        // OpenOptions — no extension trait needed.
+        // OpenOptions - no extension trait needed.
         opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
     let f = opts.open(path).await.map_err(|e| {
@@ -467,7 +467,7 @@ async fn open_leaf(path: &std::path::Path, write: bool) -> anyhow::Result<tokio:
     Ok(f)
 }
 
-/// Read a whole leaf with `O_NOFOLLOW` — see [`open_leaf`].
+/// Read a whole leaf with `O_NOFOLLOW` - see [`open_leaf`].
 async fn read_leaf(path: PathBuf) -> anyhow::Result<Vec<u8>> {
     let mut f = open_leaf(&path, false).await?;
     let mut buf = Vec::new();
@@ -477,7 +477,7 @@ async fn read_leaf(path: PathBuf) -> anyhow::Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Write a whole leaf with `O_NOFOLLOW` at `0600` — see [`open_leaf`].
+/// Write a whole leaf with `O_NOFOLLOW` at `0600` - see [`open_leaf`].
 async fn write_leaf(path: PathBuf, bytes: &[u8]) -> anyhow::Result<()> {
     let mut f = open_leaf(&path, true).await?;
     f.write_all(bytes)
@@ -493,7 +493,7 @@ async fn read_latest(dir: &std::path::Path, file: &str) -> anyhow::Result<Vec<u8
         Ok(b) => Ok(b),
         Err(first) => {
             // Did the latest pointer move? Re-snapshot dir *and* frame
-            // without holding the registry across the retry read — a
+            // without holding the registry across the retry read - a
             // displaced stream could otherwise return a same-named stale
             // frame from the old dir.
             let newer = {
@@ -511,7 +511,7 @@ async fn read_latest(dir: &std::path::Path, file: &str) -> anyhow::Result<Vec<u8
     }
 }
 
-/// `stop` — take the slot, cancel, join, report. Idempotent at the
+/// `stop` - take the slot, cancel, join, report. Idempotent at the
 /// result level: no active stream is an `isError` result, never a panic.
 /// A dead-but-unreaped stream still reports its final stats (the task
 /// already wrote its own manifest).
@@ -520,11 +520,11 @@ async fn stream_stop() -> CallToolResult {
     let Some(h) = h else {
         return tool_error("screen_stream: no active stream to stop");
     };
-    // Send may fail if the task already finished (receiver dropped) —
+    // Send may fail if the task already finished (receiver dropped) -
     // joining a finished task is fine either way. The join is bounded
     // by a *wall-clock* watchdog (a blocking-pool `thread::sleep`, not
     // `tokio::time::timeout`): the capture loop is cancel-aware so the
-    // bound should never fire — but a genuinely wedged task must not
+    // bound should never fire - but a genuinely wedged task must not
     // hang `stop` forever, and a paused test clock must not turn a
     // never-expected timer into an instant abort. On expiry the task is
     // aborted and the reply reports best-effort stats with
@@ -545,7 +545,7 @@ async fn stream_stop() -> CallToolResult {
         _ = &mut watchdog => {
             join.abort();
             // Reap the abort so the drop-guard manifest write lands
-            // before stats are read — same real-clock trick, short fuse.
+            // before stats are read - same real-clock trick, short fuse.
             let mut reap =
                 tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_secs(2)));
             tokio::select! {
@@ -609,7 +609,7 @@ async fn run_stream(
     let mut ticker = tokio::time::interval_at(start, interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    // Stream state lives in `st` — its `Drop` writes manifest.json with
+    // Stream state lives in `st` - its `Drop` writes manifest.json with
     // whatever counters exist at exit, so even a panic mid-capture
     // leaves a self-describing directory.
     let mut st = StreamState {
@@ -639,7 +639,7 @@ async fn run_stream(
             _ = cancel.changed() => break "stopped",
             _ = ticker.tick() => {}
         }
-        // `stop` must not wait out an in-flight capture — the frame
+        // `stop` must not wait out an in-flight capture - the frame
         // future is raced against the cancel edge. Dropping it is safe:
         // spawned helpers are `kill_on_drop` (security/spawn.rs).
         let frame = tokio::select! {
@@ -664,13 +664,13 @@ async fn run_stream(
             if let Some(f) = old["file"].as_str()
                 && let Err(e) = tokio::fs::remove_file(st.dir.join(f)).await
             {
-                // The file stays on disk unaccounted — `buffered_bytes`
+                // The file stays on disk unaccounted - `buffered_bytes`
                 // still shrinks (it no longer counts as buffered), so a
                 // warn keeps the accounting honest.
                 tracing::warn!(
                     error = %e,
                     file = %f,
-                    "screen_stream: eviction unlink failed — frame orphaned on disk"
+                    "screen_stream: eviction unlink failed - frame orphaned on disk"
                 );
             }
             st.buffered_bytes = st
@@ -680,7 +680,7 @@ async fn run_stream(
         }
         if size > max_bytes {
             // A frame that can never fit the byte budget is dropped
-            // unwritten — the on-disk byte cap is never crossed.
+            // unwritten - the on-disk byte cap is never crossed.
             st.dropped += 1;
         } else {
             st.seq += 1;
@@ -721,7 +721,7 @@ async fn run_stream(
     }
 
     // The task writes the manifest itself so a stream that died of a
-    // capture/io fault — not just an explicit stop — is self-describing.
+    // capture/io fault - not just an explicit stop - is self-describing.
     let manifest = st.manifest_json(&finished_at, start.elapsed().as_millis() as u64);
     let manifest_bytes =
         serde_json::to_vec_pretty(&manifest).expect("manifest serialization cannot fail");
@@ -737,7 +737,7 @@ async fn run_stream(
 }
 
 /// Mutable capture-loop state; `Drop` writes `manifest.json`
-/// synchronously whenever the task exits without a completed manifest —
+/// synchronously whenever the task exits without a completed manifest -
 /// covering panics (provider faults, serialization bugs) that unwind
 /// past the async manifest write. The file is small, so the blocking
 /// `std::fs::write` on the unwind path is acceptable.
@@ -750,7 +750,7 @@ struct StreamState {
     max_frames: u64,
     max_bytes: u64,
     started_at: String,
-    /// Extant frames, oldest at the front — the manifest's `frames` list
+    /// Extant frames, oldest at the front - the manifest's `frames` list
     /// is exactly this deque at exit (evicted frames appear only in
     /// `dropped`).
     frames: VecDeque<Value>,
@@ -760,7 +760,7 @@ struct StreamState {
     seq: u64,
     error: Option<String>,
     /// `stopped`/`capture_error`/`io_error` on the normal path;
-    /// `"terminated"` is the unwind default — `Drop` narrows it to
+    /// `"terminated"` is the unwind default - `Drop` narrows it to
     /// `"panic"` when the task is actually unwinding.
     reason: &'static str,
     start: Instant,
@@ -784,7 +784,7 @@ impl StreamState {
             "started_at": self.started_at,
             "finished_at": finished_at,
             "elapsed_ms": elapsed_ms,
-            // Extant frames only — the rolling window on disk at exit.
+            // Extant frames only - the rolling window on disk at exit.
             "frames": self.frames,
             "buffered_frames": self.frames.len(),
             "buffered_bytes": self.buffered_bytes,
@@ -805,7 +805,7 @@ impl Drop for StreamState {
         if self.manifest_written {
             return;
         }
-        // Panic/abort path — the loop never reached its manifest write.
+        // Panic/abort path - the loop never reached its manifest write.
         // Mark the stats so `status`/`stop` report the end state, then
         // write whatever manifest the extant counters describe.
         if std::thread::panicking() {
@@ -848,7 +848,7 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// The registry is process-global — every test that touches it
+    /// The registry is process-global - every test that touches it
     /// serializes on this lock. (`tokio::sync::Mutex`, not a poisoning
     /// std mutex: a panicking test releases it rather than wedging the
     /// rest.)
@@ -891,7 +891,7 @@ mod tests {
         }
     }
 
-    /// Fails every capture — the dead-stream path.
+    /// Fails every capture - the dead-stream path.
     struct FailingCapture;
 
     #[async_trait]
@@ -907,7 +907,7 @@ mod tests {
         }
     }
 
-    /// Succeeds `ok_frames` times then fails — mid-stream death.
+    /// Succeeds `ok_frames` times then fails - mid-stream death.
     struct FlakyCapture {
         ok_frames: usize,
         calls: AtomicUsize,
@@ -956,7 +956,7 @@ mod tests {
         );
         let required = t.input_schema["required"].as_array().unwrap();
         assert_eq!(required, &vec![json!("action")]);
-        // schemars emits the enum behind a `$defs` ref — accept either shape.
+        // schemars emits the enum behind a `$defs` ref - accept either shape.
         let action = &t.input_schema["properties"]["action"];
         let action_enum = action
             .get("enum")
@@ -1055,7 +1055,7 @@ mod tests {
         assert_eq!(
             m["frames"].as_array().unwrap().len() as u64,
             m["frames_written"].as_u64().unwrap(),
-            "no eviction → every written frame is extant"
+            "no eviction -> every written frame is extant"
         );
         // Dir mode and leaf name.
         #[cfg(unix)]
@@ -1107,7 +1107,7 @@ mod tests {
         .await;
         let dir_name = json_of(&res)["dir"].as_str().unwrap().to_string();
 
-        // ~1.5 s at 10 fps → ~15 frames, window holds 5.
+        // ~1.5 s at 10 fps -> ~15 frames, window holds 5.
         tokio::time::sleep(Duration::from_millis(1_500)).await;
 
         let v = json_of(&call(json!({"action": "status"}), &providers).await);
@@ -1125,7 +1125,7 @@ mod tests {
             })
             .collect();
         assert_eq!(files.len(), 5, "window size on disk: {files:?}");
-        // Oldest files are gone — the window moved forward.
+        // Oldest files are gone - the window moved forward.
         assert!(!dir.join("frame_00001.png").exists());
 
         let v = json_of(&call(json!({"action": "stop"}), &providers).await);
@@ -1169,7 +1169,7 @@ mod tests {
         use_base(&tmp);
         let providers = Providers::all_mocks();
 
-        // No frame can ever fit a 10-byte budget — all dropped.
+        // No frame can ever fit a 10-byte budget - all dropped.
         call(
             json!({"action": "start", "fps": 10, "max_bytes": 10}),
             &providers,

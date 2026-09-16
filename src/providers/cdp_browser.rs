@@ -1,4 +1,4 @@
-//! CDP `BrowserProvider` — Chrome DevTools Protocol over loopback.
+//! CDP `BrowserProvider` - Chrome DevTools Protocol over loopback.
 //!
 //! Drives a Chromium-family browser started with
 //! `--remote-debugging-port=9222` (or already exposing a CDP listener on
@@ -9,32 +9,32 @@
 //!
 //! ## Wire flow
 //!
-//! 1. `ensure_ready` → `GET http://<endpoint>/json/list`, pick the first
+//! 1. `ensure_ready` -> `GET http://<endpoint>/json/list`, pick the first
 //!    `"type": "page"` target (fall back to `/json/version` when no list
 //!    entry qualifies), open the returned `ws://` URL, send
 //!    `Runtime.enable`.
-//! 2. `query_selector` → `Runtime.evaluate` of a fixed expression whose
+//! 2. `query_selector` -> `Runtime.evaluate` of a fixed expression whose
 //!    only variable part is the selector embedded as a **JSON string
-//!    literal** (`serde_json::to_string`), so quotes/newlines in the
+//!    literal**(`serde_json::to_string`), so quotes/newlines in the
 //!    selector can never break out of the generated JavaScript.
 //! 3. The reply's `result.result.value` is itself a JSON document
 //!    (`JSON.stringify` on the page side); it is parsed and returned as
-//!    `{"matches": [...]}` — the raw Phase-0 shape `web_query` normalises.
+//!    `{"matches": [...]}` - the raw Phase-0 shape `web_query` normalises.
 //!
 //! ## Safety
 //!
-//! * **Loopback only.** The endpoint host is validated as `127.0.0.0/8`,
+//! * **Loopback only.**The endpoint host is validated as `127.0.0.0/8`,
 //!   `::1`, or `localhost` (normalised to `127.0.0.1`); the
 //!   `webSocketDebuggerUrl` returned by the endpoint is validated the
 //!   same way, so a hostile local process cannot redirect the bridge to
 //!   a remote WebSocket.
-//! * **No selector splicing.** The selector is embedded via JSON encoding
+//! * **No selector splicing.**The selector is embedded via JSON encoding
 //!   and additionally validated (1..=1024 chars, no control bytes, no
 //!   `javascript:`) before any network traffic.
-//! * **Bounded.** Every stage (TCP probe, HTTP fetch, WS handshake, RPC
+//! * **Bounded.**Every stage (TCP probe, HTTP fetch, WS handshake, RPC
 //!   reply) runs under a timeout; the HTTP body is capped at 1 MiB and
 //!   matches at [`MAX_MATCHES`].
-//! * **Self-healing.** Any transport/RPC failure drops the cached
+//! * **Self-healing.**Any transport/RPC failure drops the cached
 //!   connection; the next call re-discovers and reconnects.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -55,7 +55,7 @@ use crate::traits::BrowserProvider;
 
 /// Default CDP port (`--remote-debugging-port=9222`), loopback only.
 const DEFAULT_PORT: u16 = 9222;
-/// TCP-connect budget for the `new()` availability probe — a refused
+/// TCP-connect budget for the `new()` availability probe - a refused
 /// loopback connection returns instantly; this only bounds filtered ports.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 /// `/json/*` HTTP fetch budget.
@@ -66,14 +66,14 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 /// Cap on a `/json/*` response body (target lists stay in the low KiB).
 const MAX_HTTP_BODY: u64 = 1 << 20;
-/// Selector length cap — mirrors the `web_query` tool contract.
+/// Selector length cap - mirrors the `web_query` tool contract.
 const MAX_SELECTOR_CHARS: usize = 1024;
 /// Hard cap on matched elements serialized into one reply.
 const MAX_MATCHES: usize = 256;
 
 /// CDP-backed [`BrowserProvider`].
 ///
-/// [`CdpBrowser::new`] is a bare TCP probe — the HTTP discovery and
+/// [`CdpBrowser::new`] is a bare TCP probe - the HTTP discovery and
 /// WebSocket handshake are lazy (`ensure_ready`), so construction never
 /// needs a tokio runtime and never talks to the browser.
 pub struct CdpBrowser {
@@ -83,7 +83,7 @@ pub struct CdpBrowser {
 
 #[derive(Debug)]
 struct Endpoint {
-    /// Loopback host — IP literal, or `"localhost"` normalised to
+    /// Loopback host - IP literal, or `"localhost"` normalised to
     /// `127.0.0.1` at construction.
     host: String,
     port: u16,
@@ -105,7 +105,7 @@ impl CdpBrowser {
     }
 
     /// Explicit-endpoint constructor (tests, non-default ports). Rejects
-    /// any host that is not loopback — the bridge must never leave the
+    /// any host that is not loopback - the bridge must never leave the
     /// local machine.
     pub fn with_endpoint(host: &str, port: u16) -> Result<Self> {
         ensure!(
@@ -123,7 +123,7 @@ impl CdpBrowser {
         }
     }
 
-    /// Target `webSocketDebuggerUrl`: `/json/list` first (page target —
+    /// Target `webSocketDebuggerUrl`: `/json/list` first (page target -
     /// the Runtime domain only exists on page/worker targets), then
     /// `/json/version` as a fallback for endpoints that expose only the
     /// browser-level socket.
@@ -169,7 +169,7 @@ impl CdpBrowser {
             .context("cdp: HTTP probe timed out")?
     }
 
-    /// `Host:` header value — IPv6 literals need brackets.
+    /// `Host:` header value - IPv6 literals need brackets.
     fn host_header(&self) -> String {
         if self.endpoint.host.parse::<Ipv6Addr>().is_ok() {
             format!("[{}]:{}", self.endpoint.host, self.endpoint.port)
@@ -182,7 +182,7 @@ impl CdpBrowser {
 impl CdpConn {
     /// One JSON-RPC round-trip: send `{id, method, params}`, then skip
     /// events and foreign-id replies until our `id` answers. Failures
-    /// here are transport-level — callers drop the connection.
+    /// here are transport-level - callers drop the connection.
     async fn call(&mut self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
@@ -206,7 +206,7 @@ impl CdpConn {
 
     /// Read frames until the reply for `id` arrives. CDP pushes events
     /// (`{"method": ...}` with no `id`) and, once `Runtime.enable` has
-    /// run, `Runtime.executionContextCreated` floods are normal — all
+    /// run, `Runtime.executionContextCreated` floods are normal - all
     /// non-matching messages are skipped.
     async fn wait_reply(&mut self, id: u64) -> Result<Value> {
         while let Some(msg) = self.ws.next().await {
@@ -234,7 +234,7 @@ impl CdpConn {
 #[async_trait]
 impl BrowserProvider for CdpBrowser {
     /// Lazy connect: no-op while a session is cached, otherwise run
-    /// discovery → WS handshake → `Runtime.enable`.
+    /// discovery -> WS handshake -> `Runtime.enable`.
     async fn ensure_ready(&self) -> Result<()> {
         let mut guard = self.conn.lock().await;
         if guard.is_some() {
@@ -278,7 +278,7 @@ impl BrowserProvider for CdpBrowser {
 
 // ---------- selector / expression handling ----------
 
-/// Provider-side selector gate — defence in depth under the tool layer.
+/// Provider-side selector gate - defence in depth under the tool layer.
 /// The selector is also JSON-encoded into the expression, so even a
 /// passing string cannot break out of the generated JavaScript.
 fn validate_selector(selector: &str) -> Result<()> {
@@ -299,7 +299,7 @@ fn validate_selector(selector: &str) -> Result<()> {
 }
 
 /// Build the `Runtime.evaluate` expression. The selector is embedded as a
-/// JSON string literal — never spliced — so `"` / `\` / quotes cannot
+/// JSON string literal - never spliced - so `"` / `\` / quotes cannot
 /// corrupt the generated code. The page-side `JSON.stringify` yields a
 /// JSON array we parse back into `{"matches": [...]}`.
 fn query_expression(selector: &str) -> Result<String> {
@@ -314,7 +314,7 @@ fn query_expression(selector: &str) -> Result<String> {
     ))
 }
 
-/// `Runtime.evaluate` result → `{"matches": [...]}`.
+/// `Runtime.evaluate` result -> `{"matches": [...]}`.
 /// `exceptionDetails` (e.g. an invalid selector throwing inside
 /// `querySelectorAll`) maps onto an error rather than an empty match.
 fn parse_evaluate_result(result: &Value) -> Result<Value> {
@@ -358,7 +358,7 @@ fn is_loopback_host(host: &str) -> bool {
     }
 }
 
-/// `"localhost"` → `"127.0.0.1"` so connects never depend on resolver
+/// `"localhost"` -> `"127.0.0.1"` so connects never depend on resolver
 /// behaviour; IP literals pass through unchanged.
 fn normalize_host(host: &str) -> String {
     if host.eq_ignore_ascii_case("localhost") {
@@ -386,7 +386,7 @@ fn normalize_ws_url(raw: &str) -> Result<String> {
         !authority.as_str().contains('@'),
         "cdp: ws url must not carry userinfo"
     );
-    // `Uri::host` may keep the IPv6 brackets ("[::1]") — strip them so the
+    // `Uri::host` may keep the IPv6 brackets ("[::1]") - strip them so the
     // loopback check sees a bare literal.
     let host = uri
         .host()
@@ -430,7 +430,7 @@ fn probe_addr(addr: SocketAddr) -> bool {
 
 // ---------- minimal HTTP/1.1 response parsing ----------
 
-/// `HTTP/1.1 <status>` + headers + body → parsed JSON body. Handles both
+/// `HTTP/1.1 <status>` + headers + body -> parsed JSON body. Handles both
 /// `Content-Length` (Chrome's shape) and `Transfer-Encoding: chunked`.
 fn parse_http_response(raw: &[u8]) -> Result<Value> {
     let split = raw
@@ -501,7 +501,7 @@ mod tests {
     enum StubMode {
         /// Protocol-correct replies; `Runtime.evaluate` decodes the
         /// selector literal out of the expression and echoes it inside
-        /// the canned match — proving JSON-encoded (not spliced) embeds.
+        /// the canned match - proving JSON-encoded (not spliced) embeds.
         Happy,
         /// `Runtime.evaluate` is answered with a foreign id, then the
         /// socket is closed: the client must fail instead of hanging.
@@ -633,7 +633,7 @@ mod tests {
                             .and_then(Value::as_str)
                             .unwrap_or("");
                         // An event frame and a foreign-id reply precede the
-                        // real answer — the client must skip both.
+                        // real answer - the client must skip both.
                         let event = json!({"method": "Runtime.consoleAPICalled", "params": {}});
                         let _ = ws.send(Message::text(event.to_string())).await;
                         let foreign = json!({"id": id + 5_000, "result": {}});
@@ -675,7 +675,7 @@ mod tests {
 
     /// Pull the `document.querySelectorAll(<literal>)` argument out of the
     /// generated expression and decode it as a JSON string. Fails when
-    /// the selector was spliced raw — that is precisely what the happy
+    /// the selector was spliced raw - that is precisely what the happy
     /// path tests prove cannot happen.
     fn extract_selector_arg(expr: &str) -> Result<String, String> {
         let pos = expr
@@ -931,7 +931,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_selector_fails_before_network() {
-        // Endpoint is unreachable — validation must reject first.
+        // Endpoint is unreachable - validation must reject first.
         let browser = CdpBrowser::with_endpoint("127.0.0.1", 1).unwrap();
         for sel in ["", "div\n.foo", "javascript:alert(1)"] {
             assert!(browser.query_selector(sel).await.is_err(), "{sel:?}");

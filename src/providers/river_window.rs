@@ -1,42 +1,42 @@
-//! river `WindowProvider` — the `riverctl` subprocess, partial coverage
+//! river `WindowProvider` - the `riverctl` subprocess, partial coverage
 //! only. The river rung of the window fallback ladder.
 //!
 //! river exposes **no window-list IPC**: there is no way to enumerate
 //! views, and `riverctl` cannot report the focused view's title or
-//! app-id — it manages the *focused* view and the layout engine, full
+//! app-id - it manages the *focused* view and the layout engine, full
 //! stop. This provider is therefore honest about a deliberately narrow
 //! surface:
 //!
 //! - `list_windows` / `active_window` return `Err` explaining the gap;
 //!   the tool layer turns provider errors into `ProviderUnavailable`,
 //!   which is the correct surface for a capability river does not have.
-//! - `dispatch` operates on the focused view only — river cannot
+//! - `dispatch` operates on the focused view only - river cannot
 //!   address a window by id, so `window_id` must be `"focused"` or
 //!   empty; anything else is rejected before any spawn.
 //!
-//! Dispatch mapping (closed set — `run`, `spawn`, `map`, `send-to-output`,
+//! Dispatch mapping (closed set - `run`, `spawn`, `map`, `send-to-output`,
 //! `focus-output`, `focus-view`, `zoom`, `toggle-float`, `set-cursor-warp`
 //! and every other `riverctl` verb are unreachable through
 //! [`WindowProvider::dispatch`]):
 //!
-//! - `close` → `riverctl close` (the focused view).
-//! - `move` → `riverctl move <left|right|up|down> <delta>` — relative
+//! - `close` -> `riverctl close` (the focused view).
+//! - `move` -> `riverctl move <left|right|up|down> <delta>` - relative
 //!   only (`dx,dy`, dominant axis wins), deltas clamped to ±8192.
 //!   riverctl moves are floating-view ops; on a tiled focus the
 //!   compositor simply no-ops them. Absolute `x,y` has no riverctl
-//!   form → honest error.
-//! - `resize` → `riverctl resize <horizontal|vertical> <delta>` — one
+//!   form -> honest error.
+//! - `resize` -> `riverctl resize <horizontal|vertical> <delta>` - one
 //!   spawn per nonzero axis (`dw`/`dh`), deltas clamped to ±8192. No
-//!   absolute `w,h` form exists → honest error.
-//! - `focus` → error: riverctl's `focus-view` only cycles the stack,
-//!   it cannot focus a specific window — and every dispatch call here
+//!   absolute `w,h` form exists -> honest error.
+//! - `focus` -> error: riverctl's `focus-view` only cycles the stack,
+//!   it cannot focus a specific window - and every dispatch call here
 //!   already targets the focused view, making it a no-op at best.
-//! - `minimize` → error: river has no minimized state.
+//! - `minimize` -> error: river has no minimized state.
 //!
 //! Every spawn is the canonicalized absolute path pinned by
 //! [`crate::security::whitelist`] at construction, under the scrubbed
 //! environment + per-spawn timeout of [`crate::security::spawn`]. No
-//! shell is involved — the closed match builds only the verbs above.
+//! shell is involved - the closed match builds only the verbs above.
 
 use std::path::{Path, PathBuf};
 
@@ -47,9 +47,9 @@ use serde_json::Value;
 use crate::security::{spawn, whitelist};
 use crate::traits::{WindowInfo, WindowProvider};
 
-/// river window management via the `riverctl` CLI — focused view only.
+/// river window management via the `riverctl` CLI - focused view only.
 pub struct RiverWindow {
-    /// Pinned `riverctl` — every dispatch spawns it.
+    /// Pinned `riverctl` - every dispatch spawns it.
     riverctl: PathBuf,
 }
 
@@ -59,7 +59,7 @@ const _: () = {
     assert_send_sync::<RiverWindow>();
 };
 
-/// Session gate: a live river session marker — `XDG_CURRENT_DESKTOP`
+/// Session gate: a live river session marker - `XDG_CURRENT_DESKTOP`
 /// containing `river`, matching `SessionKind::River` detection. The
 /// window ladder only reaches this provider on river sessions; the
 /// check is the last-resort guard for direct [`RiverWindow::new`]
@@ -71,7 +71,7 @@ fn river_session() -> Option<()> {
     desktop.contains("river").then_some(())
 }
 
-/// Pinned `<bin> <args>` → stdout bytes; non-zero exit is an error.
+/// Pinned `<bin> <args>` -> stdout bytes; non-zero exit is an error.
 /// (Sibling copies live in `kdotool_window.rs` / `x11_window.rs` /
 /// `clipboard.rs`.)
 async fn run(bin: &Path, args: &[&str]) -> Result<Vec<u8>> {
@@ -94,7 +94,7 @@ impl RiverWindow {
     }
 
     /// [`Self::new`] against a caller-supplied pin set, minus the river
-    /// session gate — the testable seam: hermetic tests resolve a fresh
+    /// session gate - the testable seam: hermetic tests resolve a fresh
     /// `PinnedBins` over a tempdir `PATH` and exercise the real spawn
     /// paths without mutating process env.
     pub fn with_pins(pins: &whitelist::PinnedBins) -> Option<Self> {
@@ -108,20 +108,20 @@ impl RiverWindow {
 impl WindowProvider for RiverWindow {
     async fn list_windows(&self) -> Result<Vec<WindowInfo>> {
         bail!(
-            "river: no window-list IPC — riverctl manages the focused view and layout only; there is no way to enumerate windows"
+            "river: no window-list IPC - riverctl manages the focused view and layout only; there is no way to enumerate windows"
         )
     }
 
     async fn active_window(&self) -> Result<Option<WindowInfo>> {
         bail!(
-            "river: cannot report the focused window — riverctl exposes no way to read the focused view's title/app-id"
+            "river: cannot report the focused window - riverctl exposes no way to read the focused view's title/app-id"
         )
     }
 
     async fn dispatch(&self, action: &str, window_id: &str, args: &Value) -> Result<()> {
         if !valid_window_id(window_id) {
             bail!(
-                "river: window id '{window_id}' is not addressable — only the focused view (\"focused\" or empty)"
+                "river: window id '{window_id}' is not addressable - only the focused view (\"focused\" or empty)"
             );
         }
         for argv in dispatch_plan(action, args)? {
@@ -136,13 +136,13 @@ impl WindowProvider for RiverWindow {
     }
 }
 
-/// river has no per-window addressing — `dispatch` accepts only the
+/// river has no per-window addressing - `dispatch` accepts only the
 /// focused-view selectors.
 fn valid_window_id(id: &str) -> bool {
     id.is_empty() || id == "focused"
 }
 
-/// Bound on a single move/resize delta — river deltas are pixel counts;
+/// Bound on a single move/resize delta - river deltas are pixel counts;
 /// ±8192 covers any real monitor several times over while keeping a
 /// typo'd argument from producing an absurd compositor request.
 const MAX_DELTA: i64 = 8192;
@@ -152,7 +152,7 @@ fn arg_i64(args: &Value, key: &str) -> Option<i64> {
 }
 
 /// Build the `riverctl` argv list for a `dispatch` action (one argv
-/// per spawn). Fixed mapping only — see the module docs for what is
+/// per spawn). Fixed mapping only - see the module docs for what is
 /// deliberately unreachable.
 fn dispatch_plan(action: &str, args: &Value) -> Result<Vec<Vec<String>>> {
     let plan: Vec<Vec<String>> = match action {
@@ -160,14 +160,14 @@ fn dispatch_plan(action: &str, args: &Value) -> Result<Vec<Vec<String>>> {
         "move" => {
             let (Some(dx), Some(dy)) = (arg_i64(args, "dx"), arg_i64(args, "dy")) else {
                 if arg_i64(args, "x").is_some() || arg_i64(args, "y").is_some() {
-                    bail!("river: absolute move has no riverctl form — pass dx,dy")
+                    bail!("river: absolute move has no riverctl form - pass dx,dy")
                 }
                 bail!("river: move requires dx,dy")
             };
             if dx == 0 && dy == 0 {
                 bail!("river: move requires a nonzero dx or dy")
             }
-            // riverctl moves along one axis per invocation — the
+            // riverctl moves along one axis per invocation - the
             // dominant axis carries the request, and the direction
             // word encodes the sign so the delta is a magnitude.
             let (dir, delta) = if dx.abs() >= dy.abs() {
@@ -183,7 +183,7 @@ fn dispatch_plan(action: &str, args: &Value) -> Result<Vec<Vec<String>>> {
         }
         "resize" => {
             if arg_i64(args, "w").is_some() || arg_i64(args, "h").is_some() {
-                bail!("river: absolute resize has no riverctl form — pass dw,dh")
+                bail!("river: absolute resize has no riverctl form - pass dw,dh")
             }
             let mut cmds = Vec::new();
             for (key, axis) in [("dw", "horizontal"), ("dh", "vertical")] {
@@ -202,13 +202,13 @@ fn dispatch_plan(action: &str, args: &Value) -> Result<Vec<Vec<String>>> {
             }
             cmds
         }
-        // riverctl can only cycle focus (`focus-view next`) — a
+        // riverctl can only cycle focus (`focus-view next`) - a
         // specific-window focus does not exist, and the dispatch target
         // is already the focused view.
-        "focus" => bail!("river: cannot focus a specific window — the focused view is implicit"),
+        "focus" => bail!("river: cannot focus a specific window - the focused view is implicit"),
         // river has no minimized/iconic window state.
         "minimize" => {
-            bail!("river: no minimize state — 'toggle-float'/'send-to-output' are not minimize")
+            bail!("river: no minimize state - 'toggle-float'/'send-to-output' are not minimize")
         }
         other => bail!("river: unsupported dispatch action '{other}'"),
     };
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn new_is_none_outside_river_session() {
-        // SAFETY: test-only env mutation, restored before returning —
+        // SAFETY: test-only env mutation, restored before returning -
         // the same pattern the sibling gate tests use.
         let saved = std::env::var_os("XDG_CURRENT_DESKTOP");
         unsafe { std::env::remove_var("XDG_CURRENT_DESKTOP") };
@@ -388,7 +388,7 @@ mod tests {
         assert!(format!("{err}").contains("no window-list IPC"), "{err}");
         let err = w.active_window().await.unwrap_err();
         assert!(format!("{err}").contains("focused"), "{err}");
-        // Nothing was spawned — the capability does not exist, so there
+        // Nothing was spawned - the capability does not exist, so there
         // is no graceful riverctl fallback to attempt.
         assert!(riverctl_log(dir.path()).is_empty());
     }

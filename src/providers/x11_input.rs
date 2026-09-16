@@ -1,11 +1,11 @@
-//! X11-native input injection via the pinned `xdotool` binary — the X11
+//! X11-native input injection via the pinned `xdotool` binary - the X11
 //! rung of the input fallback ladder (`InputBackend::Xdotool`), live only
 //! when [`X11Input::new`] sees a non-empty `DISPLAY`.
 //!
 //! Every action is one `xdotool` invocation under the scrubbed
 //! environment + per-spawn timeout of [`crate::security::spawn`], with
 //! the binary path canonicalized by [`crate::security::whitelist`] at
-//! construction — a `PATH` hijack after construction cannot substitute a
+//! construction - a `PATH` hijack after construction cannot substitute a
 //! trojan, and a wedged child cannot hang a call. No shell is involved:
 //! every argument is a separate argv entry, so key names and typed text
 //! can never be reinterpreted as syntax.
@@ -13,21 +13,21 @@
 //! Mapping notes:
 //!
 //! - `key_event` maps `down`/`up` to `xdotool keydown`/`keyup`, *not*
-//!   `xdotool key` — the tools layer holds modifiers across calls (e.g.
-//!   `key_event("Control_L", true)` … `key_event("c", …)` …
+//!   `xdotool key` - the tools layer holds modifiers across calls (e.g.
+//!   `key_event("Control_L", true)` ... `key_event("c", ...)` ...
 //!   `key_event("Control_L", false)`), so press/release must be
 //!   expressible independently. A `+`-joined chord (`"ctrl+alt+t"`)
 //!   resolves each part and passes them all to one invocation; `up`
 //!   releases in reverse order.
 //! - `mouse_click(x, y, b)` is a single `xdotool mousemove x y click N`
-//!   — one spawn, so the pointer can never be observed mid-flight. The
+//!   - one spawn, so the pointer can never be observed mid-flight. The
 //!   trait has no double-click primitive; the `mouse_double_click` tool
 //!   already composes two `mouse_click` calls inside the click interval
 //!   (`xdotool click --repeat 2` remains the equivalent native form).
 //! - `scroll(dx, dy)` emits wheel buttons 4/5/6/7 (up/down/left/right)
 //!   with `click --repeat`, carrying sub-detent remainders across calls
 //!   like [`super::uinput_input`]'s `wheel_acc`.
-//! - `type_text` uses `xdotool type --delay 0 -- <text>` — the `--`
+//! - `type_text` uses `xdotool type --delay 0 -- <text>` - the `--`
 //!   end-of-options marker keeps a leading `-` in the payload from being
 //!   parsed as a flag.
 
@@ -61,7 +61,7 @@ fn x11_display() -> Option<()> {
     (!d.is_empty()).then_some(())
 }
 
-/// Pinned `<bin> <args>` → stdout bytes; non-zero exit is an error.
+/// Pinned `<bin> <args>` -> stdout bytes; non-zero exit is an error.
 /// (Sibling copies live in `x11_capture.rs` / `x11_window.rs`.)
 async fn run(bin: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let mut cmd = spawn::command(bin, args);
@@ -88,7 +88,7 @@ impl X11Input {
     }
 
     /// [`Self::new`] against a caller-supplied pin set, minus the
-    /// `DISPLAY` session gate — the testable seam: hermetic tests resolve
+    /// `DISPLAY` session gate - the testable seam: hermetic tests resolve
     /// a fresh `PinnedBins` over a tempdir `PATH` and exercise the real
     /// spawn paths without mutating process env.
     pub fn with_pins(pins: &whitelist::PinnedBins) -> Option<Self> {
@@ -101,7 +101,7 @@ impl X11Input {
 
 /// X11 button number for a button name. `InputProvider` callers pass
 /// "left" | "right" | "middle"; the extras cover navigation buttons
-/// (X11 numbering: 4–7 are the wheel and are never used here — scroll
+/// (X11 numbering: 4-7 are the wheel and are never used here - scroll
 /// emits them directly).
 fn button_number(name: &str) -> Option<&'static str> {
     Some(match name.to_ascii_lowercase().as_str() {
@@ -124,7 +124,7 @@ fn normalize_name(name: &str) -> String {
         .collect()
 }
 
-/// Friendly/compact key names → canonical X keysym names `xdotool`
+/// Friendly/compact key names -> canonical X keysym names `xdotool`
 /// understands. The caller-visible contract is XKB keysym names
 /// (`tools::keyboard` passes `Control_L`, `Shift_L`, `Return`, `F5`,
 /// `Left`, single characters); this table covers the common aliases the
@@ -168,8 +168,8 @@ fn key_alias(n: &str) -> Option<&'static str> {
 }
 
 /// Resolve one key name to the spelling passed to `xdotool
-/// keydown`/`keyup`. Order: alias table → `F1`–`F24` → literal single
-/// character → already-canonical keysym spelling (forwarded to
+/// keydown`/`keyup`. Order: alias table -> `F1`-`F24` -> literal single
+/// character -> already-canonical keysym spelling (forwarded to
 /// `XStringToKeysym`; a bogus name makes `xdotool` exit non-zero, which
 /// surfaces as a normal backend error).
 fn xdotool_key_name(name: &str) -> Option<String> {
@@ -184,7 +184,7 @@ fn xdotool_key_name(name: &str) -> Option<String> {
         && !rest.is_empty()
         && rest.chars().all(|c| c.is_ascii_digit())
     {
-        // f<digits> spells an F-key — only F1..=F24 exist; anything
+        // f<digits> spells an F-key - only F1..=F24 exist; anything
         // outside the range is a bad name, not a passthrough keysym.
         let f: u32 = rest.parse().ok()?;
         return (1..=24).contains(&f).then(|| format!("F{f}"));
@@ -209,7 +209,7 @@ fn detents(delta: f64, acc: &mut f64) -> i32 {
     steps
 }
 
-/// `NAME=value` line in `--shell` output → integer value. Kept in sync
+/// `NAME=value` line in `--shell` output -> integer value. Kept in sync
 /// with the sibling copy in `x11_capture.rs`.
 fn shell_var_i64(s: &str, key: &str) -> Option<i64> {
     for line in s.lines() {
@@ -224,7 +224,7 @@ fn shell_var_i64(s: &str, key: &str) -> Option<i64> {
     None
 }
 
-/// `xdotool getmouselocation --shell` output → `(x, y)`.
+/// `xdotool getmouselocation --shell` output -> `(x, y)`.
 fn parse_getmouselocation(s: &str) -> Option<(i32, i32)> {
     Some((shell_var_i64(s, "X")? as i32, shell_var_i64(s, "Y")? as i32))
 }
@@ -254,7 +254,7 @@ impl InputProvider for X11Input {
     }
 
     /// `dx`/`dy` are wheel steps; positive scrolls right / down. X11
-    /// wheel buttons: 4 up, 5 down, 6 left, 7 right — `click --repeat N`
+    /// wheel buttons: 4 up, 5 down, 6 left, 7 right - `click --repeat N`
     /// emits N detents.
     async fn scroll(&self, dx: f64, dy: f64) -> Result<()> {
         if !dx.is_finite() || !dy.is_finite() {
@@ -281,7 +281,7 @@ impl InputProvider for X11Input {
     }
 
     async fn key_event(&self, key: &str, down: bool) -> Result<()> {
-        // Resolve every chord member before spawning — a bad name can
+        // Resolve every chord member before spawning - a bad name can
         // never leave a half-held modifier behind.
         let mut names = Vec::new();
         for part in key.split('+') {
@@ -305,7 +305,7 @@ impl InputProvider for X11Input {
         run_ok(&self.xdotool, &["type", "--delay", "0", "--", text]).await
     }
 
-    /// `xdotool getmouselocation --shell` → `X=`/`Y=` pair.
+    /// `xdotool getmouselocation --shell` -> `X=`/`Y=` pair.
     async fn cursor_position(&self) -> Result<(i32, i32)> {
         let stdout = run(&self.xdotool, &["getmouselocation", "--shell"]).await?;
         parse_getmouselocation(&String::from_utf8_lossy(&stdout))
@@ -318,7 +318,7 @@ impl InputProvider for X11Input {
 // ---------------------------------------------------------------------------
 //
 // SAFETY: the hermetic tests spawn only the fake `xdotool` written into a
-// tempdir — `with_pins` + `PinnedBins::resolve_in` never consults the
+// tempdir - `with_pins` + `PinnedBins::resolve_in` never consults the
 // real `PATH`, so no test can inject input on a live display. The single
 // `new()` test removes `DISPLAY` first, exiting through the early-`None`
 // path before any spawn.
@@ -417,7 +417,7 @@ mod tests {
     fn detents_accumulate_fractional_scrolls() {
         let mut acc = 0.0;
         assert_eq!(detents(0.4, &mut acc), 0);
-        assert_eq!(detents(0.4, &mut acc), 1); // 0.8 → 1 detent
+        assert_eq!(detents(0.4, &mut acc), 1); // 0.8 -> 1 detent
         assert_eq!(detents(-0.6, &mut acc), -1);
         assert_eq!(detents(0.0, &mut acc), 0);
     }
@@ -490,10 +490,10 @@ mod tests {
         let pins = whitelist::PinnedBins::resolve_in(&[dir.path().to_path_buf()]);
         let input = X11Input::with_pins(&pins).unwrap();
 
-        input.scroll(0.0, -3.0).await.unwrap(); // up → button 4
-        input.scroll(0.0, 2.0).await.unwrap(); // down → button 5
-        input.scroll(-1.0, 0.0).await.unwrap(); // left → button 6
-        input.scroll(4.0, 0.0).await.unwrap(); // right → button 7
+        input.scroll(0.0, -3.0).await.unwrap(); // up -> button 4
+        input.scroll(0.0, 2.0).await.unwrap(); // down -> button 5
+        input.scroll(-1.0, 0.0).await.unwrap(); // left -> button 6
+        input.scroll(4.0, 0.0).await.unwrap(); // right -> button 7
         input.scroll(0.0, 0.0).await.unwrap(); // no-op: no spawn
 
         assert_eq!(
@@ -539,7 +539,7 @@ mod tests {
             ]
         );
 
-        // A bad name fails before any spawn — the log is unchanged.
+        // A bad name fails before any spawn - the log is unchanged.
         let before = log(dir.path());
         assert!(input.key_event("bad;name", true).await.is_err());
         assert_eq!(log(dir.path()), before);

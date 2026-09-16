@@ -34,7 +34,7 @@ optdepends=(
 install=ultranix-mcp.install
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
 # Regenerate in this directory with `updpkgsums` (or `makepkg -g`) after
-# the v1.4.0 tag is pushed — the archive hash cannot exist before the tag
+# the v1.4.0 tag is pushed - the archive hash cannot exist before the tag
 # does. SKIP is intentional until then.
 sha256sums=('SKIP')
 

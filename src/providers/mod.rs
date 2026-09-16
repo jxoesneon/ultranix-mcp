@@ -1,10 +1,10 @@
-//! Provider registry — the `Option<Arc<dyn Trait>>` injection point.
+//! Provider registry - the `Option<Arc<dyn Trait>>` injection point.
 //! Backends register themselves at startup; `None` slots make tools
 //! degrade to `-32010 ProviderUnavailable` instead of failing silently.
 
 // Per-backend feature gates (Cargo.toml `[features]`): disabling a group
 // compiles out its provider modules; the detect ladder still plans the
-// backend but construction yields `None` → honest ProviderUnavailable.
+// backend but construction yields `None` -> honest ProviderUnavailable.
 #[cfg(feature = "a11y")]
 pub mod atspi;
 #[cfg(feature = "browser")]
@@ -54,12 +54,12 @@ pub struct Providers {
     pub window: Option<Arc<dyn WindowProvider>>,
     pub vision: Option<Arc<dyn VisionProvider>>,
     pub browser: Option<Arc<dyn BrowserProvider>>,
-    /// Visual overlay (`screen_highlight`) — layer-shell or equivalent.
+    /// Visual overlay (`screen_highlight`) - layer-shell or equivalent.
     pub overlay: Option<Arc<dyn OverlayProvider>>,
-    /// Clipboard backend (`clipboard_*` tools) — wl-clipboard or xclip.
+    /// Clipboard backend (`clipboard_*` tools) - wl-clipboard or xclip.
     pub clipboard: Option<Arc<dyn ClipboardProvider>>,
     /// Backend names that actually initialised (e.g. `"wlr-screencopy"`,
-    /// `"atspi2"`) — surfaced in `capabilities.ultranix.providers`.
+    /// `"atspi2"`) - surfaced in `capabilities.ultranix.providers`.
     pub backend_names: Vec<&'static str>,
 }
 
@@ -88,7 +88,7 @@ impl Providers {
         }
     }
 
-    /// Empty registry — every tool reports `ProviderUnavailable`.
+    /// Empty registry - every tool reports `ProviderUnavailable`.
     pub fn empty() -> Self {
         Self::default()
     }

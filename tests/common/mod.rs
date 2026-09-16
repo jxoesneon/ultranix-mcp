@@ -1,12 +1,12 @@
 //! Shared helpers + the frozen Phase-0 tool catalog for the dispatch
-//! test-suite. Mirrors docs/TOOLS.md — the contract under test.
+//! test-suite. Mirrors docs/TOOLS.md - the contract under test.
 #![allow(dead_code)]
 
 use rmcp::model::{CallToolResult, ErrorData};
 use serde_json::{Map, Value, json};
 use ultranix_mcp::providers::Providers;
 
-/// The frozen catalog: `(tool_name, category)` — 40 entries, order matches
+/// The frozen catalog: `(tool_name, category)` - 40 entries, order matches
 /// the Tool Summary table in docs/TOOLS.md.
 pub const TOOLS: &[(&str, &str)] = &[
     // mouse (7)
@@ -103,7 +103,7 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
 /// Tools implemented by a provider backend (per the Tool Summary "Backend"
 /// column). Server-core tools (`sleep`, `set_spatial_focus`,
 /// `system_command`, `metrics`, `get_action_history`, `replay_action`,
-/// `clear_action_history`, `plugin_*`) are excluded — they never produce
+/// `clear_action_history`, `plugin_*`) are excluded - they never produce
 /// -32010.
 pub fn is_provider_backed(name: &str) -> bool {
     !matches!(
@@ -209,7 +209,7 @@ pub fn valid_args(name: &str) -> Map<String, Value> {
     }
 }
 
-/// Schema-invalid arguments for each tool — every entry is a violation the
+/// Schema-invalid arguments for each tool - every entry is a violation the
 /// frozen inputSchema must reject with -32602 InvalidParams.
 pub fn invalid_args(name: &str) -> Map<String, Value> {
     match name {
@@ -319,7 +319,7 @@ pub async fn focus_lock() -> tokio::sync::MutexGuard<'static, ()> {
     L.lock().await
 }
 
-/// Serializes tests that mutate process env vars — parallel tests in
+/// Serializes tests that mutate process env vars - parallel tests in
 /// the same binary share one environment, so mutation must hold this
 /// lock for the whole scope (see [`ScopedStateDir`]). Async-aware
 /// mutex, same rationale as [`focus_lock`].
@@ -328,13 +328,13 @@ pub async fn env_lock() -> tokio::sync::MutexGuard<'static, ()> {
     L.lock().await
 }
 
-/// RAII override pointing `ULTRANIX_MCP_STATE_DIR` at a test tempdir —
+/// RAII override pointing `ULTRANIX_MCP_STATE_DIR` at a test tempdir -
 /// restores the previous value on drop. Always construct under
 /// [`env_lock`].
 ///
 /// Why it exists: dispatch-level calls that resolve the *ambient* state
-/// root — `screen_record`'s `rec-<ulid>` output dir, the `plugin_*`
-/// manifest scan — would otherwise write into / read from the real
+/// root - `screen_record`'s `rec-<ulid>` output dir, the `plugin_*`
+/// manifest scan - would otherwise write into / read from the real
 /// `~/.ultranix-mcp/` tree (or `/tmp`) during integration tests: the
 /// `#[cfg(test)]` `TEST_RECORDING_BASE` seam does not exist in the lib
 /// build these tests link against. `preferred_captures_base` resolves

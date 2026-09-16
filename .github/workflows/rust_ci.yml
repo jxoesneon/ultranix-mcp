@@ -9,7 +9,7 @@ on:
     # applying the `live` label; every other job already ran on
     # opened/synchronize/reopened.
     types: [opened, synchronize, reopened, labeled]
-  # Manual dispatch is the primary gate for the nested-compositor rig —
+  # Manual dispatch is the primary gate for the nested-compositor rig -
   # github-hosted runners ship no Wayland compositor.
   workflow_dispatch:
 
@@ -124,7 +124,7 @@ jobs:
   # exercised; get_windows correctly returns -32010 (the window provider
   # is hyprctl-only). On a self-hosted CachyOS/Hyprland runner the same
   # script auto-detects `Hyprland` and exercises the nested-in-session
-  # path instead — trigger it there with `workflow_dispatch`.
+  # path instead - trigger it there with `workflow_dispatch`.
   nested-live:
     name: nested compositor (live)
     if: >-

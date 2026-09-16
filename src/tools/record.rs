@@ -1,4 +1,4 @@
-//! Bounded screen recording — `screen_record` (ROADMAP post-v1
+//! Bounded screen recording - `screen_record` (ROADMAP post-v1
 //! "Streaming capture"). This is the honest bounded version of the idea,
 //! not a live stream: the tool captures one frame per `interval_ms` for
 //! up to `duration_ms`, writes each frame's PNG into a fresh
@@ -7,12 +7,12 @@
 //! [`MAX_RECORD_BYTES`] written, whichever hits first.
 //!
 //! Mid-record cancellation is deliberately out of scope: the call runs
-//! to its bound (duration, frame cap, or byte cap) and then returns —
+//! to its bound (duration, frame cap, or byte cap) and then returns -
 //! `duration_ms <= 30_000` keeps that bounded by construction. Callers
 //! wanting "live" UX should re-invoke with small `duration_ms` values.
 //!
-//! The tool is **not** consent-gated: it reads pixels and writes only
-//! into a fresh server-owned `0700` directory — nothing caller-chosen
+//! The tool is **not**consent-gated: it reads pixels and writes only
+//! into a fresh server-owned `0700` directory - nothing caller-chosen
 //! is written or destroyed.
 
 use std::path::{Path, PathBuf};
@@ -31,14 +31,14 @@ use super::{
 use crate::providers::Providers;
 use crate::traits::{CaptureProvider, Rect};
 
-/// `duration_ms` bounds — spec: 100..=30_000.
+/// `duration_ms` bounds - spec: 100..=30_000.
 const MIN_DURATION_MS: u64 = 100;
 const MAX_DURATION_MS: u64 = 30_000;
-/// `interval_ms` bounds — spec: default 250, 50..=5_000.
+/// `interval_ms` bounds - spec: default 250, 50..=5_000.
 const DEFAULT_INTERVAL_MS: u64 = 250;
 const MIN_INTERVAL_MS: u64 = 50;
 const MAX_INTERVAL_MS: u64 = 5_000;
-/// Hard frame cap — independent of the duration/interval product.
+/// Hard frame cap - independent of the duration/interval product.
 const MAX_FRAMES: u64 = 600;
 /// Hard cap on total bytes written per recording (512 MiB). Exceeding it
 /// aborts the loop cleanly with `truncated: true` and a partial result.
@@ -64,7 +64,7 @@ struct RecordParams {
     display: Option<String>,
 }
 
-/// `screenshot`'s `region` shape — vision.rs keeps its `RegionParam`
+/// `screenshot`'s `region` shape - vision.rs keeps its `RegionParam`
 /// private, so the convention is mirrored here (x/y logical layout
 /// coords, w/h >= 1).
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -112,7 +112,7 @@ fn capture_backend_name(providers: &Providers) -> &'static str {
         .unwrap_or("unknown")
 }
 
-/// `-32603` for recording-dir plumbing faults — the same mapping
+/// `-32603` for recording-dir plumbing faults - the same mapping
 /// `exec_system_command` uses for its capture-dir creation.
 fn recording_dir_error(e: anyhow::Error) -> ErrorData {
     ErrorData::new(
@@ -124,7 +124,7 @@ fn recording_dir_error(e: anyhow::Error) -> ErrorData {
 
 /// Resolve this call's recording directory: a fresh `rec-<ulid>` leaf
 /// under the captures root (`<state>/captures` preferred, `/tmp`
-/// fallback — [`crate::security::captures::fresh_recording_dir`]). The
+/// fallback - [`crate::security::captures::fresh_recording_dir`]). The
 /// `#[cfg(test)]` base override keeps dispatch-level tests hermetic.
 fn recording_dir() -> Result<PathBuf, ErrorData> {
     #[cfg(test)]
@@ -147,8 +147,8 @@ fn test_recording_base() -> Option<PathBuf> {
         .clone()
 }
 
-/// `display` → output layout-rect resolution, mirroring `screenshot`'s
-/// rules: backend `screen_info` → named output rect. Unknown names are
+/// `display` -> output layout-rect resolution, mirroring `screenshot`'s
+/// rules: backend `screen_info` -> named output rect. Unknown names are
 /// `-32602`; a backend with no output geometry is an honest `isError`.
 enum DisplayResolve {
     Backend(anyhow::Error),
@@ -183,7 +183,7 @@ pub(super) fn tools() -> Vec<Tool> {
         "Record a bounded burst of screen captures: one PNG frame every interval_ms \
          for up to duration_ms (hard caps: 600 frames, 512 MiB written). Frames plus \
          a manifest.json land in a fresh rec-<ulid> dir under the captures root. The \
-         call always runs to its bound — mid-record cancellation is not supported.",
+         call always runs to its bound - mid-record cancellation is not supported.",
     )]
 }
 
@@ -259,11 +259,11 @@ async fn screen_record(
 }
 
 /// The capture/write loop, factored out of [`screen_record`] so tests
-/// drive it against an explicit `dir` + `byte_cap` — no env mutation,
+/// drive it against an explicit `dir` + `byte_cap` - no env mutation,
 /// no real state-dir writes.
 ///
 /// Loop contract: tick the interval, capture, byte-cap check, async-fs
-/// write, repeat — until `frame_target` frames are written, `duration`
+/// write, repeat - until `frame_target` frames are written, `duration`
 /// elapses, the byte cap would be crossed, or the backend/FS fails.
 /// `MissedTickBehavior::Delay` keeps successive captures at least
 /// `interval_ms` apart (a slow capture never triggers a catch-up burst).
@@ -304,7 +304,7 @@ async fn record_run(
             }
         };
         let size = frame.png.len() as u64;
-        // The frame that would cross the cap is dropped, not written —
+        // The frame that would cross the cap is dropped, not written -
         // `total_bytes` therefore never exceeds `byte_cap`.
         if total_bytes + size > byte_cap {
             truncated = true;
@@ -409,16 +409,16 @@ mod tests {
         dir
     }
 
-    /// A capture backend whose frames are `bytes` of payload — the tool
+    /// A capture backend whose frames are `bytes` of payload - the tool
     /// never decodes PNG, so raw bytes exercise the byte-cap path.
     struct BigFrameCapture {
         bytes: usize,
     }
 
-    /// Fails every capture — the no-backend-frames path.
+    /// Fails every capture - the no-backend-frames path.
     struct FailingCapture;
 
-    /// Succeeds `ok_frames` times, then fails — the mid-record fault path.
+    /// Succeeds `ok_frames` times, then fails - the mid-record fault path.
     struct FlakyCapture {
         ok_frames: usize,
         calls: AtomicUsize,

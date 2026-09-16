@@ -1,4 +1,4 @@
-//! Runtime access-control policy — per-key scoping, `--readonly`, and
+//! Runtime access-control policy - per-key scoping, `--readonly`, and
 //! per-tool allow/deny lists (docs/adr/0010-policy-controls.md).
 //!
 //! The policy is loaded once at startup from a TOML file and/or CLI flags.
@@ -22,7 +22,7 @@ pub struct Policy {
     pub default_role: Role,
     #[serde(default)]
     pub roles: HashMap<String, Role>,
-    /// key_id fingerprint → role name.
+    /// key_id fingerprint -> role name.
     #[serde(default)]
     pub keys: HashMap<String, String>,
 }
@@ -51,7 +51,7 @@ impl Policy {
     /// named roles and per-key mappings.
     ///
     /// `file` semantics are fail-closed: `Some(path)` means the caller
-    /// *named* a file, so a missing or unparsable file is a startup error —
+    /// *named* a file, so a missing or unparsable file is a startup error -
     /// never a silent fallback to the permissive default. `None` means "no
     /// file was requested" and yields the default policy.
     pub fn from_file_and_cli(
@@ -141,7 +141,7 @@ impl Policy {
             {
                 if crate::tools::category_of(tool).is_none() {
                     // Plugin-exposed tool names are valid targets but live
-                    // outside the static catalog — name grammar
+                    // outside the static catalog - name grammar
                     // distinguishes a plausible plugin tool from a typo.
                     let plausible_plugin_name =
                         tool.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
@@ -152,7 +152,7 @@ impl Policy {
                         tracing::debug!(
                             role = %role_name,
                             tool = %tool,
-                            "policy references a non-catalog name — expected for plugin-exposed tools"
+                            "policy references a non-catalog name - expected for plugin-exposed tools"
                         );
                     } else {
                         tracing::warn!(
@@ -265,13 +265,13 @@ allow_tools = ["type_text", "screenshot"]
 
     #[test]
     fn missing_explicit_file_is_a_startup_error() {
-        // Fail-closed: an explicitly named policy file must exist — a typo'd
+        // Fail-closed: an explicitly named policy file must exist - a typo'd
         // path must not silently grant the permissive default.
         assert!(
             Policy::from_file_and_cli(Some(Path::new("/definitely/missing")), false, &[], &[])
                 .is_err()
         );
-        // No file requested → default policy.
+        // No file requested -> default policy.
         let policy = Policy::from_file_and_cli(None, false, &[], &[]).unwrap();
         assert!(std::ptr::eq(policy.resolve(None), &policy.default_role));
         assert!(std::ptr::eq(

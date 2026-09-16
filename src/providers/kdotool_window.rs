@@ -1,4 +1,4 @@
-//! KDE `WindowProvider` — `kdotool`, the xdotool clone for KWin. The KDE
+//! KDE `WindowProvider` - `kdotool`, the xdotool clone for KWin. The KDE
 //! rung of the window fallback ladder ([`WindowBackend::Kdotool`]), live
 //! on both Wayland and X11 Plasma sessions: kdotool drives KWin through
 //! its scripting API (each invocation generates a KWin script, loads it
@@ -8,46 +8,46 @@
 //! Every spawn is the canonicalized absolute path pinned by
 //! [`crate::security::whitelist`] at construction, under the scrubbed
 //! environment + per-spawn timeout of [`crate::security::spawn`]. No
-//! shell is involved — window ids pass straight through argv, and
+//! shell is involved - window ids pass straight through argv, and
 //! [`valid_window_id`] restricts them to the braced-UUID shape so a
 //! malformed id fails before any spawn.
 //!
 //! Listing and query semantics:
 //!
-//! - Window ids are KWin `internalId`s — `{xxxxxxxx-…}` UUIDs, printed
-//!   braced. They are **not** X11 window ids even on X11 sessions, and
+//! - Window ids are KWin `internalId`s - `{xxxxxxxx-...}` UUIDs, printed
+//!   braced. They are **not**X11 window ids even on X11 sessions, and
 //!   `%N`/`%@` stack references are meaningless across invocations
 //!   (each spawn is a fresh script with an empty stack), so only the
 //!   braced shape is accepted back from callers.
 //! - `list_windows` = `search ""` (empty regex matches every managed
-//!   window — panels/OSDs included, like `wmctrl -l`'s sticky/desktop
+//!   window - panels/OSDs included, like `wmctrl -l`'s sticky/desktop
 //!   entries) + `getactivewindow` for `focused`. Per-window fields come
-//!   from one chained spawn per window — `getwindowname`,
+//!   from one chained spawn per window - `getwindowname`,
 //!   `getwindowclassname`, `getwindowgeometry`, `getwindowpid`,
-//!   `get_desktop_for_window` — each getter emits exactly one result
+//!   `get_desktop_for_window` - each getter emits exactly one result
 //!   line (`"null"` when KWin has no value), so the block parses
 //!   positionally around the `Window {id}` marker `getwindowgeometry`
 //!   prints. A failed or empty describe degrades the window's fields,
 //!   never the listing (mirroring `x11_window`'s enrichment).
 //! - `workspace` is the window's x11 desktop number; KWin
-//!   `onAllDesktops` windows report `null` → `-1`, the same "sticky"
+//!   `onAllDesktops` windows report `null` -> `-1`, the same "sticky"
 //!   convention `wmctrl` uses.
-//! - `floating`/`fullscreen`/`monitor` have no kdotool readout → `None`.
+//! - `floating`/`fullscreen`/`monitor` have no kdotool readout -> `None`.
 //!   `pid` is best-effort (`w.pid` is `null` for clients that don't
 //!   report it, and non-positive pids are never real clients).
 //!
-//! Dispatch mapping (closed set — the `kwinscript` arbitrary-JS
+//! Dispatch mapping (closed set - the `kwinscript` arbitrary-JS
 //! primitive, `set_desktop`, `windowstate`, and every other verb are
 //! unreachable through [`WindowProvider::dispatch`]):
 //!
-//! - `focus` → `windowactivate` (KWin switches desktop when needed —
+//! - `focus` -> `windowactivate` (KWin switches desktop when needed -
 //!   that is KWin's focus semantic).
-//! - `move` → `windowmove <x> <y>`; `dx,dy` → `windowmove --relative`.
-//! - `resize` → `windowsize <w> <h>` (absolute only — kdotool has no
+//! - `move` -> `windowmove <x> <y>`; `dx,dy` -> `windowmove --relative`.
+//! - `resize` -> `windowsize <w> <h>` (absolute only - kdotool has no
 //!   relative-resize form, so `dw,dh` fails honestly).
-//! - `minimize` → `windowminimize` (KWin's real minimized state, unlike
+//! - `minimize` -> `windowminimize` (KWin's real minimized state, unlike
 //!   sway's scratchpad approximation).
-//! - `close` → `windowclose`.
+//! - `close` -> `windowclose`.
 //!
 //! [`WindowBackend::Kdotool`]: crate::backend::detect::WindowBackend::Kdotool
 
@@ -62,7 +62,7 @@ use crate::traits::{Rect, WindowInfo, WindowProvider};
 
 /// KWin window management via the `kdotool` CLI.
 pub struct KdotoolWindow {
-    /// Pinned `kdotool` — every query and dispatch spawns it.
+    /// Pinned `kdotool` - every query and dispatch spawns it.
     kdotool: PathBuf,
 }
 
@@ -72,7 +72,7 @@ const _: () = {
     assert_send_sync::<KdotoolWindow>();
 };
 
-/// Session gate: a live KDE/Plasma session marker — `KDE_SESSION_VERSION`
+/// Session gate: a live KDE/Plasma session marker - `KDE_SESSION_VERSION`
 /// (the authoritative signal, matching `SessionKind::Kde`) or an
 /// `XDG_CURRENT_DESKTOP` containing kde/plasma. The window ladder only
 /// reaches this provider on KDE sessions; the check is the last-resort
@@ -87,7 +87,7 @@ fn kde_session() -> Option<()> {
     (desktop.contains("kde") || desktop.contains("plasma")).then_some(())
 }
 
-/// Pinned `<bin> <args>` → stdout bytes; non-zero exit is an error.
+/// Pinned `<bin> <args>` -> stdout bytes; non-zero exit is an error.
 /// (Sibling copies live in `x11_window.rs` / `clipboard.rs`.)
 async fn run(bin: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let mut cmd = spawn::command(bin, args);
@@ -106,7 +106,7 @@ async fn run_argv(bin: &Path, args: &[String]) -> Result<()> {
     run(bin, &argv).await.map(|_| ())
 }
 
-/// Per-window fields gathered in one chained `kdotool` invocation —
+/// Per-window fields gathered in one chained `kdotool` invocation -
 /// see [`KdotoolWindow::describe`].
 #[derive(Debug, Default)]
 struct Describe {
@@ -114,7 +114,7 @@ struct Describe {
     class: String,
     rect: Option<Rect>,
     pid: Option<i64>,
-    /// x11 desktop number; `None` = onAllDesktops/unparseable → `-1`.
+    /// x11 desktop number; `None` = onAllDesktops/unparseable -> `-1`.
     desktop: Option<i32>,
 }
 
@@ -127,7 +127,7 @@ impl KdotoolWindow {
     }
 
     /// [`Self::new`] against a caller-supplied pin set, minus the KDE
-    /// session gate — the testable seam: hermetic tests resolve a fresh
+    /// session gate - the testable seam: hermetic tests resolve a fresh
     /// `PinnedBins` over a tempdir `PATH` and exercise the real spawn
     /// paths without mutating process env.
     pub fn with_pins(pins: &whitelist::PinnedBins) -> Option<Self> {
@@ -136,7 +136,7 @@ impl KdotoolWindow {
         })
     }
 
-    /// `getactivewindow` → the focused `internalId`, or `None` when
+    /// `getactivewindow` -> the focused `internalId`, or `None` when
     /// nothing is focused or the helper failed.
     async fn active_window_id(&self) -> Option<String> {
         let out = run(&self.kdotool, &["getactivewindow"]).await.ok()?;
@@ -146,10 +146,10 @@ impl KdotoolWindow {
     }
 
     /// One chained spawn gathering a window's title, class, geometry,
-    /// pid and desktop — five `output_result` getters against the same
+    /// pid and desktop - five `output_result` getters against the same
     /// script run, so the block is a consistent snapshot. `None` when
     /// the invocation fails or the window vanished before answering
-    /// (the id loop finds no match → empty stdout).
+    /// (the id loop finds no match -> empty stdout).
     async fn describe(&self, id: &str) -> Option<Describe> {
         let out = run(
             &self.kdotool,
@@ -178,7 +178,7 @@ impl WindowProvider for KdotoolWindow {
         let out = run(&self.kdotool, &["search", ""]).await?;
         let ids = parse_id_list(&String::from_utf8_lossy(&out));
         let active = self.active_window_id().await;
-        // Each describe is an independent spawn — run them concurrently;
+        // Each describe is an independent spawn - run them concurrently;
         // join_all preserves id order, and a failed describe still
         // degrades that window's fields rather than failing the listing.
         let describes =
@@ -196,7 +196,7 @@ impl WindowProvider for KdotoolWindow {
         };
         let d = self.describe(&id).await;
         // A vanished/unanswerable active window still gets a minimal
-        // record rather than being dropped — same contract as
+        // record rather than being dropped - same contract as
         // `x11_window`'s fallback for ids absent from the EWMH list.
         Ok(Some(window_info(&id, d.as_ref(), true)))
     }
@@ -209,7 +209,7 @@ impl WindowProvider for KdotoolWindow {
     }
 }
 
-/// Describe → [`WindowInfo`]. Unreported fields keep their honest
+/// Describe -> [`WindowInfo`]. Unreported fields keep their honest
 /// defaults (zero rect, `workspace = -1`, `None` extras).
 fn window_info(id: &str, d: Option<&Describe>, focused: bool) -> WindowInfo {
     let (title, class, rect, pid, desktop) = match d {
@@ -252,7 +252,7 @@ fn window_info(id: &str, d: Option<&Describe>, focused: bool) -> WindowInfo {
     }
 }
 
-/// kdotool window ids are KWin `internalId`s — `{xxxxxxxx-…}` UUIDs
+/// kdotool window ids are KWin `internalId`s - `{xxxxxxxx-...}` UUIDs
 /// printed braced. Restricting to that exact shape keeps a malformed id
 /// (or a `%N`/`%@` stack reference, meaningless across invocations)
 /// from ever reaching a spawn.
@@ -263,7 +263,7 @@ fn valid_window_id(id: &str) -> bool {
     !inner.is_empty() && inner.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
-/// `search`/`getactivewindow` stdout → braced window ids, one per line.
+/// `search`/`getactivewindow` stdout -> braced window ids, one per line.
 /// Non-id lines (shouldn't occur) are dropped defensively.
 fn parse_id_list(text: &str) -> Vec<String> {
     text.lines()
@@ -273,11 +273,11 @@ fn parse_id_list(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Chained describe output → [`Describe`]. Layout (one line per
+/// Chained describe output -> [`Describe`]. Layout (one line per
 /// `output_result` call):
 ///
 /// ```text
-/// <caption — possibly multi-line>
+/// <caption - possibly multi-line>
 /// <resourceClass>
 /// Window {id}
 ///   Position: x,y
@@ -290,7 +290,7 @@ fn parse_id_list(text: &str) -> Vec<String> {
 /// block: everything above it is name (all but the last line) + class
 /// (the last line), which keeps a newline-carrying caption intact;
 /// pid/desktop are the two lines after the geometry pair. `None` when
-/// the marker is absent (window vanished → empty stdout).
+/// the marker is absent (window vanished -> empty stdout).
 fn parse_describe(text: &str) -> Option<Describe> {
     let lines: Vec<&str> = text.lines().collect();
     let wpos = lines
@@ -330,7 +330,7 @@ fn parse_describe(text: &str) -> Option<Describe> {
     })
 }
 
-/// `  Position: x,y` → (x, y). Negative coords pass through; a trailing
+/// `  Position: x,y` -> (x, y). Negative coords pass through; a trailing
 /// `(screen: N)`-style suffix (xdotool's shape, defensive) is dropped.
 fn parse_position(line: &str) -> Option<(i32, i32)> {
     let rest = line.split_once("Position:")?.1.trim();
@@ -339,7 +339,7 @@ fn parse_position(line: &str) -> Option<(i32, i32)> {
     Some((x.trim().parse().ok()?, y.parse().ok()?))
 }
 
-/// `  Geometry: WxH` → (w, h).
+/// `  Geometry: WxH` -> (w, h).
 fn parse_geometry(line: &str) -> Option<(i32, i32)> {
     let rest = line.split_once("Geometry:")?.1.trim();
     let (w, h) = rest.split_whitespace().next()?.split_once(['x', 'X'])?;
@@ -350,7 +350,7 @@ fn arg_i64(args: &Value, key: &str) -> Option<i64> {
     args.get(key)?.as_i64()
 }
 
-/// Build the argv for a `dispatch` action. Fixed mapping only — there is
+/// Build the argv for a `dispatch` action. Fixed mapping only - there is
 /// no path from this function to `kwinscript` (arbitrary KWin
 /// JavaScript), `set_desktop`, `windowstate`, `--shortcut`, or any other
 /// kdotool verb.
@@ -420,7 +420,7 @@ mod tests {
     const ID2: &str = "{b2b2b2b2-0000-0000-0000-000000000002}";
     const ID3: &str = "{c3c3c3c3-0000-0000-0000-000000000003}";
 
-    /// Shape mirrors a live `kdotool search ""` capture — one braced
+    /// Shape mirrors a live `kdotool search ""` capture - one braced
     /// `internalId` per line.
     const SEARCH_OUT: &str = "\
 {a1a1a1a1-0000-0000-0000-000000000001}
@@ -430,7 +430,7 @@ mod tests {
 
     /// Fake `kdotool`: logs every invocation to `<dir>/kdotool.log`,
     /// serves `search`/`getactivewindow` from fixture files, and answers
-    /// the chained per-window getters from `<getter>-{id}` fixtures —
+    /// the chained per-window getters from `<getter>-{id}` fixtures -
     /// emitting `null` (real kdotool's no-value line) when a fixture is
     /// absent. Dispatch verbs fall through to the log with exit 0.
     fn kdotool_script(dir: &Path) -> String {
@@ -475,7 +475,7 @@ mod tests {
 
         std::fs::write(
             dir.join(format!("getwindowname-{ID1}")),
-            "devin: onboarding\n",
+            "notes: onboarding\n",
         )
         .unwrap();
         std::fs::write(dir.join(format!("getwindowclassname-{ID1}")), "kitty\n").unwrap();
@@ -489,7 +489,7 @@ mod tests {
 
         std::fs::write(
             dir.join(format!("getwindowname-{ID2}")),
-            "devin: planning\n",
+            "notes: planning\n",
         )
         .unwrap();
         std::fs::write(dir.join(format!("getwindowclassname-{ID2}")), "kitty\n").unwrap();
@@ -501,8 +501,8 @@ mod tests {
         std::fs::write(dir.join(format!("getwindowpid-{ID2}")), "37382\n").unwrap();
         std::fs::write(dir.join(format!("get_desktop_for_window-{ID2}")), "2\n").unwrap();
 
-        // Panel: onAllDesktops → desktop fixture absent (fake emits
-        // "null"), no pid fixture either → "null".
+        // Panel: onAllDesktops -> desktop fixture absent (fake emits
+        // "null"), no pid fixture either -> "null".
         std::fs::write(dir.join(format!("getwindowname-{ID3}")), "panel\n").unwrap();
         std::fs::write(
             dir.join(format!("getwindowclassname-{ID3}")),
@@ -548,9 +548,9 @@ mod tests {
 
     #[test]
     fn parse_describe_full_block() {
-        let text = "devin: onboarding\nkitty\nWindow {a1}\n  Position: 10,45\n  Geometry: 625x745\n37381\n2\n";
+        let text = "notes: onboarding\nkitty\nWindow {a1}\n  Position: 10,45\n  Geometry: 625x745\n37381\n2\n";
         let d = parse_describe(text).unwrap();
-        assert_eq!(d.title, "devin: onboarding");
+        assert_eq!(d.title, "notes: onboarding");
         assert_eq!(d.class, "kitty");
         assert_eq!(
             d.rect,
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn parse_describe_null_fields() {
-        // onAllDesktops + unreported pid — kdotool prints "null".
+        // onAllDesktops + unreported pid - kdotool prints "null".
         let text =
             "panel\nplasmashell\nWindow {a1}\n  Position: 0,0\n  Geometry: 1920x24\nnull\nnull\n";
         let d = parse_describe(text).unwrap();
@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn parse_describe_multiline_caption_stays_intact() {
-        // A newline in the caption shifts the name block — the Window
+        // A newline in the caption shifts the name block - the Window
         // marker still anchors class/rect/pid/desktop correctly.
         let text =
             "line one\nline two\ncls\nWindow {a1}\n  Position: 1,2\n  Geometry: 3x4\nnull\n1\n";
@@ -603,10 +603,10 @@ mod tests {
 
     #[test]
     fn parse_describe_rejects_missing_marker_and_bad_geometry() {
-        // A vanished window yields empty stdout → no marker → None.
+        // A vanished window yields empty stdout -> no marker -> None.
         assert!(parse_describe("").is_none());
         assert!(parse_describe("just a title\n").is_none());
-        // Marker present but the geometry pair is broken → None (the
+        // Marker present but the geometry pair is broken -> None (the
         // describe fails as a unit rather than half-parsing).
         assert!(parse_describe("t\nc\nWindow {a1}\n  Position: x,y\n  Geometry: 3x4\n").is_none());
     }
@@ -681,7 +681,7 @@ mod tests {
         assert!(dispatch_argv("move", ID2, &json!({"x": 1})).is_err());
         assert!(dispatch_argv("resize", ID2, &json!({"w": 0, "h": 0})).is_err());
         assert!(dispatch_argv("resize", ID2, &json!({})).is_err());
-        // No relative-resize form exists in kdotool — honest error.
+        // No relative-resize form exists in kdotool - honest error.
         assert!(dispatch_argv("resize", ID2, &json!({"dw": 5, "dh": 5})).is_err());
     }
 
@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn new_is_none_outside_kde_session() {
-        // SAFETY: test-only env mutation, restored before returning —
+        // SAFETY: test-only env mutation, restored before returning -
         // the same pattern the sibling gate tests in x11_window.rs /
         // clipboard.rs use.
         let saved_v = std::env::var_os("KDE_SESSION_VERSION");
@@ -722,7 +722,7 @@ mod tests {
     #[test]
     fn kde_session_gate_forms() {
         // The gate itself: version marker, or a kde/plasma desktop name.
-        // (Read directly so no env mutation is needed — `kde_session`
+        // (Read directly so no env mutation is needed - `kde_session`
         // reads process env, so only the absent-env case is asserted;
         // the marker-present paths are covered implicitly by detection.)
         let saved_v = std::env::var_os("KDE_SESSION_VERSION");
@@ -760,7 +760,7 @@ mod tests {
         let windows = w.list_windows().await.unwrap();
         assert_eq!(windows.len(), 3);
         assert_eq!(windows[0].id, ID1);
-        assert_eq!(windows[0].title, "devin: onboarding");
+        assert_eq!(windows[0].title, "notes: onboarding");
         assert_eq!(windows[0].class, "kitty");
         assert_eq!(windows[0].workspace, 1);
         assert_eq!(
@@ -777,7 +777,7 @@ mod tests {
         assert_eq!(windows[1].rect.x, -5);
         assert!(windows[1].focused);
         assert!(!windows[0].focused);
-        // Panel: onAllDesktops → -1 (sticky convention), unreported pid.
+        // Panel: onAllDesktops -> -1 (sticky convention), unreported pid.
         assert_eq!(windows[2].workspace, -1);
         assert_eq!(windows[2].pid, None);
         // No kdotool readout exists for these.
@@ -797,7 +797,7 @@ mod tests {
 
         let active = w.active_window().await.unwrap().unwrap();
         assert_eq!(active.id, ID2);
-        assert_eq!(active.title, "devin: planning");
+        assert_eq!(active.title, "notes: planning");
         assert!(active.focused);
         assert_eq!(active.pid, Some(37382));
         assert_eq!(active.workspace, 2);

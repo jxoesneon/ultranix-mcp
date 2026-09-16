@@ -1,4 +1,4 @@
-//! Input sanitization — the first defense layer of the request pipeline.
+//! Input sanitization - the first defense layer of the request pipeline.
 //!
 //! Canonical spec: SECURITY.md "Request pipeline" and docs/TOOLS.md
 //! `system_command` error table (`-32006 SanitizationRejected`). Every argument
@@ -6,11 +6,11 @@
 //! (window addresses, output names, workspace selectors) additionally pass
 //! [`validate_identifier`]. All functions here are pure.
 
-/// Maximum accepted argument length — 64 KiB per the `SanitizationRejected`
+/// Maximum accepted argument length - 64 KiB per the `SanitizationRejected`
 /// trigger in docs/TOOLS.md ("oversized strings (>64 KiB)").
 pub const MAX_ARG_LEN: usize = 64 * 1024;
 
-/// Maximum accepted identifier length (window addresses, class names, …).
+/// Maximum accepted identifier length (window addresses, class names, ...).
 pub const MAX_IDENT_LEN: usize = 256;
 
 /// Shell metacharacters denied outright in any spawned-process argument.
@@ -19,13 +19,13 @@ const DENY_CHARS: &[char] = &[
     ';', '&', '|', '`', '$', '(', ')', '{', '}', '[', ']', '<', '>',
 ];
 
-/// Rejection reasons — callers map these to `-32006 SanitizationRejected`.
+/// Rejection reasons - callers map these to `-32006 SanitizationRejected`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SanitizeError {
     /// A shell metacharacter that must never reach an argv element.
     #[error("argument contains forbidden shell metacharacter {0:?}")]
     Metacharacter(char),
-    /// C0 control byte, DEL, or a C1 control character — includes NUL,
+    /// C0 control byte, DEL, or a C1 control character - includes NUL,
     /// CR, LF, TAB. Newline injection is a `hyprctl dispatch` smuggling
     /// vector (THREAT_MODEL.md "Tampering").
     #[error("argument contains forbidden control character U+{0:04X}")]
@@ -43,13 +43,13 @@ pub enum SanitizeError {
 
 /// Validate one argv element destined for a spawned process.
 ///
-/// Returns the input unchanged on success — sanitization here is
+/// Returns the input unchanged on success - sanitization here is
 /// *reject-don't-mutate*: silently rewriting an argument would change
 /// semantics the caller already committed to.
 ///
 /// Rejects:
 /// - shell metacharacters `; & | ` $ ( ) { } [ ] < >`
-/// - C0 control bytes (`< 0x20` — covers `\n`, `\r`, `\0`, `\t`), `DEL`
+/// - C0 control bytes (`< 0x20` - covers `\n`, `\r`, `\0`, `\t`), `DEL`
 /// - C1 control characters (`U+0080..=U+009F`)
 /// - arguments longer than [`MAX_ARG_LEN`]
 pub fn sanitize_arg(arg: &str) -> Result<&str, SanitizeError> {
@@ -68,14 +68,14 @@ pub fn sanitize_arg(arg: &str) -> Result<&str, SanitizeError> {
 }
 
 /// Validate an identifier-shaped argument (window address, output name,
-/// workspace selector, element id, …).
+/// workspace selector, element id, ...).
 ///
-/// Charset: ASCII alphanumeric plus `_ - . : @` — enough for Hyprland window
-/// addresses (`0x55f0…`), output names (`DP-1`), AT-SPI ids (`/a11y/…` style
-/// segments are *not* identifiers — slash is deliberately excluded), and
+/// Charset: ASCII alphanumeric plus `_ - . : @` - enough for Hyprland window
+/// addresses (`0x55f0...`), output names (`DP-1`), AT-SPI ids (`/a11y/...` style
+/// segments are *not* identifiers - slash is deliberately excluded), and
 /// workspace selectors. Length must be `1..=MAX_IDENT_LEN`.
 ///
-/// Note: `:` and `@` are admitted for `address:0x…` / `name@instance` forms;
+/// Note: `:` and `@` are admitted for `address:0x...` / `name@instance` forms;
 /// `.` permits `foo.bar` classes but `..` alone is still rejected because
 /// pure dot-sequences are path-traversal shaped.
 pub fn validate_identifier(ident: &str) -> Result<&str, SanitizeError> {
@@ -109,7 +109,7 @@ mod tests {
             "focuswindow",
             "movetoworkspace",
             "workspace 2",
-            "héllo wörld — ünïcode ok",
+            "héllo wörld - ünïcode ok",
             "50%",
             "name@instance",
             "/usr/bin/grim", // paths are fine as *strings*; path policy is paths.rs
@@ -195,7 +195,7 @@ mod tests {
         }
         for (bad, why) in [
             ("", "empty"),
-            ("a/b", "slash — traversal-shaped"),
+            ("a/b", "slash - traversal-shaped"),
             ("a\\b", "backslash"),
             ("a b", "space"),
             ("..", "dot-dot"),

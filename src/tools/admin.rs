@@ -1,4 +1,4 @@
-//! Admin & observability tools (10) — `WindowProvider` for windowing;
+//! Admin & observability tools (10) - `WindowProvider` for windowing;
 //! history tools run on the AES-256-GCM [`HistoryStore`]; `metrics`
 //! serves the live Prometheus exposition.
 
@@ -15,7 +15,7 @@ use crate::providers::Providers;
 use crate::security::history::{ActionRecord, HistoryStore};
 use crate::traits::{Rect, WindowInfo, WindowProvider};
 
-/// `-32014 HistoryError` — encrypted history store fault (docs/TOOLS.md
+/// `-32014 HistoryError` - encrypted history store fault (docs/TOOLS.md
 /// error taxonomy; not yet surfaced in `crate::error::codes`).
 const HISTORY_ERROR: i32 = -32014;
 
@@ -26,19 +26,19 @@ pub(super) const NON_REPLAYABLE: &[&str] = &[
     "get_action_history",
     "replay_action",
     "clear_action_history",
-    // Meta plugin tools: read-only catalog/rescan operations — nothing
+    // Meta plugin tools: read-only catalog/rescan operations - nothing
     // to replay, and recording them is noise. `plugin_run` IS recorded
     // (it's a real action) and replays only when its params redaction
     // leaves nothing to hide.
     "plugin_list",
     "plugin_reload",
     // Lifecycle, not an action: replaying `screen_stream{start}` would
-    // spawn a background capture task — the record is kept (audit/
+    // spawn a background capture task - the record is kept (audit/
     // history still apply) but replay is refused.
     "screen_stream",
 ];
 
-/// Tools never *recorded* to action history at all — replaying them is
+/// Tools never *recorded* to action history at all - replaying them is
 /// meaningless and recording them is noise. `screen_stream` is NOT here:
 /// its lifecycle events (`start`/`stop`) are recorded, while the
 /// polling actions are filtered by [`is_unrecorded`] below.
@@ -53,8 +53,8 @@ pub(super) const UNRECORDED: &[&str] = &[
 
 /// Whether a call is appended to action history. Whole-tool
 /// suppressions live in [`UNRECORDED`]; `screen_stream`'s polling
-/// actions (`status`/`latest`) are additionally suppressed — they are
-/// per-frame reads that would flood the bounded store — while `start`
+/// actions (`status`/`latest`) are additionally suppressed - they are
+/// per-frame reads that would flood the bounded store - while `start`
 /// and `stop` are lifecycle events worth keeping (and refusing to
 /// replay via [`NON_REPLAYABLE`]).
 pub(super) fn is_unrecorded(name: &str, args: &Value) -> bool {
@@ -68,7 +68,7 @@ pub(super) fn is_unrecorded(name: &str, args: &Value) -> bool {
         )
 }
 
-/// `-32014` with the `data.kind` discriminator — store faults (decrypt,
+/// `-32014` with the `data.kind` discriminator - store faults (decrypt,
 /// key, or filesystem) the caller sees.
 fn history_error(err: anyhow::Error) -> ErrorData {
     let detail = format!("{err:#}");
@@ -94,10 +94,10 @@ fn store<'a>(secured: &'a Option<Secured<'a>>) -> Result<&'a HistoryStore, Error
 /// (`Send + 'static`): `&'static` for the ambient shared store, `Arc`
 /// for the context-scoped one
 /// ([`crate::security::SecurityContext::history_arc`] exists for exactly
-/// this — EFF-1). Used by `clear_action_history`, whose wipe does real
+/// this - EFF-1). Used by `clear_action_history`, whose wipe does real
 /// file work; the read paths above keep their `&HistoryStore` borrows.
 enum StoreHandle {
-    /// The process-wide shared store — already `'static`.
+    /// The process-wide shared store - already `'static`.
     Ambient(&'static HistoryStore),
     /// Context-scoped store held by `Arc`.
     Scoped(std::sync::Arc<HistoryStore>),
@@ -113,7 +113,7 @@ impl std::ops::Deref for StoreHandle {
     }
 }
 
-/// [`store`] for the blocking wipe path — returns the movable handle.
+/// [`store`] for the blocking wipe path - returns the movable handle.
 fn store_handle(secured: &Option<Secured<'_>>) -> Result<StoreHandle, ErrorData> {
     if let Some(s) = secured {
         return s
@@ -154,9 +154,9 @@ impl WindowAction {
 struct WindowControlParams {
     /// Window operation to apply
     action: WindowAction,
-    /// Hyprland address ("0x…") or unique title/class substring;
+    /// Hyprland address ("0x...") or unique title/class substring;
     /// omit for the active window. On focused-view-only backends (river)
-    /// `"focused"` — or omitting the selector — addresses the focused
+    /// `"focused"` - or omitting the selector - addresses the focused
     /// view directly.
     window: Option<String>,
     /// Target x (move only)
@@ -192,7 +192,7 @@ struct HistoryParams {
     #[schemars(range(min = 1, max = 1000))]
     limit: u32,
     /// Case-insensitive substring filter on the recorded tool name
-    /// (e.g. "mouse" matches mouse_click, mouse_drag, …)
+    /// (e.g. "mouse" matches mouse_click, mouse_drag, ...)
     action: Option<String>,
 }
 
@@ -262,7 +262,7 @@ pub(super) fn tools() -> Vec<Tool> {
     ]
 }
 
-/// Borrowed security pipeline for the secured dispatch path — lets
+/// Borrowed security pipeline for the secured dispatch path - lets
 /// `replay_action` pass the recorded call back through `call_tool_secured`
 /// (consent re-challenge, audit, real `system_command` exec) instead of the
 /// Phase-0 ungated dispatch.
@@ -337,7 +337,7 @@ async fn dispatch_ctx(
     })
 }
 
-/// Resolve the `window` selector: `None` → active window; `Some(s)` → exact
+/// Resolve the `window` selector: `None` -> active window; `Some(s)` -> exact
 /// address match, else unique case-insensitive title/class substring.
 /// Backend faults surface as `isError` results; bad selectors as
 /// `InvalidParams`.
@@ -390,7 +390,7 @@ enum ResolveWindowError {
 
 /// Synthetic `WindowInfo` for focused-view-only backends (river): the
 /// compositor can act on the focused view but cannot report its
-/// title/class/geometry — the fields are deliberately marked rather
+/// title/class/geometry - the fields are deliberately marked rather
 /// than fabricated.
 fn focused_view_info() -> WindowInfo {
     WindowInfo {
@@ -454,8 +454,8 @@ async fn window_control(
         ));
     }
     // Focused-view-only backends (river) cannot enumerate or identify
-    // windows, so the literal `"focused"` selector — and, on such a
-    // backend, an omitted selector — address the focused view directly.
+    // windows, so the literal `"focused"` selector - and, on such a
+    // backend, an omitted selector - address the focused view directly.
     let target = match (window.focused_view_selector(), p.window.as_deref()) {
         (Some(_), None) => focused_view_info(),
         (Some(fid), Some(sel)) if sel == fid => focused_view_info(),
@@ -476,7 +476,7 @@ async fn window_control(
                 count,
             }) => {
                 return Err(invalid_params(format!(
-                    "window_control: ambiguous window '{selector}' — {count} candidates: {}",
+                    "window_control: ambiguous window '{selector}' - {count} candidates: {}",
                     candidates.join(", ")
                 )));
             }
@@ -508,7 +508,7 @@ async fn window_control(
 
 /// Whether the recorded arguments contain a redacted placeholder
 /// (`"<redacted:N chars>"`, written by the history store for
-/// `type_text.text`) — such records can never be replayed faithfully.
+/// `type_text.text`) - such records can never be replayed faithfully.
 fn args_contain_redacted(v: &Value) -> bool {
     match v {
         Value::String(s) => s.starts_with("<redacted:"),
@@ -573,7 +573,7 @@ async fn metrics(args: &Map<String, Value>) -> Result<CallToolResult, ErrorData>
 }
 
 /// Wire shape of one history entry in `get_action_history` output
-/// (docs/TOOLS.md). `args` carries the raw recorded arguments verbatim —
+/// (docs/TOOLS.md). `args` carries the raw recorded arguments verbatim -
 /// history exists for replay, and it is encrypted at rest.
 fn record_json(r: &ActionRecord) -> Value {
     json!({
@@ -602,7 +602,7 @@ async fn get_action_history(
     }
     let needle = p.action.as_deref().map(str::to_lowercase);
     // When filtering, read the full retained window first so the limit
-    // applies to *matching* records, not the newest `limit` prefix —
+    // applies to *matching* records, not the newest `limit` prefix -
     // `list_filtered` filters inside the lock and clones only matches.
     let actions: Vec<Value> = match needle.as_deref() {
         Some(n) => store
@@ -657,18 +657,18 @@ async fn replay_action(
     }
     if args_contain_redacted(&rec.args_json) {
         return Err(invalid_params(
-            "replay_action: record is redacted — secret arguments were never \
+            "replay_action: record is redacted - secret arguments were never \
              stored, so the call cannot be faithfully replayed",
         ));
     }
     let rec_args = rec.args_json.as_object().cloned().unwrap_or_default();
     // The replayed call goes back through dispatch. On the secured path it
     // re-enters `call_tool_secured`, so a destructive recorded action
-    // re-challenges the consent gate on its own binding and is audited —
+    // re-challenges the consent gate on its own binding and is audited -
     // the consent granted to `replay_action` never covers the replayed
     // call (docs/TOOLS.md).
-    // Boxed re-dispatch: replay → dispatch → replay is an async recursion
-    // cycle — the indirection keeps the future sized (E0733).
+    // Boxed re-dispatch: replay -> dispatch -> replay is an async recursion
+    // cycle - the indirection keeps the future sized (E0733).
     let inner = match secured {
         Some(s) => {
             Box::pin(super::call_tool_secured(
@@ -707,7 +707,7 @@ async fn clear_action_history(
 ) -> Result<CallToolResult, ErrorData> {
     let p: ClearHistoryParams = parse_args("clear_action_history", args)?;
     let _ = &p.consent_token;
-    // Overwrite-then-delete + index reset is blocking file work — move
+    // Overwrite-then-delete + index reset is blocking file work - move
     // it onto `spawn_blocking` like the secured record path (EFF-1).
     let removed = tokio::task::spawn_blocking(move || store.clear())
         .await
@@ -894,7 +894,7 @@ mod tests {
         record(&store, "mouse_drag", json!({"from_x": 0}));
         record(&store, "type_text", json!({"text": "secret"}));
 
-        // Substring match — "mouse" selects both mouse_* records.
+        // Substring match - "mouse" selects both mouse_* records.
         let res = get_action_history(&args(json!({"action": "MOUSE"})), &store)
             .await
             .unwrap();
@@ -908,7 +908,7 @@ mod tests {
             .collect();
         assert_eq!(tools, ["mouse_drag", "mouse_click"]);
 
-        // Non-matching filter → empty result, still a success.
+        // Non-matching filter -> empty result, still a success.
         let res = get_action_history(&args(json!({"action": "zzz"})), &store)
             .await
             .unwrap();
@@ -984,7 +984,7 @@ mod tests {
         .await
         .unwrap_err();
         // -32015 ConsentRequired carrying a challenge bound to the
-        // *replayed* call — the replay's own consent is not inherited.
+        // *replayed* call - the replay's own consent is not inherited.
         assert_eq!(err.code.0, CONSENT_REQUIRED);
         let token = err.data.unwrap()["consent_token"]
             .as_str()
@@ -1051,7 +1051,7 @@ mod tests {
     #[tokio::test]
     async fn clear_reports_count_and_wipes_file() {
         let (_tmp, store) = tmp_store();
-        // `clear` moves onto `spawn_blocking` — the store must ride in an
+        // `clear` moves onto `spawn_blocking` - the store must ride in an
         // `Arc` (production passes the context-scoped `history_arc()`).
         let store = std::sync::Arc::new(store);
         record(&store, "sleep", json!({"ms": 0}));

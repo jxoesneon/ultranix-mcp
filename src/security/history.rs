@@ -1,44 +1,44 @@
-//! AES-256-GCM-encrypted action history — `<state_root>/history.json`.
+//! AES-256-GCM-encrypted action history - `<state_root>/history.json`.
 //!
 //! Spec: SECURITY.md "Storage", docs/TOOLS.md (`get_action_history`,
 //! `replay_action`, `clear_action_history`), ROADMAP Phase 4.
 //!
-//! On-disk layout **v2** (current): an 8-byte magic header
-//! ([`V2_MAGIC`]) followed by one sealed frame per record —
-//! `u32le len ‖ nonce[12] ‖ ciphertext‖tag` — where `len` counts the
-//! `nonce ‖ ciphertext‖tag` bytes and each frame seals a single JSON
+//! On-disk layout **v2**(current): an 8-byte magic header
+//! ([`V2_MAGIC`]) followed by one sealed frame per record -
+//! `u32le len || nonce[12] || ciphertext||tag` - where `len` counts the
+//! `nonce || ciphertext||tag` bytes and each frame seals a single JSON
 //! `ActionRecord` under its own random 96-bit nonce. `record()`
 //! therefore appends one frame in O(1) instead of rewriting the file;
-//! only FIFO-cap evictions (and the v1→v2 migration) rewrite it.
+//! only FIFO-cap evictions (and the v1->v2 migration) rewrite it.
 //!
 //! Frames are **hash-chained through their GCM AAD**: a frame's AAD is
 //! the SHA-256 of the previous frame's raw bytes (the first frame's is
 //! SHA-256 of [`V2_MAGIC`]). Reordering, deleting, duplicating, or
-//! splicing frames — including across files under the same key — breaks
+//! splicing frames - including across files under the same key - breaks
 //! the chain and fails a tag check on open; `index` is additionally
 //! verified strictly increasing. Caveat, stated honestly: a truncated
-//! *tail* still yields a valid shorter prefix — inherent to append-only
-//! formats — but the gap between the file's last index and reality is
+//! *tail* still yields a valid shorter prefix - inherent to append-only
+//! formats - but the gap between the file's last index and reality is
 //! detectable by the caller, and any interior edit is not.
 //!
-//! On-disk layout **v1** (legacy, read-only): `nonce ‖ ciphertext‖tag`
-//! sealing one JSON document `{"version": 1, "records": […]}`. A v1
+//! On-disk layout **v1**(legacy, read-only): `nonce || ciphertext||tag`
+//! sealing one JSON document `{"version": 1, "records": [...]}`. A v1
 //! file is detected by the absence of [`V2_MAGIC`] (its leading bytes
 //! are a CSPRNG nonce, so a magic collision is cryptographically
 //! negligible), served normally, and rewritten as v2 on the next
-//! `record()` — no explicit migration step.
+//! `record()` - no explicit migration step.
 //!
-//! Any tamper — bit flip, truncation, substitution — fails a frame's
+//! Any tamper - bit flip, truncation, substitution - fails a frame's
 //! GCM tag check and surfaces as a `HistoryError` at the tool layer;
 //! v2 load errors name the failing record index rather than silently
 //! truncating the tail.
 //!
 //! Key material, in precedence order:
-//! 1. `ULTRANIX_MCP_HISTORY_SECRET` — operator-supplied secret; SHA-256
+//! 1. `ULTRANIX_MCP_HISTORY_SECRET` - operator-supplied secret; SHA-256
 //!    of its UTF-8 bytes is the key, so any string works. Rotation
-//!    makes existing history unreadable (documented caveat —
+//!    makes existing history unreadable (documented caveat -
 //!    re-encrypt on rotation).
-//! 2. `<state_root>/history.key` — a per-install 32-byte CSPRNG secret,
+//! 2. `<state_root>/history.key` - a per-install 32-byte CSPRNG secret,
 //!    generated on first use, file mode `0600`, containing dir `0700`.
 //!
 //! Opening the store is lazy: no directory, key, or history file is
@@ -65,7 +65,7 @@ use sha2::{Digest, Sha256};
 
 use crate::state::StateDir;
 
-/// Hard cap on retained records — oldest are evicted FIFO on overflow.
+/// Hard cap on retained records - oldest are evicted FIFO on overflow.
 pub const MAX_RECORDS: usize = 10_000;
 
 /// Env var carrying the operator-supplied history secret (SECURITY.md).
@@ -80,7 +80,7 @@ const HISTORY_FILE: &str = "history.json";
 /// On-disk plaintext envelope version (v1 whole-blob files only).
 const FORMAT_VERSION: u32 = 1;
 
-/// v2 magic header — the first 8 bytes of a framed history file.
+/// v2 magic header - the first 8 bytes of a framed history file.
 /// Distinguishes v2 from v1, whose leading bytes are a random nonce.
 const V2_MAGIC: &[u8; 8] = b"UNXHIST2";
 
@@ -88,20 +88,20 @@ const V2_MAGIC: &[u8; 8] = b"UNXHIST2";
 const NONCE_LEN: usize = 12;
 
 /// Byte width of a frame's little-endian length prefix. The length
-/// counts the `nonce ‖ ciphertext‖tag` bytes that follow it.
+/// counts the `nonce || ciphertext||tag` bytes that follow it.
 const FRAME_LEN_SIZE: usize = 4;
 
 /// `result_summary` is truncated to this many chars (docs/TOOLS.md).
 pub const RESULT_SUMMARY_MAX: usize = 200;
 
-/// One recorded action — the unit stored in `history.json` and returned by
+/// One recorded action - the unit stored in `history.json` and returned by
 /// `get_action_history` / resolved by `replay_action`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionRecord {
-    /// ULID, 26 chars, Crockford Base32 — lexically sortable by time.
+    /// ULID, 26 chars, Crockford Base32 - lexically sortable by time.
     pub id: String,
     /// Monotonic history index (0-based, assigned at append). Stable
-    /// across FIFO evictions — surviving records keep their index.
+    /// across FIFO evictions - surviving records keep their index.
     pub index: u64,
     /// Tool name, e.g. `mouse_click`.
     pub tool: String,
@@ -117,12 +117,12 @@ pub struct ActionRecord {
     pub ts: String,
     /// Wall time of the invocation.
     pub duration_ms: u64,
-    /// Outcome class — `ok`, `tool_error`, `error`, `consent_required`, …
+    /// Outcome class - `ok`, `tool_error`, `error`, `consent_required`, ...
     /// (same vocabulary as the audit log).
     pub outcome: String,
 }
 
-/// What a caller supplies to [`HistoryStore::record`] — the store assigns
+/// What a caller supplies to [`HistoryStore::record`] - the store assigns
 /// `id` (ULID), `index`, and `ts` itself so instrumentation cannot forge
 /// ordering.
 #[derive(Debug, Clone)]
@@ -141,7 +141,7 @@ pub struct NewActionRecord {
     pub outcome: String,
 }
 
-/// Plaintext envelope — what actually gets encrypted into `history.json`.
+/// Plaintext envelope - what actually gets encrypted into `history.json`.
 #[derive(Debug, Serialize, Deserialize)]
 struct FilePayload {
     version: u32,
@@ -149,17 +149,17 @@ struct FilePayload {
 }
 
 /// On-disk layout of `history.json` as last written (or read) by this
-/// process — the store is the file's only writer, so tracking the
+/// process - the store is the file's only writer, so tracking the
 /// format in memory is exact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiskFormat {
     /// No history file on disk (fresh store, or post-`clear`).
     Absent,
-    /// Legacy whole-blob file: `nonce ‖ ciphertext` of one JSON
+    /// Legacy whole-blob file: `nonce || ciphertext` of one JSON
     /// document. Served read-only; the next `record()` rewrites it as
     /// v2 (migration).
     V1,
-    /// Framed file: [`V2_MAGIC`] + per-record sealed frames —
+    /// Framed file: [`V2_MAGIC`] + per-record sealed frames -
     /// `record()` appends in O(1).
     V2,
 }
@@ -169,12 +169,12 @@ struct Inner {
     records: Vec<ActionRecord>,
     /// Index the next appended record will receive.
     next_index: u64,
-    /// Resolved key material — `None` until the first encrypt/decrypt.
+    /// Resolved key material - `None` until the first encrypt/decrypt.
     key: Option<[u8; 32]>,
-    /// Layout currently on disk — decides append vs. rewrite in
+    /// Layout currently on disk - decides append vs. rewrite in
     /// [`HistoryStore::record`].
     disk_format: DiskFormat,
-    /// AAD the next appended frame must seal with — SHA-256 of the last
+    /// AAD the next appended frame must seal with - SHA-256 of the last
     /// frame currently on disk ([`magic_aad`] when the file is absent or
     /// freshly rewritten empty). The store is the file's only writer, so
     /// tracking the tail in memory is exact.
@@ -211,7 +211,7 @@ pub struct HistoryStore {
 
 impl HistoryStore {
     /// Open the store under `state_root`, decrypting any existing
-    /// `history.json`. Creates nothing on disk — the layout, key file, and
+    /// `history.json`. Creates nothing on disk - the layout, key file, and
     /// history file all materialize on the first [`record`](Self::record)
     /// (or `record`-triggered key generation).
     ///
@@ -222,7 +222,7 @@ impl HistoryStore {
         Self::open_with_cap(state_root, MAX_RECORDS)
     }
 
-    /// [`open`](Self::open) with an explicit retention cap — for tests and
+    /// [`open`](Self::open) with an explicit retention cap - for tests and
     /// diagnostics; production uses [`MAX_RECORDS`].
     pub fn open_with_cap(state_root: impl AsRef<Path>, max_records: usize) -> anyhow::Result<Self> {
         let root = state_root.as_ref().to_path_buf();
@@ -254,7 +254,7 @@ impl HistoryStore {
     /// dispatch; `call_tool_secured` instrumentation should use the same
     /// handle so reads observe its own writes.
     ///
-    /// The first-open result is cached for the process — including failure.
+    /// The first-open result is cached for the process - including failure.
     pub fn shared() -> anyhow::Result<&'static HistoryStore> {
         static SHARED: OnceLock<Result<HistoryStore, String>> = OnceLock::new();
         match SHARED.get_or_init(|| Self::open_default().map_err(|e| format!("{e:#}"))) {
@@ -295,12 +295,12 @@ impl HistoryStore {
         };
 
         // Append in place, then persist. Three cases (EFF-1):
-        //   * FIFO eviction (`keep_from > 0`) — rewrite the kept tail.
+        //   * FIFO eviction (`keep_from > 0`) - rewrite the kept tail.
         //     Batched: over-cap drains down to `max - evict_batch`, so at
         //     saturation the O(n) rewrite amortizes over ~`evict_batch`
         //     appends instead of running on every single call.
-        //   * Disk is already v2 — append the one new frame, O(1).
-        //   * Absent or legacy v1 — rewrite everything as v2 (the
+        //   * Disk is already v2 - append the one new frame, O(1).
+        //   * Absent or legacy v1 - rewrite everything as v2 (the
         //     migration path; also how the first-ever record lands).
         // A failed write pops the pushed record, leaving memory
         // consistent with the untouched file.
@@ -318,7 +318,7 @@ impl HistoryStore {
         } else {
             // Append is the O(1) hot path. If it fails because the file
             // was deleted out from under us (rare), fall back to a full
-            // rewrite — this both recovers from the missing file and
+            // rewrite - this both recovers from the missing file and
             // preserves the store's monotonic indices.
             match self.append_frame(&key, &rec, &inner.tail_aad) {
                 Ok(tail) => Ok(tail),
@@ -361,7 +361,7 @@ impl HistoryStore {
     }
 
     /// Newest-first records whose `tool` contains `needle`
-    /// (case-insensitive substring — same match rule as
+    /// (case-insensitive substring - same match rule as
     /// `get_action_history`'s `action` filter), at most `limit`.
     /// Filters before cloning so a filtered query does not copy the
     /// whole store.
@@ -434,11 +434,11 @@ impl HistoryStore {
             return Ok(());
         }
         let mut inner = self.inner.lock().expect("history store poisoned");
-        // Existing history with no resolvable secret is a hard failure —
+        // Existing history with no resolvable secret is a hard failure -
         // never generate a fresh key just to report "corrupt".
         let key = self.resolve_key(&mut inner, false)?;
         // Layout detection: the v2 magic header, else the v1 whole-blob
-        // envelope (whose leading bytes are a random nonce — a magic
+        // envelope (whose leading bytes are a random nonce - a magic
         // collision is cryptographically negligible).
         let mut records = if bytes.starts_with(V2_MAGIC) {
             inner.disk_format = DiskFormat::V2;
@@ -466,7 +466,7 @@ impl HistoryStore {
         Ok(())
     }
 
-    /// Resolve the 32-byte key: env secret (SHA-256) → `history.key` →
+    /// Resolve the 32-byte key: env secret (SHA-256) -> `history.key` ->
     /// CSPRNG generation. `generate=false` refuses the last step so a
     /// `load` on existing history never mints a mismatched key.
     fn resolve_key(&self, inner: &mut Inner, generate: bool) -> anyhow::Result<[u8; 32]> {
@@ -506,10 +506,10 @@ impl HistoryStore {
     }
 
     /// Serialize + seal each record into the v2 framed layout and
-    /// atomically replace `history.json` (tmp file + rename — a torn
-    /// rewrite can never land). Used by eviction and the v1→v2
+    /// atomically replace `history.json` (tmp file + rename - a torn
+    /// rewrite can never land). Used by eviction and the v1->v2
     /// migration; `record()`'s hot path appends instead. Returns the
-    /// chain tail — the AAD the next appended frame must seal with.
+    /// chain tail - the AAD the next appended frame must seal with.
     fn persist_v2(&self, key: &[u8; 32], records: &[ActionRecord]) -> anyhow::Result<[u8; 32]> {
         let mut out = Vec::with_capacity(V2_MAGIC.len() + records.len() * 64);
         out.extend_from_slice(V2_MAGIC);
@@ -532,7 +532,7 @@ impl HistoryStore {
         Ok(aad)
     }
 
-    /// Append one sealed frame to the existing v2 file — `record()`'s
+    /// Append one sealed frame to the existing v2 file - `record()`'s
     /// O(1) hot path. A failed or torn write is rolled back to the
     /// pre-append length best-effort so the tail can never poison the
     /// next load; the caller still sees the error and drops the record.
@@ -563,15 +563,15 @@ impl HistoryStore {
     }
 }
 
-/// AAD anchoring the frame chain: SHA-256 of [`V2_MAGIC`] — every chain
+/// AAD anchoring the frame chain: SHA-256 of [`V2_MAGIC`] - every chain
 /// starts here, so frames can never validate out of file context.
 fn magic_aad() -> [u8; 32] {
     Sha256::digest(V2_MAGIC).into()
 }
 
 /// AAD for the frame following `prev_frame`: SHA-256 of its raw bytes
-/// (`len ‖ nonce ‖ ciphertext‖tag`). Chaining the previous ciphertext
-/// into the next frame's authentication binds order and position —
+/// (`len || nonce || ciphertext||tag`). Chaining the previous ciphertext
+/// into the next frame's authentication binds order and position -
 /// reordering, deleting, duplicating, or splicing frames breaks the
 /// chain at the next tag check.
 fn frame_aad(prev_frame: &[u8]) -> [u8; 32] {
@@ -580,16 +580,16 @@ fn frame_aad(prev_frame: &[u8]) -> [u8; 32] {
 
 /// Eviction batch size: when the record count exceeds the cap, drain to
 /// `max - batch` rather than `max`. Without batching, a saturated store
-/// would rewrite the entire file on *every* `record()` — O(MAX_RECORDS)
+/// would rewrite the entire file on *every* `record()` - O(MAX_RECORDS)
 /// seals plus a multi-MB write per tool call. With batching, that cost
 /// amortizes over ~`batch` appends (~1,000 calls at [`MAX_RECORDS`]).
 fn evict_batch(max_records: usize) -> usize {
     (max_records / 10).max(1)
 }
 
-/// One record → one sealed v2 frame:
-/// `u32le len ‖ nonce[12] ‖ ciphertext‖tag`, `len` counting the
-/// `nonce ‖ ciphertext‖tag` bytes. `aad` chains this frame to the
+/// One record -> one sealed v2 frame:
+/// `u32le len || nonce[12] || ciphertext||tag`, `len` counting the
+/// `nonce || ciphertext||tag` bytes. `aad` chains this frame to the
 /// previous one (see [`frame_aad`]).
 fn seal_frame(key: &[u8; 32], rec: &ActionRecord, aad: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
     let plaintext = serde_json::to_vec(rec).context("serialize history record")?;
@@ -612,11 +612,11 @@ fn seal_frame(key: &[u8; 32], rec: &ActionRecord, aad: &[u8; 32]) -> anyhow::Res
     Ok(frame)
 }
 
-/// V2 frame stream (everything after [`V2_MAGIC`]) → records in file
+/// V2 frame stream (everything after [`V2_MAGIC`]) -> records in file
 /// order plus the chain tail (the AAD a subsequent append must use).
-/// Frames are hash-chained through their GCM AAD — each frame
+/// Frames are hash-chained through their GCM AAD - each frame
 /// authenticates against the SHA-256 of the previous frame's raw bytes,
-/// starting from the magic — so any malformed frame, interior edit,
+/// starting from the magic - so any malformed frame, interior edit,
 /// reorder, deletion, or splice fails a tag check or the
 /// strictly-increasing `index` check, naming the failing frame index;
 /// never a silent truncation.
@@ -645,7 +645,7 @@ fn parse_frames(key: &[u8; 32], mut bytes: &[u8]) -> anyhow::Result<(Vec<ActionR
             );
         }
         // The chain hash covers the full frame *including* the length
-        // prefix — the same bytes `seal_frame`/`persist_v2` hashed.
+        // prefix - the same bytes `seal_frame`/`persist_v2` hashed.
         let frame = &bytes[..FRAME_LEN_SIZE + len];
         let (nonce, ciphertext) = frame[FRAME_LEN_SIZE..].split_at(NONCE_LEN);
         let plaintext = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key))
@@ -658,13 +658,13 @@ fn parse_frames(key: &[u8; 32], mut bytes: &[u8]) -> anyhow::Result<(Vec<ActionR
             )
             .map_err(|_| {
                 anyhow::anyhow!(
-                    "history record {index} decrypt failed — tampered file or wrong secret"
+                    "history record {index} decrypt failed - tampered file or wrong secret"
                 )
             })?;
         let rec: ActionRecord = serde_json::from_slice(&plaintext)
             .with_context(|| format!("history record {index} is not valid JSON"))?;
         // Semantic belt-and-braces over the AAD chain: record indexes
-        // must be strictly increasing in file order — a reorder that
+        // must be strictly increasing in file order - a reorder that
         // somehow survived the chain still fails here.
         if let Some(prev) = prev_index
             && rec.index <= prev
@@ -683,7 +683,7 @@ fn parse_frames(key: &[u8; 32], mut bytes: &[u8]) -> anyhow::Result<(Vec<ActionR
     Ok((records, aad))
 }
 
-/// `nonce || ciphertext || tag` → plaintext records payload.
+/// `nonce || ciphertext || tag` -> plaintext records payload.
 fn decrypt(key: &[u8; 32], bytes: &[u8]) -> anyhow::Result<FilePayload> {
     if bytes.len() < NONCE_LEN + 16 {
         bail!("history.json too short for nonce + tag");
@@ -692,7 +692,7 @@ fn decrypt(key: &[u8; 32], bytes: &[u8]) -> anyhow::Result<FilePayload> {
     let plaintext = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key))
         .decrypt(Nonce::from_slice(nonce), ciphertext)
         .map_err(|_| {
-            anyhow::anyhow!("history.json decrypt failed — tampered file or wrong secret")
+            anyhow::anyhow!("history.json decrypt failed - tampered file or wrong secret")
         })?;
     serde_json::from_slice(&plaintext).context("history plaintext is not valid JSON")
 }
@@ -726,15 +726,15 @@ fn set_mode(_path: &Path, _mode: u32) -> anyhow::Result<()> {
 }
 
 /// Secrets must not persist into a queryable, replayable store:
-/// `type_text.text` and `clipboard_set.text` → `"<redacted:N chars>"`
+/// `type_text.text` and `clipboard_set.text` -> `"<redacted:N chars>"`
 /// (typed text and clipboard payloads are exactly where password
-/// managers and secrets pass through); `plugin_run.params` →
-/// `"<redacted:N params>"` — a plugin wrapping `type_text` or
+/// managers and secrets pass through); `plugin_run.params` ->
+/// `"<redacted:N params>"` - a plugin wrapping `type_text` or
 /// `clipboard_set` would otherwise smuggle the same secret the
 /// step-level redaction hides into the macro record, past the
 /// `args_contain_redacted` replay guard. A tool name outside the
 /// static catalog is a plugin-exposed tool: its args are arbitrary
-/// caller params — the same channel `plugin_run.params` hides — so
+/// caller params - the same channel `plugin_run.params` hides - so
 /// the whole object collapses to `"<redacted:N params>"`. Everything
 /// else verbatim.
 fn redact_args(tool: &str, mut args: Value) -> Value {
@@ -787,7 +787,7 @@ mod tests {
     use std::sync::Mutex;
 
     /// Env mutation is process-global, and `ULTRANIX_MCP_HISTORY_SECRET`
-    /// changes which key a store resolves — a test that sets it must not
+    /// changes which key a store resolves - a test that sets it must not
     /// race a sibling's `record`/`open`. Every store-touching test holds
     /// this guard for its duration.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -885,7 +885,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         // A pre-existing key file with loose mode must fail *before* its
-        // bytes are trusted (S-8) — same rule as API-key files.
+        // bytes are trusted (S-8) - same rule as API-key files.
         let key = tmp.path().join(KEY_FILE);
         fs::write(&key, [7u8; 32]).unwrap();
         fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
@@ -913,7 +913,7 @@ mod tests {
             path = store.path().to_path_buf();
         }
         let mut bytes = fs::read(&path).unwrap();
-        // Flip a byte inside a sealed frame (the trailing GCM tag) —
+        // Flip a byte inside a sealed frame (the trailing GCM tag) -
         // layout-agnostic: any tamper must fail the tag check.
         let pos = bytes.len() - 1;
         bytes[pos] ^= 0x01;
@@ -1028,7 +1028,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
         let store = HistoryStore::open(&root).unwrap();
-        // Opening is lazy — nothing on disk yet.
+        // Opening is lazy - nothing on disk yet.
         assert!(!root.exists());
         store.record(entry("sleep", json!({"ms": 1}))).unwrap();
         assert!(store.path().is_file());
@@ -1065,7 +1065,7 @@ mod tests {
         {
             let store = HistoryStore::open(tmp.path()).unwrap();
             store.record(entry("sleep", json!({"ms": 1}))).unwrap();
-            // Env secret takes precedence — no key file is minted.
+            // Env secret takes precedence - no key file is minted.
             assert!(!store.key_path().exists());
         }
         {
@@ -1172,7 +1172,7 @@ mod tests {
 
     // ---- v2 framed format ---------------------------------------------
 
-    /// `(payload_start, payload_len)` of every frame in a v2 file —
+    /// `(payload_start, payload_len)` of every frame in a v2 file -
     /// test-side parser for locating/corrupting individual frames.
     fn frame_offsets(bytes: &[u8]) -> Vec<(usize, usize)> {
         assert!(bytes.starts_with(V2_MAGIC), "test expects a v2 file");
@@ -1209,7 +1209,7 @@ mod tests {
             after_two.starts_with(&after_one),
             "record() rewrote the file instead of appending a frame"
         );
-        // …and reopening still serves both records in order.
+        // ...and reopening still serves both records in order.
         let store = HistoryStore::open(tmp.path()).unwrap();
         assert_eq!(store.len(), 2);
         assert_eq!(store.get_by_index(0).unwrap().args_json, json!({"ms": 1}));
@@ -1240,13 +1240,13 @@ mod tests {
         let err = parse_frames(&[9u8; 32], &frame).unwrap_err();
         assert!(format!("{err:#}").contains("record 0"), "{err:#}");
         // A frame sealed mid-chain (wrong AAD) fails just as a wrong
-        // key does — position is authenticated, not just content.
+        // key does - position is authenticated, not just content.
         let wrong_pos = seal_frame(&key, &rec, &[0u8; 32]).unwrap();
         assert!(parse_frames(&key, &wrong_pos).is_err());
     }
 
-    /// Craft a legacy v1 file (whole-blob `nonce ‖ ciphertext`) sealed
-    /// under `key` — the layout v1.1.0 wrote.
+    /// Craft a legacy v1 file (whole-blob `nonce || ciphertext`) sealed
+    /// under `key` - the layout v1.1.0 wrote.
     fn seal_v1_file(key: &[u8; 32], records: Vec<ActionRecord>) -> Vec<u8> {
         let payload = FilePayload {
             version: FORMAT_VERSION,
@@ -1298,7 +1298,7 @@ mod tests {
             // The next record migrates the file to v2.
             store.record(entry("sleep", json!({"ms": 2}))).unwrap();
             let bytes = fs::read(store.path()).unwrap();
-            assert!(bytes.starts_with(V2_MAGIC), "record() must migrate v1→v2");
+            assert!(bytes.starts_with(V2_MAGIC), "record() must migrate v1->v2");
             assert_eq!(frame_offsets(&bytes).len(), 2);
         }
         // Reopen: legacy + new records, indices stable.
@@ -1350,7 +1350,7 @@ mod tests {
             store.record(entry("sleep", json!({"ms": 2}))).unwrap();
             path = store.path().to_path_buf();
         }
-        // Torn tail: drop the last 5 bytes → frame 1 is truncated.
+        // Torn tail: drop the last 5 bytes -> frame 1 is truncated.
         let clean = fs::read(&path).unwrap();
         fs::write(&path, &clean[..clean.len() - 5]).unwrap();
         let err = HistoryStore::open(tmp.path()).expect_err("torn tail frame must fail open");
@@ -1390,7 +1390,7 @@ mod tests {
         let (s0, e0) = span(0);
         let (s1, e1) = span(1);
 
-        // Reorder: swap frames 0 and 1 — frame 1's AAD no longer
+        // Reorder: swap frames 0 and 1 - frame 1's AAD no longer
         // matches its position even though each tag is individually
         // well-formed.
         let mut reordered = clean.clone();
@@ -1404,7 +1404,7 @@ mod tests {
             "reordered frames must fail the chain"
         );
 
-        // Interior deletion: drop frame 1 — frame 2's AAD expects
+        // Interior deletion: drop frame 1 - frame 2's AAD expects
         // frame 1's bytes, so the gap fails authentication.
         let mut deleted = clean.clone();
         deleted.splice(s1..e1, std::iter::empty());
@@ -1414,7 +1414,7 @@ mod tests {
             "a deleted interior frame must fail the chain"
         );
 
-        // Duplication: repeat frame 1 — the duplicate is sealed for
+        // Duplication: repeat frame 1 - the duplicate is sealed for
         // the wrong predecessor.
         let mut dup = clean.clone();
         dup.splice(e1..e1, clean[s1..e1].iter().copied());
@@ -1426,7 +1426,7 @@ mod tests {
 
         // Cross-file splice under the SAME key: both stores derive the
         // key from the env secret, so the foreign frame's ciphertext is
-        // valid — only its chain position is wrong. Fresh dirs: `tmp`'s
+        // valid - only its chain position is wrong. Fresh dirs: `tmp`'s
         // file above was sealed under its own generated key.
         unsafe {
             std::env::set_var(SECRET_ENV, "shared-splice-secret");
@@ -1502,8 +1502,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = HistoryStore::open(tmp.path()).unwrap();
         // A tool name outside the static catalog is plugin-exposed: its
-        // args are arbitrary caller params — the same secret channel
-        // `plugin_run.params` hides — so the whole object collapses to
+        // args are arbitrary caller params - the same secret channel
+        // `plugin_run.params` hides - so the whole object collapses to
         // a redaction marker (which also trips the replay guard).
         let rec = store
             .record(entry(
@@ -1529,7 +1529,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         // A bare magic header is a valid v2 file with zero frames.
         fs::write(tmp.path().join(HISTORY_FILE), V2_MAGIC).unwrap();
-        // Still needs a resolvable secret to open — the env one works.
+        // Still needs a resolvable secret to open - the env one works.
         unsafe {
             std::env::set_var(SECRET_ENV, "header-only");
         }
@@ -1560,7 +1560,7 @@ mod tests {
         let bytes = fs::read(store.path()).unwrap();
         assert!(bytes.starts_with(V2_MAGIC));
         // Eviction rewrote the file: exactly the 3 surviving frames
-        // (cap=3, batch=1 → first over-cap drains two, landing on 3).
+        // (cap=3, batch=1 -> first over-cap drains two, landing on 3).
         assert_eq!(frame_offsets(&bytes).len(), 3);
         // Batched eviction: at saturation the store drains to
         // `cap - evict_batch` (= 2 here) rather than `cap`, so the next
@@ -1578,7 +1578,7 @@ mod tests {
             store.get_by_index(5).unwrap().result_summary,
             "did the thing"
         );
-        // Post-eviction appends are O(1) again — index 6 lands as a
+        // Post-eviction appends are O(1) again - index 6 lands as a
         // single frame, no rewrite.
         store.record(entry("sleep", json!({}))).unwrap();
         let bytes = fs::read(store.path()).unwrap();
@@ -1607,7 +1607,7 @@ mod tests {
         assert_eq!(store.len(), 1);
         assert!(store.get_by_index(1).is_none());
         fs::set_permissions(store.path(), fs::Permissions::from_mode(0o600)).unwrap();
-        // The file still parses — and the store recovers once writable.
+        // The file still parses - and the store recovers once writable.
         let reopened = HistoryStore::open(&root).unwrap();
         assert_eq!(reopened.len(), 1);
         store.record(entry("sleep", json!({"ms": 2}))).unwrap();

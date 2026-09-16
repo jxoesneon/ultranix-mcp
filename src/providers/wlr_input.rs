@@ -1,6 +1,6 @@
 //! Wayland-native input injection via `zwlr_virtual_pointer_v1`
 //! (wlr-virtual-pointer-unstable-v1) + `zwp_virtual_keyboard_v1`
-//! (virtual-keyboard-unstable-v1) — in-process, no external binaries.
+//! (virtual-keyboard-unstable-v1) - in-process, no external binaries.
 //!
 //! Connects to `$WAYLAND_DISPLAY`, binds `wl_seat` + `wl_output` (the latter
 //! for layout geometry, needed by `motion_absolute`), creates one virtual
@@ -55,7 +55,7 @@ const AXIS_VALUE_PER_STEP: f64 = 15.0;
 pub struct WlrInput {
     inner: Arc<Mutex<Inner>>,
     /// Pinned `hyprctl` absolute path, when it was on `PATH` at
-    /// construction — the `cursor_position` helper (S-1). Spawned under
+    /// construction - the `cursor_position` helper (S-1). Spawned under
     /// the scrubbed environment + timeout of [`crate::security::spawn`].
     hyprctl: Option<std::path::PathBuf>,
 }
@@ -67,13 +67,13 @@ const _: () = {
 };
 
 /// Everything behind the lock: the event queue (blocking roundtrips),
-/// protocol state, and the locally-resolved keysym → keycode table.
+/// protocol state, and the locally-resolved keysym -> keycode table.
 struct Inner {
     queue: wayland_client::EventQueue<State>,
     state: State,
     /// Monotonic epoch for protocol `time` args (ms since connect).
     started: Instant,
-    /// Keysym raw value → evdev keycode + level. Precomputed because
+    /// Keysym raw value -> evdev keycode + level. Precomputed because
     /// `xkb::Keymap` is `!Send` and cannot live in the provider.
     keys: HashMap<u32, KeyBinding>,
     /// evdev code of `Shift_L`, cached for level-1 (shifted) keysyms.
@@ -180,7 +180,7 @@ impl Dispatch<wl_output::WlOutput, usize> for State {
 }
 
 // `delegate_noop!` panics (`unreachable!()`) if the object ever emits an
-// event — and `wl_seat` emits `capabilities` on bind while
+// event - and `wl_seat` emits `capabilities` on bind while
 // `zwp_virtual_keyboard_v1` receives the compositor's `keymap` event.
 // Those two get explicit swallow-everything `Dispatch` impls; the
 // request-only interfaces keep `delegate_noop!`.
@@ -213,7 +213,7 @@ delegate_noop!(State: ZwlrVirtualPointerV1);
 delegate_noop!(State: ZwpVirtualKeyboardManagerV1);
 
 // ---------------------------------------------------------------------------
-// Name → code mappings
+// Name -> code mappings
 // ---------------------------------------------------------------------------
 
 /// evdev button code for a button name (`linux/input-event-codes.h`).
@@ -234,8 +234,8 @@ fn button_code(name: &str) -> Option<u32> {
 
 /// Resolve a key name to an XKB keysym.
 ///
-/// Order: friendly alias → exact keysym name → case-insensitive keysym
-/// name → single printable character (Unicode codepoint → keysym).
+/// Order: friendly alias -> exact keysym name -> case-insensitive keysym
+/// name -> single printable character (Unicode codepoint -> keysym).
 fn keysym_for_name(name: &str) -> Option<Keysym> {
     let alias = match name.to_ascii_lowercase().as_str() {
         "ctrl" | "control" | "ctl" | "lctrl" => "Control_L",
@@ -291,7 +291,7 @@ fn char_keysym(c: char) -> Keysym {
 
 /// Compile the session keymap (env defaults: `XKB_DEFAULT_RULES` etc.,
 /// else libxkbcommon defaults) and return its text form plus the
-/// keysym → keybinding lookup.
+/// keysym -> keybinding lookup.
 fn build_keymap() -> Option<(String, HashMap<u32, KeyBinding>)> {
     build_keymap_rmlvo("", "", "", "")
 }
@@ -344,7 +344,7 @@ fn build_keycode_map(keymap: &xkb::Keymap) -> HashMap<u32, KeyBinding> {
 // Blocking protocol plumbing
 // ---------------------------------------------------------------------------
 
-/// Bounding box of all outputs in layout coordinates — the frame
+/// Bounding box of all outputs in layout coordinates - the frame
 /// `motion_absolute` maps `[0, x_extent] x [0, y_extent]` onto. Outputs
 /// that never reported a mode (0×0) do not participate.
 fn layout_box_of(outputs: &[OutputInfo]) -> Result<(i32, i32, i32, i32)> {
@@ -367,7 +367,7 @@ fn layout_box_of(outputs: &[OutputInfo]) -> Result<(i32, i32, i32, i32)> {
     Ok((x0, y0, x1 - x0, y1 - y0))
 }
 
-/// Global `(x, y)` → coordinates inside the layout box
+/// Global `(x, y)` -> coordinates inside the layout box
 /// `(bx, by, bw, bh)`, clamped so out-of-layout requests pin to the box
 /// edge rather than exiting the `[0, extent]` frame.
 fn to_box_local(x: i32, y: i32, bx: i32, by: i32, bw: i32, bh: i32) -> (u32, u32) {
@@ -375,7 +375,7 @@ fn to_box_local(x: i32, y: i32, bx: i32, by: i32, bw: i32, bh: i32) -> (u32, u32
 }
 
 impl Inner {
-    /// Milliseconds since the provider connected — a monotonic,
+    /// Milliseconds since the provider connected - a monotonic,
     /// compositor-acceptable source for protocol `time` arguments.
     fn now_ms(&self) -> u32 {
         self.started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32
@@ -405,7 +405,7 @@ impl Inner {
             .ok_or_else(|| anyhow!("zwp_virtual_keyboard_v1 unavailable"))
     }
 
-    /// Bounding box of all outputs in layout coordinates — the frame
+    /// Bounding box of all outputs in layout coordinates - the frame
     /// `motion_absolute` maps `[0, x_extent] x [0, y_extent]` onto.
     fn layout_box(&self) -> Result<(i32, i32, i32, i32)> {
         layout_box_of(&self.state.output_info)
@@ -528,7 +528,7 @@ impl Inner {
         if seq.is_empty() {
             return Ok(());
         }
-        // Fail before emitting if a shifted char could not be wrapped —
+        // Fail before emitting if a shifted char could not be wrapped -
         // part of the no-partial-typing guarantee above.
         let shift = if seq.iter().any(|b| b.shifted) {
             Some(
@@ -733,7 +733,7 @@ impl InputProvider for WlrInput {
 // Tests
 // ---------------------------------------------------------------------------
 //
-// SAFETY: these tests are structurally incapable of injecting input — none
+// SAFETY: these tests are structurally incapable of injecting input - none
 // of them open a Wayland connection or dispatch a pointer/keyboard request.
 // The only `new()` test removes WAYLAND_DISPLAY first, so it exits through
 // the early-`None` path before any socket is touched.
@@ -839,7 +839,7 @@ mod tests {
         assert!(!a.shifted);
         let big_a = keys.get(&xkb::keysyms::KEY_A).expect("us keymap has 'A'");
         assert!(big_a.shifted);
-        // Same physical key, different level → same evdev code.
+        // Same physical key, different level -> same evdev code.
         assert_eq!(a.evdev, big_a.evdev);
 
         let shift = keys
@@ -943,7 +943,7 @@ mod tests {
     #[test]
     fn char_keysym_passes_through_unicode() {
         // Non-ASCII chars map through utf32_to_keysym (no keymap at this
-        // level — the lookup happens later against the uploaded keymap).
+        // level - the lookup happens later against the uploaded keymap).
         assert_eq!(
             char_keysym('€').raw(),
             xkb::utf32_to_keysym('€' as u32).raw()
@@ -981,8 +981,8 @@ mod tests {
             layout_box_of(&[o(0, 0, 1920, 1080)]).unwrap(),
             (0, 0, 1920, 1080)
         );
-        // Side-by-side + one offset upward → bounding box of the union
-        // (y spans -300..1140 → height 1440).
+        // Side-by-side + one offset upward -> bounding box of the union
+        // (y spans -300..1140 -> height 1440).
         assert_eq!(
             layout_box_of(&[o(0, 0, 1920, 1080), o(1920, -300, 2560, 1440)]).unwrap(),
             (0, -300, 4480, 1440)
@@ -992,16 +992,16 @@ mod tests {
             layout_box_of(&[o(0, 0, 0, 0), o(10, 20, 100, 50)]).unwrap(),
             (10, 20, 100, 50)
         );
-        // Nothing usable → error (pointer framing has no extent).
+        // Nothing usable -> error (pointer framing has no extent).
         assert!(layout_box_of(&[]).is_err());
         assert!(layout_box_of(&[o(0, 0, 0, 0)]).is_err());
     }
 
     #[test]
     fn to_box_local_clamps_into_extent() {
-        // Inside the box → offset from its origin.
+        // Inside the box -> offset from its origin.
         assert_eq!(to_box_local(100, 200, 10, 20, 1000, 500), (90, 180));
-        // Left/above the box → 0; right/below → extent.
+        // Left/above the box -> 0; right/below -> extent.
         assert_eq!(to_box_local(-5, -5, 10, 20, 1000, 500), (0, 0));
         assert_eq!(to_box_local(5000, 9000, 10, 20, 1000, 500), (1000, 500));
         // Exactly on the box edge.

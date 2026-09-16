@@ -1,4 +1,4 @@
-//! Process-global Prometheus metrics — docs/ARCHITECTURE.md §7
+//! Process-global Prometheus metrics - docs/ARCHITECTURE.md §7
 //! "Observability" (canonical series names). The admin `metrics` tool and
 //! the `GET /metrics` surface on :3010 serve [`exposition`] verbatim.
 //!
@@ -9,17 +9,17 @@
 //! free functions with no context plumbing.
 //!
 //! Canonical series:
-//! - `ultranix_mcp_tool_calls_total{tool,outcome}` — counter
-//! - `ultranix_mcp_tool_duration_seconds{tool}` — histogram
+//! - `ultranix_mcp_tool_calls_total{tool,outcome}` - counter
+//! - `ultranix_mcp_tool_duration_seconds{tool}` - histogram
 //!   (`_bucket{le}` / `_sum` / `_count`)
-//! - `ultranix_mcp_backend_calls_total{backend,outcome}` — counter
-//! - `ultranix_mcp_build_info{version}` — gauge
-//! - `ultranix_mcp_rate_limit_rejections_total{reason}` — counter
-//! - `ultranix_mcp_auth_failures_total{reason}` — counter
-//! - `ultranix_mcp_active_sessions{transport}` — gauge
-//! - `ultranix_mcp_backend_active{backend}` — gauge
-//! - `ultranix_mcp_action_history_size` — gauge
-//! - `ultranix_mcp_ocr_cache_entries` — gauge
+//! - `ultranix_mcp_backend_calls_total{backend,outcome}` - counter
+//! - `ultranix_mcp_build_info{version}` - gauge
+//! - `ultranix_mcp_rate_limit_rejections_total{reason}` - counter
+//! - `ultranix_mcp_auth_failures_total{reason}` - counter
+//! - `ultranix_mcp_active_sessions{transport}` - gauge
+//! - `ultranix_mcp_backend_active{backend}` - gauge
+//! - `ultranix_mcp_action_history_size` - gauge
+//! - `ultranix_mcp_ocr_cache_entries` - gauge
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -87,15 +87,15 @@ struct Registry {
     sessions: BTreeMap<String, i64>,
     /// `ultranix_mcp_backend_active` keyed by `backend`.
     backends: BTreeMap<String, i64>,
-    /// `ultranix_mcp_action_history_size` — retained history records.
+    /// `ultranix_mcp_action_history_size` - retained history records.
     history_size: i64,
-    /// `ultranix_mcp_ocr_cache_entries` — live OCR cache entries.
+    /// `ultranix_mcp_ocr_cache_entries` - live OCR cache entries.
     ocr_cache_entries: i64,
 }
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registry::default()));
 
-/// Lock the global registry, recovering from poisoning — a metrics sink
+/// Lock the global registry, recovering from poisoning - a metrics sink
 /// must never take down a tool call.
 fn registry() -> MutexGuard<'static, Registry> {
     REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
@@ -106,9 +106,9 @@ fn registry() -> MutexGuard<'static, Registry> {
 /// in `ultranix_mcp_tool_duration_seconds{tool}`.
 ///
 /// `outcome` uses the audit vocabulary: `ok`, `tool_error`,
-/// `consent_required`, `denied`, `error`. All keys are `&'static` —
+/// `consent_required`, `denied`, `error`. All keys are `&'static` -
 /// callers pass the catalog tool name (`metric_label`) and fixed
-/// outcome literals — so a map hit allocates nothing.
+/// outcome literals - so a map hit allocates nothing.
 pub fn record_call(tool: &'static str, duration: Duration, outcome: &'static str) {
     let mut reg = registry();
     record_tool_call(&mut reg, tool, duration, outcome);
@@ -151,14 +151,14 @@ pub fn set_build_info() {
     registry().build_info = true;
 }
 
-/// Increment `ultranix_mcp_rate_limit_rejections_total{reason}` —
+/// Increment `ultranix_mcp_rate_limit_rejections_total{reason}` -
 /// emitted by the HTTP token bucket on a 429 (Phase 4 wiring).
 pub fn record_rate_rejection(reason: &str) {
     let mut reg = registry();
     *reg.rate_rejections.entry(reason.to_string()).or_insert(0) += 1;
 }
 
-/// Increment `ultranix_mcp_auth_failures_total{reason}` — emitted by the
+/// Increment `ultranix_mcp_auth_failures_total{reason}` - emitted by the
 /// HTTP gate on a rejected credential (`AuthFailure::reason()`:
 /// `missing`, `malformed`, `unknown`, `expired_key`).
 pub fn record_auth_failure(reason: &str) {
@@ -166,32 +166,32 @@ pub fn record_auth_failure(reason: &str) {
     *reg.auth_failures.entry(reason.to_string()).or_insert(0) += 1;
 }
 
-/// Mark `ultranix_mcp_backend_active{backend}` = 1 — emitted once per
+/// Mark `ultranix_mcp_backend_active{backend}` = 1 - emitted once per
 /// initialised backend at startup from `Providers::backend_names`
 /// (e.g. `wlr-screencopy`, `atspi2`). Absent series = backend down.
 pub fn set_backend_active(backend: &str) {
     registry().backends.insert(backend.to_string(), 1);
 }
 
-/// Set `ultranix_mcp_action_history_size` — the retained record count,
+/// Set `ultranix_mcp_action_history_size` - the retained record count,
 /// refreshed after each history append and reset to 0 on clear.
 pub fn set_action_history_size(n: usize) {
     registry().history_size = n as i64;
 }
 
-/// Set `ultranix_mcp_ocr_cache_entries` — the live entry count of the
+/// Set `ultranix_mcp_ocr_cache_entries` - the live entry count of the
 /// ONNX vision OCR cache (producer wired in `providers/onnx_vision.rs`).
 pub fn set_ocr_cache_entries(n: usize) {
     registry().ocr_cache_entries = n as i64;
 }
 
-/// Set `ultranix_mcp_active_sessions{transport}` — the absolute count of
+/// Set `ultranix_mcp_active_sessions{transport}` - the absolute count of
 /// live sessions on `transport` (`stdio`, `http`).
 pub fn set_sessions(transport: &str, n: i64) {
     registry().sessions.insert(transport.to_string(), n);
 }
 
-/// Render the registry in the Prometheus text exposition format —
+/// Render the registry in the Prometheus text exposition format -
 /// `# HELP`/`# TYPE` blocks followed by labelled samples, one per line,
 /// trailing newline. Series are emitted in sorted label order
 /// (BTreeMap) for deterministic output.
@@ -528,7 +528,7 @@ mod tests {
         set_ocr_cache_entries(9);
         let exp = exposition();
         // These series carry no labels, so a parallel test can
-        // legitimately overwrite the value between set and render —
+        // legitimately overwrite the value between set and render -
         // assert the series exists, is typed a gauge, and carries an
         // integer rather than pinning the number.
         for name in [

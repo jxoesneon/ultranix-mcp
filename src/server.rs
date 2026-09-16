@@ -26,7 +26,7 @@ pub struct UltraNixServer {
     /// CSPRNG session id binding consent tokens on stdio.
     session_id: Arc<str>,
     /// Live registry of plugin-exposed tools (manifest `tool`
-    /// sections). Rescanned per request — `plugin_reload` needs no
+    /// sections). Rescanned per request - `plugin_reload` needs no
     /// cache flush, and no `tools/list_changed` notification is
     /// emitted (the server does not advertise that capability).
     plugin_tools: crate::plugins::ToolRegistry,
@@ -52,7 +52,7 @@ impl UltraNixServer {
         }
     }
 
-    /// Override the plugin-tool registry — tests point it at a
+    /// Override the plugin-tool registry - tests point it at a
     /// tempdir; production keeps the ambient `<state-root>/plugins`.
     pub fn with_plugin_registry(mut self, registry: crate::plugins::ToolRegistry) -> Self {
         self.plugin_tools = registry;
@@ -63,7 +63,7 @@ impl UltraNixServer {
     /// filtered) plus the live plugin-tool registry. A plugin-exposed
     /// tool is advertised iff `plugin_run`'s category (`admin`) is
     /// enabled, the caller's role allows `plugin_run`, and the tool's
-    /// own name passes the role's allow/deny — mirroring the
+    /// own name passes the role's allow/deny - mirroring the
     /// dispatch-time conjuncts in `tools::plugin::run_exposed_tool`.
     async fn advertised_tools(
         &self,
@@ -72,7 +72,7 @@ impl UltraNixServer {
     ) -> Vec<Tool> {
         let cats = self.categories.as_deref().map(|v| v.as_slice());
         let mut list = tools::list_tools_for(cats, policy, key_id);
-        // Plugin tools are uncatalogued — they inherit plugin_run's
+        // Plugin tools are uncatalogued - they inherit plugin_run's
         // category, so a filter that removes `admin` removes them too.
         if tools::category_gate("plugin_run", cats).is_some() {
             return list;
@@ -96,7 +96,7 @@ impl UltraNixServer {
             }
         };
         match policy {
-            // An allowlist role hides plugin tools it does not name —
+            // An allowlist role hides plugin tools it does not name -
             // `Role::allows` semantics, same as dispatch.
             Some(p) => {
                 let role = p.resolve(key_id);
@@ -111,7 +111,7 @@ impl UltraNixServer {
         list
     }
 
-    /// Whether `name` is a registered plugin-exposed tool — a live
+    /// Whether `name` is a registered plugin-exposed tool - a live
     /// scan on the blocking pool.
     async fn is_plugin_tool(&self, name: &str) -> bool {
         let registry = self.plugin_tools.clone();
@@ -123,7 +123,7 @@ impl UltraNixServer {
 
     /// Attach the security context and caller-identity session id.
     /// The configured category set is mirrored onto the context so the
-    /// secured dispatch path — including `replay_action` re-entry —
+    /// secured dispatch path - including `replay_action` re-entry -
     /// enforces the same filter `tools/list` advertises.
     pub fn with_security(
         mut self,
@@ -150,7 +150,7 @@ impl UltraNixServer {
     ///
     /// `/mcp` is gated by `ApiKeyStore` auth (fail-closed unless
     /// `ULTRANIX_MCP_DISABLE_AUTH=true`) plus the per-identity token
-    /// bucket. `/health`, `/readyz`, `/metrics` stay open on loopback —
+    /// bucket. `/health`, `/readyz`, `/metrics` stay open on loopback -
     /// they carry no secrets.
     pub async fn serve_http(self, bind: &str) -> anyhow::Result<()> {
         use rmcp::transport::streamable_http_server::{
@@ -168,7 +168,7 @@ impl UltraNixServer {
         let keys = crate::security::auth::ApiKeyStore::from_env()
             .map_err(|e| anyhow::anyhow!("API key store: {e:#}"))?;
         if keys.is_disabled() {
-            tracing::warn!("ULTRANIX_MCP_DISABLE_AUTH=true: HTTP auth disabled — dev only");
+            tracing::warn!("ULTRANIX_MCP_DISABLE_AUTH=true: HTTP auth disabled - dev only");
         }
         let gate = HttpGate {
             keys: Arc::new(keys),
@@ -247,8 +247,8 @@ struct HttpGate {
 }
 
 /// `/mcp` middleware: authenticate (fail-closed unless the dev escape
-/// hatch is set) → rate-limit by caller identity (`key_id` when
-/// authenticated, remote address otherwise) → pass through.
+/// hatch is set) -> rate-limit by caller identity (`key_id` when
+/// authenticated, remote address otherwise) -> pass through.
 /// Failures are 401/429 with no stack detail (SECURITY.md error
 /// hygiene); every rejection is audited (when a security context is
 /// attached) and bumps `ultranix_mcp_rate_limit_rejections_total`.
@@ -265,7 +265,7 @@ async fn http_gate(
     let header_key = headers.get("x-api-key").and_then(|v| v.to_str().ok());
     let bearer = headers.get("authorization").and_then(|v| v.to_str().ok());
     let remote_id = remote.ip().to_string();
-    // Canonical hash of the request line for the audit record — raw
+    // Canonical hash of the request line for the audit record - raw
     // request data (headers, bodies) never reaches the log.
     let request_hash = crate::security::consent::args_hash(&serde_json::json!({
         "method": req.method().as_str(),
@@ -330,7 +330,7 @@ async fn http_gate(
     if !gate.limiter.check(&identity) {
         crate::metrics::record_rate_rejection("rate_limit");
         audit_rejection("rate_limited", &identity).await;
-        // The bucket refills at `rps` tokens/second — one refill period
+        // The bucket refills at `rps` tokens/second - one refill period
         // is the earliest a retry can succeed.
         let retry_after = (1.0 / gate.limiter.rps()).ceil().max(1.0) as u64;
         return (
@@ -340,7 +340,7 @@ async fn http_gate(
         )
             .into_response();
     }
-    // Propagate the authenticated key identity to the MCP layer — the
+    // Propagate the authenticated key identity to the MCP layer - the
     // request extensions ride `http::request::Parts` into the rmcp
     // `RequestContext`.
     req.extensions_mut().insert(McpKeyIdentity(key_id));
@@ -349,7 +349,7 @@ async fn http_gate(
 
 impl ServerHandler for UltraNixServer {
     fn get_info(&self) -> ServerInfo {
-        // `capabilities.ultranix` extension block — API_VERSIONING.md.
+        // `capabilities.ultranix` extension block - API_VERSIONING.md.
         let categories = self.categories.as_deref().map(|v| v.as_slice());
         let cats: Vec<serde_json::Value> = tools::categories()
             .filter(|c| categories.is_none_or(|enabled| enabled.contains(&c.to_string())))
@@ -425,7 +425,7 @@ impl ServerHandler for UltraNixServer {
                 )
                 .await
             }
-            // Unsecured path still honours the category filter — a
+            // Unsecured path still honours the category filter - a
             // filtered tool is MethodNotFound, not merely unlisted.
             None => match tools::category_gate(
                 &params.name,
@@ -452,7 +452,7 @@ impl ServerHandler for UltraNixServer {
                 }
             },
         };
-        // API_VERSIONING §Version Metadata — every tools/call result
+        // API_VERSIONING §Version Metadata - every tools/call result
         // carries server identity in `_meta`.
         result.map(|mut r| {
             r.meta = Some(rmcp::model::MetaObject(
@@ -480,7 +480,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::path::Path;
 
-    /// A plugin that registers itself as `deploy_notes` — the spec's
+    /// A plugin that registers itself as `deploy_notes` - the spec's
     /// example manifest.
     const DEPLOY: &str = r#"{
         "name": "deploy-notes",
@@ -541,7 +541,7 @@ mod tests {
 
     #[tokio::test]
     async fn reload_picks_up_new_plugin_tools() {
-        // The registry is live — `plugin_reload` is a scan, not a cache
+        // The registry is live - `plugin_reload` is a scan, not a cache
         // flush; a new manifest registers on the next `tools/list`.
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("plugins");
@@ -562,7 +562,7 @@ mod tests {
         let found = names(&list);
         assert!(found.contains(&"deploy_notes".to_string()));
         assert!(found.contains(&"other_tool".to_string()));
-        // Removing the file unregisters it — no explicit reload needed.
+        // Removing the file unregisters it - no explicit reload needed.
         std::fs::remove_file(dir.join("d.json")).unwrap();
         assert!(
             !names(&s.advertised_tools(None, None).await).contains(&"deploy_notes".to_string())
@@ -571,7 +571,7 @@ mod tests {
 
     #[tokio::test]
     async fn category_filter_hides_plugin_tools() {
-        // Plugin tools live in `admin` — a mouse-only server advertises
+        // Plugin tools live in `admin` - a mouse-only server advertises
         // none of them.
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("plugins");
@@ -591,7 +591,7 @@ mod tests {
         let dir = tmp.path().join("plugins");
         write_plugin(&dir, "d.json", DEPLOY);
         let s = server_with(&dir, vec![]);
-        // `plugin_run` allowed but `deploy_notes` unlisted → hidden.
+        // `plugin_run` allowed but `deploy_notes` unlisted -> hidden.
         let p = policy(|r| {
             r.allow_tools = Some(
                 ["screenshot".to_string(), "plugin_run".to_string()]
