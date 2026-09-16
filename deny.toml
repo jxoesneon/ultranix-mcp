@@ -42,6 +42,9 @@ allow = [
   "Unicode-3.0",
   "MPL-2.0",
   "CC0-1.0",
+  # `webpki-roots`/`webpki-root-certs` (via `ureq` → ort/sentry) ship
+  # the Mozilla CA bundle under the permissive Community Data License.
+  "CDLA-Permissive-2.0",
   # `uinput`/`uinput-sys` (/dev/uinput input provider) are WTFPL.
   "WTFPL",
 ]
