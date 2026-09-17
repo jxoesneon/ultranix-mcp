@@ -491,6 +491,32 @@ the tool surface grew from 39 to **40 tools in 6 categories**
       `packaging/ultranix-mcp-bin/` (prebuilt package) + `.SRCINFO`
       files keep the AUR set submission-ready; `flake.nix` fixes.
 
+## Unreleased - wlroots Breadth Wave
+
+The "no IPC exists" residual closed by the protocol wlroots compositors
+share ([ADR 0012](docs/adr/0012-shared-wlroots-toplevel-rung.md)):
+
+- [x] **`WlrToplevelWindow` provider**- `zwlr_foreign_toplevel_manager_v1`
+      as the shared wlroots window rung: enumerate (title/app-id/state),
+      `focus`/`close`/`minimize`/`maximize`/`fullscreen` (+ un-
+      variants) on `wlr-toplevel-N` ids; `move`/`resize` error honestly
+      (no geometry in the protocol). Geometry/workspace/monitor/PID/
+      floating report zero/`None` rather than invented values. Expected
+      title/app-id are re-verified at dispatch so index drift fails
+      closed. Backend name `"wlr-toplevel"`.
+- [x] **Shared fallback rung**- `WlrToplevel` behind the
+      compositor-specific window rungs on Hyprland/sway/Wayfire/river,
+      and the sole rung on unknown wlroots sessions (niri, labwc, ...).
+- [x] **river composite**- `RiverWindow` pairs `riverctl` (focused-view
+      `close`, relative `move`/`resize` deltas) with foreign-toplevel
+      (enumeration, `get_active_window`, per-window verbs on
+      `wlr-toplevel-N` ids); without the protocol it degrades to the
+      v1.4.0 focused-view posture.
+- [x] **`screen_stream` long-poll**- `latest` gains `since`
+      (`frames_written` watermark; replies report `seq`) and `wait_ms`
+      (0..=30000) so agents park for a newer frame instead of
+      busy-polling; timeout returns a text-only non-error result.
+
 ## Post-v1 Ideas
 
 Exploration backlog - not committed, priority by demand. (The v1.4.0 wave
@@ -502,20 +528,20 @@ cleared most of the former list; honest residuals are noted inline.)
   native window IPC, and `Eval` stays deliberately unused.
 - ~~**Wayfire/river window backends**~~ - **shipped at v1.4.0**:
   Wayfire's `ipc`/`ipc-rules` socket turned out to be a real channel
-  (`wayfire-ipc`); river is partial - `riverctl` registers the rung and
-  `window_control` drives the focused view (`window:"focused"`,
-  `close`, delta `move`/`resize`), but river still has no window-list
-  IPC, so `get_windows`/`get_active_window` return `isError` results there
-  (`ProviderUnavailable`).
+  (`wayfire-ipc`); river shipped partial (`riverctl`, focused view
+  only) and completed after via the wlroots foreign-toplevel composite -
+  `get_windows`/`get_active_window` enumerate real windows and
+  `window_control` addresses `wlr-toplevel-N` ids when the compositor
+  advertises the protocol.
 - **GPU EP acceleration**- CUDA/OpenVINO/ROCm features are wired
   (`ort/load-dynamic` + `ORT_DYLIB_PATH`); remaining work is validated
   EP-packaged ONNX Runtime builds in CI/packaging. The `oci.yml`
   workflow (v1.4.0) now builds and publishes the image on tags, but it
   does not yet exercise GPU EPs.
 - ~~**Streaming capture**~~ - **shipped at v1.4.0**as `screen_stream`
-  (rolling-window disk capture with polled `latest` frames). Residual:
-  true push-style streaming (RTP/WebRTC/live feed) for remote-control UX
-  remains open.
+  (rolling-window disk capture; `latest` long-polls via `since`/`wait_ms`
+  after the wlroots-breadth wave). Residual: true push-style streaming
+  (RTP/WebRTC/live feed) for remote-control UX remains open.
 - ~~**Headless operation**~~ - **shipped at v1.4.0**:
   [docs/HEADLESS.md](docs/HEADLESS.md) + `SessionType::Headless`
   detection (empty provider ladders, fail-closed) and documented

@@ -34,6 +34,8 @@ pub mod wayfire_window;
 pub mod wlr_capture;
 #[cfg(feature = "wayland")]
 pub mod wlr_input;
+#[cfg(feature = "wayland")]
+pub mod wlr_toplevel;
 pub mod x11_capture;
 pub mod x11_input;
 pub mod x11_window;

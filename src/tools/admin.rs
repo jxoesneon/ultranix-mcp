@@ -482,13 +482,21 @@ async fn window_control(
             }
         },
     };
-    let dispatch_args = match p.action {
+    let mut dispatch_args = match p.action {
         WindowAction::Move if p.dx.is_some() => json!({"dx": p.dx, "dy": p.dy}),
         WindowAction::Move => json!({"x": p.x, "y": p.y}),
         WindowAction::Resize if p.dw.is_some() => json!({"dw": p.dw, "dh": p.dh}),
         WindowAction::Resize => json!({"w": p.w, "h": p.h}),
         _ => json!({}),
     };
+    // Snapshot-id guards: providers whose ids come from a fresh
+    // enumeration (`wlr-toplevel-N`) verify these against the new
+    // snapshot before acting - a reordered list can never retarget the
+    // op onto a different window. Other backends ignore unknown keys.
+    if target.id.starts_with("wlr-toplevel-") {
+        dispatch_args["expect_title"] = json!(target.title);
+        dispatch_args["expect_class"] = json!(target.class);
+    }
     // `close` consent is enforced upstream by `call_tool_secured`
     // (challenge + resolved-target binding); the token is already spent
     // by the time dispatch reaches this leg.

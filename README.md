@@ -59,10 +59,12 @@ desktop without giving up control themselves.
   windows through Hyprland's `hyprctl` IPC socket (`hyprctl -j` JSON:
   `clients`, `activewindow`, `dispatch`, `workspaces`), sway's own IPC
   protocol on `$SWAYSOCK`, Wayfire's `ipc`/`ipc-rules` plugins on
-  `$WAYFIRE_SOCKET`, the pinned `riverctl` subprocess on river
-  (focused-view-only rung - river has no window-list IPC, so
-  `get_windows`/`get_active_window` return `isError` results while
-  `window_control` drives the focused view), `kdotool` on KDE, the
+  `$WAYFIRE_SOCKET`, the pinned `riverctl` subprocess + wlroots
+  foreign-toplevel composite on river (`riverctl` keeps focused-view
+  `close` and relative `move`/`resize` deltas; the toplevel protocol
+  supplies enumeration and per-window `focus`/`close`/`min`/`max`/
+  `fullscreen`), `wlr-toplevel` as the shared wlroots fallback rung and
+  the sole rung on unknown wlroots sessions, `kdotool` on KDE, the
   "Window Calls" Shell extension on GNOME (when installed), or `wmctrl`
   on X11 sessions.
 - **UI Inspection**- full accessibility-tree access over AT-SPI2
@@ -82,8 +84,10 @@ desktop without giving up control themselves.
   dir plus a `manifest.json` (hard caps: 600 frames, 512 MiB);
   `screen_stream` (v1.4.0) runs a continuous `start`/`status`/`latest`/
   `stop` rolling-window capture under `stream-<ulid>` (≤1800 frames,
-  ≤512 MiB, oldest evicted) with `latest` polling the newest frame in
-  `screenshot`'s image shape.
+  ≤512 MiB, oldest evicted) with `latest` returning the newest frame in
+  `screenshot`'s image shape - `since`/`wait_ms` turn it into a
+  long-poll (park up to 30 s for a frame newer than the watermark)
+  instead of busy-polling.
 - **Enterprise Security**- `uxcp_*` API-key auth on HTTP, 10 req/s token
   bucket, input sanitization, command/path whitelists, AES-256-GCM-encrypted
   action history, and JSONL audit logging. See [SECURITY.md](SECURITY.md).
@@ -131,10 +135,12 @@ GNOME, or Other - then binds each provider to the best available backend:
 Window management rides compositor IPC where it exists: `hyprctl` on
 Hyprland, sway's i3-flavoured IPC (`$SWAYSOCK`, shipped at v1.2.0) on
 sway, Wayfire's `ipc`/`ipc-rules` plugins (`$WAYFIRE_SOCKET`, v1.4.0) on
-Wayfire, `riverctl` on river (v1.4.0, focused-view-only rung - river has
-no window-list IPC, so `get_windows`/`get_active_window` report
-`ProviderUnavailable` while `window_control` reaches the focused view via
-`window:"focused"` with `close` and relative-delta `move`/`resize`),
+Wayfire, `riverctl` + `zwlr_foreign_toplevel_manager_v1` on river
+(`riverctl` drives focused-view `close` and relative-delta
+`move`/`resize`; foreign-toplevel enumerates windows and addresses them
+as `wlr-toplevel-N` for `focus`/`close`/`min`/`max`/`fullscreen`), and
+`wlr-toplevel` as the shared wlroots fallback rung - the sole window
+rung on unknown wlroots sessions (niri, labwc, ...),
 `kdotool` (KWin
 scripting - Wayland and X11
 alike) on KDE, the "Window Calls" Shell extension over D-Bus on GNOME
@@ -185,7 +191,8 @@ graph TB
         HYPR[hyprctl IPC]
         SWAY[sway IPC - SWAYSOCK]
         WF[Wayfire IPC - WAYFIRE_SOCKET]
-        RIV[riverctl - river focused-view rung]
+        RIV[riverctl + foreign-toplevel - river composite]
+        WTOP[wlr-foreign-toplevel - shared wlroots rung]
         GS[gnome-shell - Window Calls ext]
         KDOT[kdotool - KDE]
         ATSPI[AT-SPI2 bus]
@@ -292,8 +299,8 @@ providers; see [docs/HEADLESS.md](docs/HEADLESS.md)).
   `--remote-debugging-port=9222` (browser tools), `wl-clipboard`
   (`wl-copy`/`wl-paste` - clipboard tools on Wayland), `xclip` + `xsel`
   (clipboard tools on X11/XWayland), `kdotool` (window tools on KDE),
-  `riverctl` (river window rung - focused-view `window_control` only;
-  river has no list IPC), the GNOME
+  `riverctl` (river focused-view geometry; enumeration and per-window
+  control come from wlroots foreign-toplevel when advertised), the GNOME
   "Window Calls" Shell extension (window tools on GNOME)
 
 **Steps:**

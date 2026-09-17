@@ -5,6 +5,60 @@ All notable changes to ultranix-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The compositor-breadth wave, part two: every wlroots compositor now gets
+window enumeration and per-window control through
+`zwlr_foreign_toplevel_manager_v1`, and `screen_stream` learns to
+long-poll so agents stop busy-polling for frames.
+
+### Added
+
+- **`WlrToplevelWindow` provider** - `WindowProvider` over
+  `zwlr_foreign_toplevel_manager_v1` (`src/providers/wlr_toplevel.rs`),
+  the shared wlroots window rung. Stateless per call: one short-lived
+  Wayland connection binds the manager, collects title/app-id/state for
+  every tracked toplevel, then answers or dispatches. Synthetic ids are
+  `wlr-toplevel-N` (enumeration order); `"focused"` addresses the
+  activated toplevel. Verbs: `focus` -> `activate`, `close`,
+  `minimize`/`unminimize`, `maximize`/`unmaximize`,
+  `fullscreen`/`unfullscreen`; `move`/`resize` error honestly - the
+  protocol carries no geometry. Geometry, workspace, monitor, PID, and
+  floating state are reported as zero/unknown because the protocol does
+  not expose them. Index drift is guarded: `window_control` passes the
+  expected title/class from its own resolution, and a stale
+  `wlr-toplevel-N` selector that no longer names that window is
+  rejected rather than silently retargeted. Backend name
+  `"wlr-toplevel"`.
+- **Shared wlroots fallback rung** - `WlrToplevel` now sits behind the
+  compositor-specific window rungs on every wlroots session: Hyprland
+  `Hyprctl -> WlrToplevel`, sway `SwayIpc -> WlrToplevel`, Wayfire
+  `WayfireIpc -> WlrToplevel` (so Wayfire without the IPC socket still
+  enumerates), river `Riverctl -> WlrToplevel`. Unknown/other Wayland
+  sessions (niri, labwc, ...) that previously got an empty window
+  ladder now get `WlrToplevel` when the compositor advertises the
+  protocol.
+- **`RiverWindow` composite** - river sessions keep `riverctl` for
+  focused-view geometry (relative `move`/`resize`, `close` on
+  `"focused"`/empty) and delegate enumeration plus per-window
+  `focus`/`close`/`minimize`/`maximize`/`fullscreen` to
+  foreign-toplevel (`wlr-toplevel-N` ids). `get_windows` and
+  `get_active_window` now return real data on river when the protocol
+  is advertised; without it they keep their honest `isError` results.
+- **`screen_stream` long-poll** - `action:"latest"` accepts `since`
+  (a `frames_written` watermark - every `latest` reply reports its
+  `seq`) and `wait_ms` (0..=30000, default 0). With them set the call
+  parks until a newer frame lands, the first frame exists, or the
+  deadline expires - on timeout it returns a text-only "no new frame"
+  result (`isError` stays false). No mutex is held across the wait.
+
+### Changed
+
+- `window_control`'s `window` selector on wlroots sessions now also
+  accepts `wlr-toplevel-N` ids wherever the foreign-toplevel rung
+  resolved; the expected title/class travel with the dispatch so a
+  stale index fails closed instead of hitting a different window.
+
 ## [1.4.0] - 2026-09-16
 
 The reach wave: every compositor now gets its honest window rung

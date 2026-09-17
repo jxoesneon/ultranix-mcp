@@ -250,6 +250,12 @@ pub enum WindowBackend {
     /// backend name `"gnome-shell"`; drops out when the extension is not
     /// installed.
     GnomeShell,
+    /// `zwlr_foreign_toplevel_manager_v1` - in-process wlroots toplevel
+    /// tracking (list/activate/close/min/max/fullscreen; no geometry).
+    /// `providers::wlr_toplevel`, backend name `"wlr-toplevel"`. Shared
+    /// fallback for every wlroots compositor and the only rung on
+    /// niri/labwc/unknown-wlroots sessions.
+    WlrToplevel,
     /// `wmctrl` + `xdotool` - X11 EWMH window management.
     Wmctrl,
 }
@@ -318,18 +324,20 @@ pub struct DetectionPlan {
 ///   Wayland; `Portal -> None` on KDE/GNOME Wayland;
 ///   `Xdotool -> UInput -> Portal -> None` on X11 (X11-native first -
 ///   uinput needs the udev rule).
-/// - window: `Hyprctl -> None` on Hyprland; `SwayIpc -> None` on sway;
-///   `WayfireIpc -> None` on Wayfire (`$WAYFIRE_SOCKET`, `ipc`/`ipc-rules`
-///   plugins - drops out when the socket is absent); `Riverctl -> None`
-///   on river (focused-view-only rung: no list IPC - `get_windows`/
-///   `get_active_window` fail honestly, `window_control` reaches the
-///   focused view); `Kdotool -> None` on KDE Wayland; `Kdotool -> Wmctrl ->
-///   None` on KDE X11 (`kdotool` drives KWin on both transports and drops
-///   out when the pin or session marker is absent, but a Plasma X11
-///   session always has EWMH `wmctrl` behind it); `GnomeShell -> None` on
-///   GNOME Wayland and `GnomeShell -> Wmctrl -> None` on GNOME X11 (the
-///   Window Calls extension - `org.gnome.Shell.Eval` stays deliberately
-///   unused); `Wmctrl -> None` on other X11 sessions.
+/// - window: `Hyprctl -> WlrToplevel -> None` on Hyprland; `SwayIpc ->
+///   WlrToplevel -> None` on sway; `WayfireIpc -> WlrToplevel -> None` on
+///   Wayfire (`$WAYFIRE_SOCKET` `ipc`/`ipc-rules` plugins - drops out when
+///   the socket is absent); `Riverctl -> WlrToplevel -> None` on river
+///   (`riverctl` owns focused-view geometry, foreign-toplevel owns
+///   enumeration + per-window ops); `Kdotool -> None` on KDE Wayland;
+///   `Kdotool -> Wmctrl -> None` on KDE X11 (`kdotool` drives KWin on both
+///   transports and drops out when the pin or session marker is absent,
+///   but a Plasma X11 session always has EWMH `wmctrl` behind it);
+///   `GnomeShell -> None` on GNOME Wayland and `GnomeShell -> Wmctrl ->
+///   None` on GNOME X11 (the Window Calls extension -
+///   `org.gnome.Shell.Eval` stays deliberately unused); `WlrToplevel ->
+///   None` on other Wayland sessions (niri, labwc, ... - the only rung
+///   they get); `Wmctrl -> None` on other X11 sessions.
 /// - overlay: `WlrLayerShell -> None` on wlroots and unknown Wayland
 ///   (the layer-shell protocol has no X11 analogue and no KDE/GNOME
 ///   implementation - those sessions get an honest empty ladder).
@@ -375,13 +383,17 @@ pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
     };
 
     let window = match session.kind {
-        SessionKind::Hyprland => vec![WindowBackend::Hyprctl],
-        SessionKind::Sway => vec![WindowBackend::SwayIpc],
-        // Wayfire's `ipc` plugin exposes `list-views` + view methods over
-        // `$WAYFIRE_SOCKET`; river gets focused-view ops via `riverctl`
-        // (no list/active IPC exists - those calls error honestly).
-        SessionKind::Wayfire => vec![WindowBackend::WayfireIpc],
-        SessionKind::River => vec![WindowBackend::Riverctl],
+        // wlr-foreign-toplevel trails every wlroots rung: on Hyprland/sway
+        // it is a degraded fallback for when the native socket is absent;
+        // on Wayfire it covers sessions missing `$WAYFIRE_SOCKET`; on river
+        // it supplies the enumeration riverctl lacks; on niri/labwc and
+        // other wlroots sessions it is the only window rung at all.
+        SessionKind::Hyprland => vec![WindowBackend::Hyprctl, WindowBackend::WlrToplevel],
+        SessionKind::Sway => vec![WindowBackend::SwayIpc, WindowBackend::WlrToplevel],
+        SessionKind::Wayfire => {
+            vec![WindowBackend::WayfireIpc, WindowBackend::WlrToplevel]
+        }
+        SessionKind::River => vec![WindowBackend::Riverctl, WindowBackend::WlrToplevel],
         SessionKind::Kde if session.is_wayland() => vec![WindowBackend::Kdotool],
         // Plasma X11: kdotool is still the KWin-native rung, but a
         // session without the pin/marker is not window-less - EWMH
@@ -396,6 +408,9 @@ pub fn plan_backends(session: &SessionInfo) -> DetectionPlan {
             vec![WindowBackend::GnomeShell, WindowBackend::Wmctrl]
         }
         SessionKind::Other if session.is_x11() => vec![WindowBackend::Wmctrl],
+        // Unknown/other Wayland desktops (niri, labwc, ...) - most are
+        // wlroots-based, so foreign-toplevel is probed as the only rung.
+        SessionKind::Other if session.is_wayland() => vec![WindowBackend::WlrToplevel],
         SessionKind::Kde | SessionKind::Gnome | SessionKind::Other => vec![],
     };
 
@@ -596,11 +611,10 @@ fn detect_input(candidates: &[InputBackend]) -> Option<(Arc<dyn InputProvider>, 
     None
 }
 
-/// Walk the window ladder: `Hyprctl -> None` on Hyprland, `SwayIpc ->
-/// None` on sway, `Kdotool -> None` on KDE Wayland (`Kdotool -> Wmctrl ->
-/// None` on KDE X11), `WayfireIpc -> None` on Wayfire, `Riverctl -> None`
-/// on river, `GnomeShell -> None` on GNOME Wayland (`GnomeShell -> Wmctrl
-/// -> None` on GNOME X11), `Wmctrl -> None` on other X11 sessions.
+/// Walk the window ladder - see [`plan_backends`] for the full table:
+/// native IPC first (hyprctl/sway-ipc/wayfire-ipc/riverctl/kdotool/
+/// gnome-shell), `WlrToplevel` as the shared wlroots fallback and the
+/// only rung on other Wayland sessions, `Wmctrl` on X11.
 fn detect_window(candidates: &[WindowBackend]) -> Option<(Arc<dyn WindowProvider>, &'static str)> {
     for &candidate in candidates {
         match candidate {
@@ -639,6 +653,13 @@ fn detect_window(candidates: &[WindowBackend]) -> Option<(Arc<dyn WindowProvider
                 if let Some(p) = crate::providers::gnome_window::GnomeShellWindow::new() {
                     tracing::info!(backend = "gnome-shell", "window provider registered");
                     return Some((Arc::new(p), "gnome-shell"));
+                }
+            }
+            WindowBackend::WlrToplevel => {
+                #[cfg(feature = "wayland")]
+                if let Some(p) = crate::providers::wlr_toplevel::WlrToplevelWindow::new() {
+                    tracing::info!(backend = "wlr-toplevel", "window provider registered");
+                    return Some((Arc::new(p), "wlr-toplevel"));
                 }
             }
             WindowBackend::Wmctrl => {
@@ -795,7 +816,10 @@ mod tests {
                 InputBackend::Portal,
             ]
         );
-        assert_eq!(plan.window, vec![WindowBackend::Hyprctl]);
+        assert_eq!(
+            plan.window,
+            vec![WindowBackend::Hyprctl, WindowBackend::WlrToplevel]
+        );
         assert_eq!(plan.overlay, vec![OverlayBackend::WlrLayerShell]);
     }
 
@@ -836,7 +860,8 @@ mod tests {
                 InputBackend::Portal,
             ]
         );
-        assert!(plan.window.is_empty());
+        // labwc is wlroots-based - foreign-toplevel is its window rung.
+        assert_eq!(plan.window, vec![WindowBackend::WlrToplevel]);
         assert_eq!(plan.overlay, vec![OverlayBackend::WlrLayerShell]);
     }
 
@@ -880,7 +905,10 @@ mod tests {
                     InputBackend::Portal,
                 ]
             );
-            assert_eq!(plan.window, vec![WindowBackend::SwayIpc]);
+            assert_eq!(
+                plan.window,
+                vec![WindowBackend::SwayIpc, WindowBackend::WlrToplevel]
+            );
             assert_eq!(plan.overlay, vec![OverlayBackend::WlrLayerShell]);
         }
     }
@@ -923,7 +951,10 @@ mod tests {
             );
             // Wayfire's `ipc` plugin exposes `list-views` + view ops over
             // `$WAYFIRE_SOCKET` - a real window rung.
-            assert_eq!(plan.window, vec![WindowBackend::WayfireIpc]);
+            assert_eq!(
+                plan.window,
+                vec![WindowBackend::WayfireIpc, WindowBackend::WlrToplevel]
+            );
             assert_eq!(plan.overlay, vec![OverlayBackend::WlrLayerShell]);
         }
     }
@@ -957,7 +988,10 @@ mod tests {
         );
         // riverctl manages the *focused* view - a partial rung; list/
         // active window calls error honestly at the provider.
-        assert_eq!(plan.window, vec![WindowBackend::Riverctl]);
+        assert_eq!(
+            plan.window,
+            vec![WindowBackend::Riverctl, WindowBackend::WlrToplevel]
+        );
         assert_eq!(plan.overlay, vec![OverlayBackend::WlrLayerShell]);
     }
 
@@ -1232,7 +1266,9 @@ mod tests {
             ("XDG_CURRENT_DESKTOP", "Hyprland"),
         ]));
         assert!(!s.is_hyprland);
-        assert!(plan_backends(&s).window.is_empty());
+        // Not hyprctl - but the session still looks wlroots-ish, so the
+        // generic foreign-toplevel rung applies.
+        assert_eq!(plan_backends(&s).window, vec![WindowBackend::WlrToplevel]);
     }
 
     #[test]
@@ -1271,7 +1307,10 @@ mod tests {
             ("DISPLAY", ":0"),
         ]));
         assert!(s.is_hyprland);
-        assert_eq!(plan_backends(&s).window, vec![WindowBackend::Hyprctl]);
+        assert_eq!(
+            plan_backends(&s).window,
+            vec![WindowBackend::Hyprctl, WindowBackend::WlrToplevel]
+        );
     }
 
     #[test]

@@ -101,7 +101,7 @@ graph TB
     end
 
     subgraph "Backend Implementations"
-        WLR[wlroots-native<br/>wlr-screencopy - virtual-pointer<br/>virtual-keyboard - layer-shell]
+        WLR[wlroots-native<br/>wlr-screencopy - virtual-pointer<br/>virtual-keyboard - layer-shell<br/>foreign-toplevel]
         UIN[uinput / evdev<br/>udev rule, no compositor dependency]
         PORTAL[XDG Desktop Portal<br/>Screenshot - RemoteDesktop+PipeWire via zbus]
         HYPR[hyprctl IPC<br/>$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock]
@@ -324,7 +324,7 @@ async traits**, injected as `Option<Arc<dyn Trait>>` at server construction.
 | `CaptureProvider` | Frame capture, region capture, output geometry, bounded frame sequences (`screen_record`) | `WlrCapture` -> `GrimCapture` -> `PortalCapture`; `X11Capture` (`scrot` + `xdotool`/`xrandr` geometry) on X11 sessions |
 | `InputProvider` | Pointer motion/buttons/scroll, keyboard text & key events | `WlrInput` -> `UinputInput` -> `PortalInput`; `X11Input` (`xdotool`) first on X11 sessions |
 | `UIAutomationProvider` | UI tree, focused element, element lookup (multi-match via `find_elements`), AT-SPI action invocation (`invoke_element`); element queries reuse a 300 ms `TreeScan` cache (§6) | `AtspiUi` -> `None` (vision-only fallback) |
-| `WindowProvider` | Window list/focus/move/resize, active window | `HyprctlWindow` (Hyprland), `SwayWindow` (`sway-ipc`, sway), `WayfireWindow` (`wayfire-ipc`, Wayfire), `RiverWindow` (`riverctl`, river - focused-view-only rung: `window_control` reaches the focused view via `"focused"`/omitted selector), `GnomeShellWindow` (`gnome-shell`, GNOME Window Calls extension); `X11Window` (`wmctrl` + `xdotool` + `xprop`) on non-Hyprland X11; `KdotoolWindow` (`kdotool`, KDE - Wayland and X11) |
+| `WindowProvider` | Window list/focus/move/resize, active window | `HyprctlWindow` (Hyprland), `SwayWindow` (`sway-ipc`, sway), `WayfireWindow` (`wayfire-ipc`, Wayfire), `RiverWindow` (`riverctl` + foreign-toplevel composite, river), `WlrToplevelWindow` (`zwlr_foreign_toplevel_manager_v1` - shared wlroots fallback rung behind every compositor-specific provider, and the sole rung on unknown wlroots sessions), `GnomeShellWindow` (`gnome-shell`, GNOME Window Calls extension); `X11Window` (`wmctrl` + `xdotool` + `xprop`) on non-Hyprland X11; `KdotoolWindow` (`kdotool`, KDE - Wayland and X11) |
 | `VisionProvider` | OCR (`recognize_text`), zero-shot icon finding (`locate_icon`) | `OnnxVision` (ort: CPU EP; OpenVINO/CUDA/ROCm behind `vision-openvino`/`vision-cuda`/`vision-rocm` cargo features) |
 | `BrowserProvider` | DOM query/eval over CDP | `CdpBrowser` @ `127.0.0.1:9222` |
 | `OverlayProvider` | Translucent highlight overlay (`screen_highlight`) | `Overlay` (`zwlr_layer_shell_v1`, Wayland-only) -> `None` on X11/headless |
@@ -401,11 +401,11 @@ flowchart TD
 documents (including §4 above and TOOLS.md) summarize or reference it rather
 than restating it:
 
-| Provider | Chain (as shipped at v1.4.0) |
+| Provider | Chain (as shipped at v1.4.0; `WlrToplevel` rung added after) |
 | -------- | ----- |
 | Capture | Wayland: `wlr-screencopy-unstable-v1` (in-process) -> `grim`/`slurp` -> XDG Portal `Screenshot` (zbus; `RemoteDesktop`+PipeWire stream when only `RemoteDesktop` is advertised and the `pipewire` feature is enabled) -> `None`. X11: `scrot` (`X11Capture`) -> portal -> `None` |
 | Input | Wayland: `zwlr_virtual_pointer_v1` + `virtual-keyboard-unstable-v1` (no root on Hyprland) -> `/dev/uinput` + evdev -> Portal `RemoteDesktop` -> `None`. X11: `xdotool` (`X11Input`) -> uinput -> portal -> `None` |
-| Window | Hyprland: `hyprctl` IPC socket -> `None`. Sway: `sway-ipc` on `$SWAYSOCK` (`SwayWindow`) -> `None`. Wayfire: `wayfire-ipc` on `$WAYFIRE_SOCKET` (`WayfireWindow`, `ipc`/`ipc-rules` plugins) -> `None`. river: `riverctl` (`RiverWindow`, pinned subprocess - **focused-view-only rung**: no list IPC exists, so `get_windows`/`get_active_window` return `isError` results; `window_control` reaches the focused view via the `"focused"` selector / omitted selector and relative `dx,dy`/`dw,dh` deltas) -> `None`. KDE-Wayland: `kdotool` (`KdotoolWindow`, gated on the KDE session marker + pinned binary) -> `None`. KDE-X11: `kdotool` -> `wmctrl` (`X11Window`) -> `None`. GNOME-Wayland: `gnome-shell` (`GnomeShellWindow`, Window Calls extension on session D-Bus - drops out without it) -> `None`. GNOME-X11: `gnome-shell` -> `wmctrl` -> `None`. Other X11: `wmctrl` + `xdotool`/`xprop` (`X11Window`) -> `None` |
+| Window | Hyprland: `hyprctl` IPC socket -> `wlr-toplevel` (`WlrToplevelWindow`, shared wlroots rung) -> `None`. Sway: `sway-ipc` on `$SWAYSOCK` (`SwayWindow`) -> `wlr-toplevel` -> `None`. Wayfire: `wayfire-ipc` on `$WAYFIRE_SOCKET` (`WayfireWindow`, `ipc`/`ipc-rules` plugins) -> `wlr-toplevel` -> `None`. river: `riverctl` (`RiverWindow` composite - enumeration and per-window `focus`/`close`/`min`/`max`/`fullscreen` delegate to foreign-toplevel internally; `riverctl` keeps focused-view `close` and relative `dx,dy`/`dw,dh` geometry) -> `wlr-toplevel` -> `None`. Other Wayland (niri, labwc, ...): `wlr-toplevel` -> `None`. KDE-Wayland: `kdotool` (`KdotoolWindow`, gated on the KDE session marker + pinned binary) -> `None`. KDE-X11: `kdotool` -> `wmctrl` (`X11Window`) -> `None`. GNOME-Wayland: `gnome-shell` (`GnomeShellWindow`, Window Calls extension on session D-Bus - drops out without it) -> `None`. GNOME-X11: `gnome-shell` -> `wmctrl` -> `None`. Other X11: `wmctrl` + `xdotool`/`xprop` (`X11Window`) -> `None` |
 | Overlay | `zwlr_layer_shell_v1` (`Overlay`, Wayland-only) -> `None` |
 | UI Automation | AT-SPI2 via `atspi` crate -> `None` |
 | Vision | `ort` ONNX: CPU EP -> OpenVINO/CUDA/ROCm EPs behind `vision-openvino`/`vision-cuda`/`vision-rocm` features (`ort/load-dynamic` + `ORT_DYLIB_PATH`) -> `None` |
@@ -446,18 +446,24 @@ the `sway_window.rs` shape. Only `toplevel` views are listed; `floating`
 reports `None` (Wayfire has no floating class - `tiled-edges` is a snap
 bitmask). Backend name `"wayfire-ipc"`.
 
-**riverctl (shipped at v1.4.0, partial):**`RiverWindow` drives the
-pinned `riverctl` subprocess - river exposes **no window-list IPC**, so
-`list_windows`/`active_window` return `ProviderUnavailable` and
-`dispatch` accepts only the focused view (`window_id` `"focused"` or
-empty): `close`, relative `move <dir> <delta>` and `resize <axis>
-<delta>` (deltas clamped ±8192, floating-view ops - no-op on tiled
-focus). `focus`, `minimize`, and absolute geometry have no riverctl form
-and error honestly. At the tool surface, `window_control` reaches the
-focused view through `window:"focused"` or an omitted selector -
-`RiverWindow::focused_view_selector()` bypasses the list/active
-resolution that river cannot answer - and `move`/`resize` accept
-relative `dx,dy`/`dw,dh` params. `riverctl` is a provider-internal pin with no
+**riverctl + foreign-toplevel (river composite):**`RiverWindow` pairs
+the pinned `riverctl` subprocess with `zwlr_foreign_toplevel_manager_v1`
+- river exposes **no window-list IPC**, but as a wlroots compositor it
+advertises the toplevel protocol. Enumeration (`list_windows`,
+`active_window`) and per-window verbs (`focus`, `close` on
+`wlr-toplevel-N` ids, `minimize`/`maximize`/`fullscreen` and the un-
+variants) delegate to the shared `WlrToplevelWindow` machinery when the
+protocol probes; `riverctl` keeps the geometry rung - `close` on the
+focused view, relative `move <dir> <delta>` and `resize <axis> <delta>`
+(deltas clamped ±8192, floating-view ops - no-op on tiled focus).
+Absolute `x,y`/`w,h` still have no riverctl form and error honestly, as
+does every verb when the protocol is absent. At the tool surface,
+`window_control` reaches the focused view through `window:"focused"` or
+an omitted selector (`RiverWindow::focused_view_selector()`), indexed
+windows through their `wlr-toplevel-N` id - with the expected
+title/app-id re-checked against a fresh enumeration before dispatch so
+index drift cannot retarget - and `move`/`resize` accept relative
+`dx,dy`/`dw,dh` params. `riverctl` is a provider-internal pin with no
 `validate_command` arm - `system_command` cannot invoke it. Backend name
 `"riverctl"`.
 
@@ -913,4 +919,4 @@ crate::metrics::record_call(tool_name, elapsed, "ok");
 - [AT-SPI2 / atspi crate](https://docs.rs/atspi)
 - [hyprctl IPC](https://wiki.hyprland.org/IPC/)
 - [ort - ONNX Runtime for Rust](https://docs.rs/ort)
-- ADRs: [0001](adr/0001-rust-and-rmcp.md) - [0002](adr/0002-wlr-native-input.md) - [0003](adr/0003-atspi2-accessibility.md) - [0004](adr/0004-backend-fallback-chain.md) - [0005](adr/0005-onnx-vision.md) - [0006](adr/0006-tool-naming-and-categories.md) - [0007](adr/0007-clipboard-and-compositor-breadth.md) - [0008](adr/0008-history-v2-framed-append.md) - [0009](adr/0009-plugin-tools.md) - [0010](adr/0010-policy-controls.md) - [0011](adr/0011-reach-wave.md)
+- ADRs: [0001](adr/0001-rust-and-rmcp.md) - [0002](adr/0002-wlr-native-input.md) - [0003](adr/0003-atspi2-accessibility.md) - [0004](adr/0004-backend-fallback-chain.md) - [0005](adr/0005-onnx-vision.md) - [0006](adr/0006-tool-naming-and-categories.md) - [0007](adr/0007-clipboard-and-compositor-breadth.md) - [0008](adr/0008-history-v2-framed-append.md) - [0009](adr/0009-plugin-tools.md) - [0010](adr/0010-policy-controls.md) - [0011](adr/0011-reach-wave.md) - [0012](adr/0012-shared-wlroots-toplevel-rung.md)

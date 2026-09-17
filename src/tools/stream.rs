@@ -68,6 +68,10 @@ const DEFAULT_MAX_FRAMES: u64 = 600;
 const DEFAULT_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_STREAM_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Hard ceiling on `latest`'s long-poll budget - an agent can park a
+/// call, not wedge it.
+const MAX_WAIT_MS: u64 = 30_000;
+
 fn default_fps() -> u64 {
     DEFAULT_FPS
 }
@@ -97,6 +101,17 @@ struct StreamParams {
     #[serde(default = "default_max_bytes")]
     #[schemars(range(min = 1, max = 536870912))]
     max_bytes: u64,
+    /// `latest` only: only frames written after this `frames_written`
+    /// watermark count as new (the seq number in every `latest` reply).
+    /// Omit to accept whatever is newest right now.
+    #[serde(default)]
+    since: Option<u64>,
+    /// `latest` only: wait up to this long for a frame newer than `since`
+    /// (or the first frame at all) before answering - long-poll instead
+    /// of busy-polling (0..=30000 ms, default 0 = return immediately).
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 30000))]
+    wait_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -234,7 +249,8 @@ pub(super) fn tools() -> Vec<Tool> {
          spawns a background task capturing one PNG frame per fps into a fresh stream-<ulid> \
          dir under the captures root, keeping a rolling window (max_frames / max_bytes - \
          oldest frames evicted, counted as dropped_frames). `latest` returns the newest frame \
-         as image content like `screenshot`; `stop` writes manifest.json and returns stats. \
+         as image content like `screenshot` - `since`/`wait_ms` long-poll for a newer frame \
+         instead of busy-polling; `stop` writes manifest.json and returns stats. \
          One stream at a time server-wide.",
     )]
 }
@@ -260,7 +276,14 @@ pub async fn screen_stream(
     match p.action {
         StreamAction::Start => stream_start(&p, args, providers).await,
         StreamAction::Status => Ok(stream_status().await),
-        StreamAction::Latest => Ok(stream_latest().await),
+        StreamAction::Latest => {
+            if p.wait_ms > MAX_WAIT_MS {
+                return Err(invalid_params(format!(
+                    "screen_stream: wait_ms must be between 0 and {MAX_WAIT_MS}"
+                )));
+            }
+            Ok(stream_latest(&p).await)
+        }
         StreamAction::Stop => Ok(stream_stop().await),
     }
 }
@@ -407,29 +430,53 @@ async fn stream_status() -> CallToolResult {
 
 /// Newest frame file as image content - same two-block wire shape as
 /// `screenshot` (text description + base64 PNG) so clients can poll.
-async fn stream_latest() -> CallToolResult {
+///
+/// Long-poll: with `since`/`wait_ms` the call parks until a frame newer
+/// than the watermark lands (or the first frame exists) instead of
+/// making agents busy-poll. On timeout it returns a text-only "nothing
+/// new" result - `isError` stays false because a quiet stream is a
+/// normal outcome, not a fault.
+async fn stream_latest(p: &StreamParams) -> CallToolResult {
+    const POLL: Duration = Duration::from_millis(50);
+    let wait_ms = p.wait_ms;
+    let deadline = std::time::Instant::now() + Duration::from_millis(wait_ms);
     // Snapshot under the lock, drop it, then do file IO: the read must
     // not hold the registry across an await.
-    let (dir, id, file, w, h) = {
-        let reg = REGISTRY.lock().await;
-        let Some(h) = reg.as_ref() else {
+    let (dir, id, file, w, h, seq) = loop {
+        let snap = {
+            let reg = REGISTRY.lock().await;
+            reg.as_ref().map(|h| {
+                let s = lock_stats(&h.stats);
+                (
+                    h.dir.clone(),
+                    h.id.clone(),
+                    s.latest_frame.clone(),
+                    s.latest_width,
+                    s.latest_height,
+                    s.frames_written,
+                )
+            })
+        };
+        let Some((dir, id, file, w, h, seq)) = snap else {
             return tool_error("screen_stream: no stream - start one first");
         };
-        let s = lock_stats(&h.stats);
-        let Some(file) = s.latest_frame.clone() else {
-            return tool_error("screen_stream: no frames captured yet");
-        };
-        (
-            h.dir.clone(),
-            h.id.clone(),
-            file,
-            s.latest_width,
-            s.latest_height,
-        )
+        let fresh_enough = file.is_some() && p.since.is_none_or(|since| seq > since);
+        if fresh_enough {
+            break (dir, id, file.expect("fresh_enough"), w, h, seq);
+        }
+        if std::time::Instant::now() >= deadline {
+            return CallToolResult::success(vec![ContentBlock::text(format!(
+                "screen_stream: no new frame (seq {seq}, since {:?}, waited {wait_ms}ms; latest stays {file:?})",
+                p.since
+            ))]);
+        }
+        tokio::time::sleep(POLL).await;
     };
     match read_latest(&dir, &file).await {
         Ok(bytes) => CallToolResult::success(vec![
-            ContentBlock::text(format!("Latest frame {file} ({w}x{h} PNG) of stream {id}")),
+            ContentBlock::text(format!(
+                "Latest frame {file} ({w}x{h} PNG) of stream {id}; seq {seq}"
+            )),
             ContentBlock::image(base64_encode(&bytes), "image/png"),
         ]),
         Err(e) => tool_error(format!("screen_stream: read {file}: {e:#}")),
@@ -981,6 +1028,7 @@ mod tests {
             json!({"action": "start", "max_frames": 1801}),
             json!({"action": "start", "max_bytes": 0}),
             json!({"action": "start", "max_bytes": MAX_STREAM_BYTES + 1}),
+            json!({"action": "latest", "wait_ms": MAX_WAIT_MS + 1}),
             json!({"action": "start", "bogus": true}), // deny_unknown_fields
         ] {
             let err = screen_stream(&args(v.clone()), &Providers::all_mocks())
@@ -994,6 +1042,8 @@ mod tests {
         assert_eq!(p.fps, DEFAULT_FPS);
         assert_eq!(p.max_frames, DEFAULT_MAX_FRAMES);
         assert_eq!(p.max_bytes, DEFAULT_MAX_BYTES);
+        assert_eq!(p.since, None);
+        assert_eq!(p.wait_ms, 0);
     }
 
     #[tokio::test]
@@ -1266,5 +1316,88 @@ mod tests {
             let res = call(json!({"action": a}), &providers).await;
             assert_eq!(res.is_error, Some(true), "action {a} with no stream");
         }
+    }
+
+    // ---- long-poll (`since` / `wait_ms`) ----------------------------------
+
+    /// Parse `seq N` out of a `latest` reply's text block.
+    fn seq_of(result: &CallToolResult) -> u64 {
+        text_of(result)
+            .rsplit_once("seq ")
+            .and_then(|(_, n)| n.parse().ok())
+            .expect("latest reply carries seq")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn latest_long_poll_waits_for_newer_frame() {
+        let _g = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        use_base(&tmp);
+        let providers = Providers::all_mocks();
+
+        call(json!({"action": "start", "fps": 10}), &providers).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let first = call(json!({"action": "latest"}), &providers).await;
+        let seq = seq_of(&first);
+        assert!(seq >= 1);
+
+        // Since = current seq -> park until the capture task writes
+        // another frame. Virtual time makes the wait effectively free.
+        let res = call(
+            json!({"action": "latest", "since": seq, "wait_ms": 30000}),
+            &providers,
+        )
+        .await;
+        assert_eq!(res.is_error, Some(false));
+        assert_eq!(res.content.len(), 2, "fresh frame returns image content");
+        assert!(seq_of(&res) > seq);
+
+        call(json!({"action": "stop"}), &providers).await;
+        clear_base();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn latest_long_poll_times_out_cleanly() {
+        let _g = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        use_base(&tmp);
+        let providers = Providers::all_mocks();
+
+        call(json!({"action": "start", "fps": 10}), &providers).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        // Unreachable watermark + short wait -> text-only "no new frame",
+        // not an error and no image block.
+        let res = call(
+            json!({"action": "latest", "since": u64::MAX, "wait_ms": 200}),
+            &providers,
+        )
+        .await;
+        assert_eq!(res.is_error, Some(false), "a quiet stream is not a fault");
+        assert_eq!(res.content.len(), 1);
+        assert!(text_of(&res).contains("no new frame"));
+
+        call(json!({"action": "stop"}), &providers).await;
+        clear_base();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn latest_long_poll_covers_cold_start() {
+        let _g = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        use_base(&tmp);
+        let providers = Providers::all_mocks();
+
+        call(json!({"action": "start", "fps": 10}), &providers).await;
+
+        // No frame written yet: `latest` alone would error, with wait_ms
+        // it parks for the first capture instead.
+        let res = call(json!({"action": "latest", "wait_ms": 30000}), &providers).await;
+        assert_eq!(res.is_error, Some(false));
+        assert_eq!(res.content.len(), 2);
+
+        call(json!({"action": "stop"}), &providers).await;
+        clear_base();
     }
 }

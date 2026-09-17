@@ -1,18 +1,22 @@
-//! river `WindowProvider` - the `riverctl` subprocess, partial coverage
-//! only. The river rung of the window fallback ladder.
+//! river `WindowProvider` - `riverctl` subprocess for geometry, plus
+//! `wlr-foreign-toplevel` delegation for everything river cannot do.
 //!
-//! river exposes **no window-list IPC**: there is no way to enumerate
-//! views, and `riverctl` cannot report the focused view's title or
-//! app-id - it manages the *focused* view and the layout engine, full
-//! stop. This provider is therefore honest about a deliberately narrow
-//! surface:
+//! river exposes **no window-list IPC**: `riverctl` manages the *focused*
+//! view and the layout engine, full stop. But river is wlroots-based and
+//! advertises `zwlr_foreign_toplevel_manager_v1`, so enumeration and
+//! per-window activate/close/min/max/fullscreen route through
+//! [`crate::providers::wlr_toplevel`] when the protocol is present
+//! (probed once at construction):
 //!
-//! - `list_windows` / `active_window` return `Err` explaining the gap;
-//!   the tool layer turns provider errors into `ProviderUnavailable`,
-//!   which is the correct surface for a capability river does not have.
-//! - `dispatch` operates on the focused view only - river cannot
-//!   address a window by id, so `window_id` must be `"focused"` or
-//!   empty; anything else is rejected before any spawn.
+//! - `list_windows` / `active_window` delegate to foreign-toplevel;
+//!   without it they return `Err` explaining the gap.
+//! - `dispatch` geometry (`move`/`resize`, relative deltas) stays on
+//!   `riverctl` against the focused view - foreign-toplevel has no
+//!   geometry verbs.
+//! - `dispatch` for `focus`/`close`/`minimize`/`maximize`/`fullscreen`
+//!   (and the un- variants) goes to foreign-toplevel, which can address
+//!   `wlr-toplevel-N` ids, not just the focused view. `close` on
+//!   `"focused"`/empty stays on `riverctl close` - the proven path.
 //!
 //! Dispatch mapping (closed set - `run`, `spawn`, `map`, `send-to-output`,
 //! `focus-output`, `focus-view`, `zoom`, `toggle-float`, `set-cursor-warp`
@@ -47,10 +51,15 @@ use serde_json::Value;
 use crate::security::{spawn, whitelist};
 use crate::traits::{WindowInfo, WindowProvider};
 
-/// river window management via the `riverctl` CLI - focused view only.
+/// river window management: `riverctl` for focused-view geometry,
+/// `wlr-foreign-toplevel` for enumeration and per-window ops.
 pub struct RiverWindow {
-    /// Pinned `riverctl` - every dispatch spawns it.
+    /// Pinned `riverctl` - every geometry dispatch spawns it.
     riverctl: PathBuf,
+    /// Whether `zwlr_foreign_toplevel_manager_v1` probed at construction.
+    /// Stored (not re-probed per call) so hermetic tests never touch a
+    /// real Wayland socket.
+    toplevel: bool,
 }
 
 /// Compile-time contract: `WindowProvider` requires `Send + Sync`.
@@ -90,56 +99,140 @@ impl RiverWindow {
     /// was pinned on `PATH` at construction.
     pub fn new() -> Option<Self> {
         river_session()?;
-        Self::with_pins(&whitelist::resolve_binaries())
+        Self::with_toplevel(&whitelist::resolve_binaries(), toplevel_available())
     }
 
     /// [`Self::new`] against a caller-supplied pin set, minus the river
     /// session gate - the testable seam: hermetic tests resolve a fresh
     /// `PinnedBins` over a tempdir `PATH` and exercise the real spawn
-    /// paths without mutating process env.
+    /// paths without mutating process env. `toplevel` stays off here;
+    /// [`Self::with_toplevel`] flips it for routing tests.
     pub fn with_pins(pins: &whitelist::PinnedBins) -> Option<Self> {
+        Self::with_toplevel(pins, false)
+    }
+
+    /// [`Self::with_pins`] with an explicit foreign-toplevel flag - the
+    /// routing unit tests' seam (never constructs a real connection).
+    pub fn with_toplevel(pins: &whitelist::PinnedBins, toplevel: bool) -> Option<Self> {
         Some(Self {
             riverctl: pins.get("riverctl")?.to_path_buf(),
+            toplevel,
         })
+    }
+}
+
+/// Where a `dispatch` call routes.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    /// `riverctl` subprocess on the focused view (geometry).
+    Riverctl,
+    /// `wlr-foreign-toplevel` on a tracked handle (enumeration-backed ops).
+    Toplevel,
+}
+
+/// Does the compositor advertise `zwlr_foreign_toplevel_manager_v1`?
+/// Off under no-wayland builds so `RiverWindow::new` still works.
+fn toplevel_available() -> bool {
+    #[cfg(feature = "wayland")]
+    return crate::providers::wlr_toplevel::probe().is_ok();
+    #[cfg(not(feature = "wayland"))]
+    return false;
+}
+
+/// Routing table: geometry is `riverctl`-only (foreign-toplevel has no
+/// geometry verbs); everything else is foreign-toplevel when available -
+/// it can address `wlr-toplevel-N` ids, where riverctl is focused-view
+/// only. `close` on the focused view keeps the proven `riverctl` path.
+/// Non-indexed ids must name the focused view - a bogus id never
+/// silently retargets it.
+fn route(action: &str, window_id: &str, toplevel: bool) -> Result<Route> {
+    let indexed = window_id.starts_with("wlr-toplevel-");
+    if !indexed && !window_id.is_empty() && window_id != "focused" {
+        bail!(
+            "river: window id '{window_id}' is not addressable - \"focused\" or a wlr-toplevel-N id"
+        );
+    }
+    match action {
+        // Geometry: riverctl, focused-view only - an indexed id can never
+        // be the target (river cannot move unfocused views).
+        "move" | "resize" => {
+            if indexed {
+                bail!("river: move/resize act on the focused view only - pass \"focused\"");
+            }
+            Ok(Route::Riverctl)
+        }
+        // riverctl `close` is the proven path for the focused view.
+        "close" if !indexed => Ok(Route::Riverctl),
+        _ if toplevel => Ok(Route::Toplevel),
+        _ if indexed => {
+            bail!(
+                "river: `{window_id}` needs wlr-foreign-toplevel, which this compositor did not advertise"
+            )
+        }
+        _ => {
+            bail!("river: `{action}` has no riverctl form and wlr-foreign-toplevel is unavailable")
+        }
     }
 }
 
 #[async_trait]
 impl WindowProvider for RiverWindow {
     async fn list_windows(&self) -> Result<Vec<WindowInfo>> {
+        if self.toplevel {
+            #[cfg(feature = "wayland")]
+            return tokio::task::spawn_blocking(crate::providers::wlr_toplevel::enumerate).await?;
+        }
         bail!(
             "river: no window-list IPC - riverctl manages the focused view and layout only; there is no way to enumerate windows"
         )
     }
 
     async fn active_window(&self) -> Result<Option<WindowInfo>> {
+        if self.toplevel {
+            #[cfg(feature = "wayland")]
+            return Ok(
+                tokio::task::spawn_blocking(crate::providers::wlr_toplevel::enumerate)
+                    .await??
+                    .into_iter()
+                    .find(|w| w.focused),
+            );
+        }
         bail!(
             "river: cannot report the focused window - riverctl exposes no way to read the focused view's title/app-id"
         )
     }
 
     async fn dispatch(&self, action: &str, window_id: &str, args: &Value) -> Result<()> {
-        if !valid_window_id(window_id) {
-            bail!(
-                "river: window id '{window_id}' is not addressable - only the focused view (\"focused\" or empty)"
-            );
+        match route(action, window_id, self.toplevel)? {
+            Route::Riverctl => {
+                for argv in dispatch_plan(action, args)? {
+                    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+                    run(&self.riverctl, &argv).await?;
+                }
+                Ok(())
+            }
+            #[cfg(feature = "wayland")]
+            Route::Toplevel => {
+                let action = action.to_string();
+                let id = if window_id.is_empty() {
+                    crate::providers::wlr_toplevel::FOCUSED_SELECTOR.to_string()
+                } else {
+                    window_id.to_string()
+                };
+                let args = args.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::providers::wlr_toplevel::dispatch_op(&action, &id, &args)
+                })
+                .await?
+            }
+            #[cfg(not(feature = "wayland"))]
+            Route::Toplevel => unreachable!("toplevel routing requires the wayland feature"),
         }
-        for argv in dispatch_plan(action, args)? {
-            let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-            run(&self.riverctl, &argv).await?;
-        }
-        Ok(())
     }
 
     fn focused_view_selector(&self) -> Option<&'static str> {
         Some("focused")
     }
-}
-
-/// river has no per-window addressing - `dispatch` accepts only the
-/// focused-view selectors.
-fn valid_window_id(id: &str) -> bool {
-    id.is_empty() || id == "focused"
 }
 
 /// Bound on a single move/resize delta - river deltas are pixel counts;
@@ -203,10 +296,12 @@ fn dispatch_plan(action: &str, args: &Value) -> Result<Vec<Vec<String>>> {
             cmds
         }
         // riverctl can only cycle focus (`focus-view next`) - a
-        // specific-window focus does not exist, and the dispatch target
-        // is already the focused view.
+        // specific-window focus does not exist. Reachable only when
+        // foreign-toplevel is absent (otherwise `route` sent `focus` to
+        // the toplevel path).
         "focus" => bail!("river: cannot focus a specific window - the focused view is implicit"),
-        // river has no minimized/iconic window state.
+        // river has no minimized/iconic window state (foreign-toplevel
+        // `set_minimized` handles it when advertised).
         "minimize" => {
             bail!("river: no minimize state - 'toggle-float'/'send-to-output' are not minimize")
         }
@@ -278,11 +373,57 @@ mod tests {
     // ---- pure mapping -------------------------------------------------
 
     #[test]
-    fn valid_window_id_accepts_only_focused() {
-        assert!(valid_window_id(""));
-        assert!(valid_window_id("focused"));
+    fn route_rejects_foreign_ids() {
         for bad in ["0", "12", "0x3", "focus", "focused;rm", "all"] {
-            assert!(!valid_window_id(bad), "id {bad:?} must be rejected");
+            for toplevel in [false, true] {
+                assert!(
+                    route("close", bad, toplevel).is_err(),
+                    "id {bad:?} must be rejected (toplevel={toplevel})"
+                );
+                assert!(
+                    route("focus", bad, toplevel).is_err(),
+                    "id {bad:?} must be rejected (toplevel={toplevel})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn route_table() {
+        // Geometry always routes to riverctl on the focused view.
+        for toplevel in [false, true] {
+            assert_eq!(route("move", "focused", toplevel).unwrap(), Route::Riverctl);
+            assert_eq!(route("resize", "", toplevel).unwrap(), Route::Riverctl);
+            assert!(route("move", "wlr-toplevel-0", toplevel).is_err());
+        }
+        // close on the focused view keeps the proven riverctl path.
+        for toplevel in [false, true] {
+            assert_eq!(
+                route("close", "focused", toplevel).unwrap(),
+                Route::Riverctl
+            );
+            assert_eq!(route("close", "", toplevel).unwrap(), Route::Riverctl);
+        }
+        // Without toplevel: non-geometry non-close ops are honest errors.
+        for action in ["focus", "minimize", "maximize", "fullscreen"] {
+            assert!(route(action, "focused", false).is_err(), "{action}");
+        }
+        assert!(route("close", "wlr-toplevel-0", false).is_err());
+        // With toplevel: those same ops route to foreign-toplevel, on
+        // focused and indexed selectors alike.
+        for action in ["focus", "minimize", "maximize", "fullscreen", "close"] {
+            assert_eq!(
+                route(action, "wlr-toplevel-2", true).unwrap(),
+                Route::Toplevel,
+                "{action}"
+            );
+        }
+        for action in ["focus", "minimize"] {
+            assert_eq!(
+                route(action, "focused", true).unwrap(),
+                Route::Toplevel,
+                "{action}"
+            );
         }
     }
 

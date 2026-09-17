@@ -78,7 +78,7 @@ canonical normative fallback-chain table lives in
 | `OverlayProvider` | Highlight overlays | `wlr-layer-shell` (`zwlr_layer_shell_v1`, `overlay` layer) | - (returns `ProviderUnavailable` when the compositor lacks layer-shell) |
 | `InputProvider` | Pointer and keyboard injection | `wlr-virtual-pointer` + `virtual-keyboard` (zwlr_virtual_pointer_manager_v1 / virtual-keyboard-unstable-v1) | `/dev/uinput` -> XDG Portal `RemoteDesktop`. On X11 sessions `xdotool` (`X11Input`, backend name `"xdotool"`) is tried first, then uinput -> portal |
 | `UIAutomationProvider` | Accessibility tree, element search, AT-SPI action invocation | AT-SPI2 via the `atspi` crate over D-Bus | - (returns `ProviderUnavailable` when the AT-SPI bus is absent) |
-| `WindowProvider` | Window enumeration and control | `hyprctl` IPC (`hyprctl -j`) over `$XDG_RUNTIME_DIR/hypr/` sockets | sway IPC over `$SWAYSOCK` (`SwayWindow`, backend name `"sway-ipc"`) on sway sessions; wayfire `ipc`/`ipc-rules` socket over `$WAYFIRE_SOCKET` (`WayfireWindow`, backend name `"wayfire-ipc"`, v1.4.0) on Wayfire sessions; `riverctl` subprocess (`RiverWindow`, backend name `"riverctl"`, v1.4.0) on river sessions - **focused-view-only rung**: river has no window-list IPC and `riverctl` cannot report the focused view's identity, so `get_windows`/`get_active_window` return an `isError` result; `window_control` reaches the focused view via `window:"focused"` or an omitted selector - `close`, and `move`/`resize` through the relative `dx,dy`/`dw,dh` deltas (absolute `x,y`/`w,h` and `focus`/`minimize` error honestly - river has no absolute form); GNOME "Window Calls" extension over D-Bus (`GnomeShellWindow`, backend name `"gnome-shell"`, v1.4.0) on GNOME sessions - requires the extension installed (`org.gnome.Shell.Extensions.Windows`); `kdotool` subprocess (`KdotoolWindow`, backend name `"kdotool"`) on KDE sessions (Wayland and X11 - it drives KWin on both); `wmctrl` + `xdotool`/`xprop` (`X11Window`, backend name `"wmctrl"`) on other X11 sessions - and as the GNOME-X11/KDE-X11 fallback rung behind `gnome-shell`/`kdotool`; `None` elsewhere |
+| `WindowProvider` | Window enumeration and control | `hyprctl` IPC (`hyprctl -j`) over `$XDG_RUNTIME_DIR/hypr/` sockets | sway IPC over `$SWAYSOCK` (`SwayWindow`, backend name `"sway-ipc"`) on sway sessions; wayfire `ipc`/`ipc-rules` socket over `$WAYFIRE_SOCKET` (`WayfireWindow`, backend name `"wayfire-ipc"`, v1.4.0) on Wayfire sessions; `riverctl` subprocess + `zwlr_foreign_toplevel_manager_v1` composite (`RiverWindow`, backend name `"riverctl"`, v1.4.0/composite later) on river sessions - `riverctl` keeps focused-view `close` and relative `dx,dy`/`dw,dh` geometry while foreign-toplevel supplies enumeration and per-window `focus`/`close`/`min`/`max`/`fullscreen` via `wlr-toplevel-N` ids (without the protocol, `get_windows`/`get_active_window` keep their honest `isError` results and `window_control` is focused-view only; absolute `x,y`/`w,h` always error - river has no absolute form); `zwlr_foreign_toplevel_manager_v1` also serves directly as the shared `WlrToplevelWindow` fallback rung (backend name `"wlr-toplevel"`) behind the compositor-specific providers on Hyprland/sway/Wayfire and as the sole window rung on unknown wlroots sessions; GNOME "Window Calls" extension over D-Bus (`GnomeShellWindow`, backend name `"gnome-shell"`, v1.4.0) on GNOME sessions - requires the extension installed (`org.gnome.Shell.Extensions.Windows`); `kdotool` subprocess (`KdotoolWindow`, backend name `"kdotool"`) on KDE sessions (Wayland and X11 - it drives KWin on both); `wmctrl` + `xdotool`/`xprop` (`X11Window`, backend name `"wmctrl"`) on other X11 sessions - and as the GNOME-X11/KDE-X11 fallback rung behind `gnome-shell`/`kdotool`; `None` elsewhere |
 | `VisionProvider` | OCR and open-vocabulary detection | ONNX Runtime (`ort`): text OCR model + OWL-ViT | - (tools fail closed with `ProviderUnavailable`) |
 | `BrowserProvider` | DOM queries | Chrome DevTools Protocol at `127.0.0.1:9222` | - (requires the browser launched with `--remote-debugging-port=9222`) |
 | `ClipboardProvider` | Clipboard read/write | `wl-copy`/`wl-paste` (`wl-clipboard`, backend name `"wl-clipboard"`) on Wayland | `xclip` (+ `xsel` for clear; backend name `"xclip"`) on X11 and as the XWayland rung on Wayland |
@@ -1382,6 +1382,14 @@ Shipped at v1.4.0. Works on any backend that can capture frames - same
     "max_bytes": {
       "type": "integer", "default": 536870912, "minimum": 1, "maximum": 536870912,
       "description": "Rolling window byte budget (default and ceiling 512 MiB); start only"
+    },
+    "since": {
+      "type": "integer",
+      "description": "latest only: frames_written watermark - only frames newer than this seq count; every latest reply reports its seq"
+    },
+    "wait_ms": {
+      "type": "integer", "default": 0, "minimum": 0, "maximum": 30000,
+      "description": "latest only: long-poll up to this long for a frame newer than since (or the first frame) before answering"
     }
   },
   "required": ["action"],
@@ -1415,6 +1423,13 @@ Behaviour contract:
 - **Ticking.**The first frame lands as soon as the backend produces one;
   missed ticks delay rather than burst (a slow backend never triggers a
   catch-up storm), and `stop` is checked before every tick.
+- **`latest` long-polls.**`since` is a `frames_written` watermark (every
+  `latest` reply reports its `seq` for chaining) and `wait_ms`
+  (0..=30000, default 0) is how long the call parks for a newer frame -
+  or the first frame at all on a cold start. On timeout it returns a
+  text-only "no new frame" result (`isError` stays false - a quiet
+  stream is not a fault); a stopped/dead stream answers the "no stream"
+  error immediately rather than waiting out the deadline.
 - **Retention.**The `stream-<ulid>` dir is **kept**after the stream
   ends, matching `screen_record` - there is no auto-prune; the operator
   removes stream dirs. Disk use while running is bounded by
@@ -1705,13 +1720,15 @@ or control bytes).
 ## Admin & Observability Tools
 
 Window tools use `WindowProvider` - `hyprctl` IPC on Hyprland, `sway-ipc`
-on sway, `wayfire-ipc` on Wayfire, `riverctl` on river (**focused-view-only
-rung**: river has no window-list IPC and `riverctl` cannot report the
-focused view's identity - the provider slot exists, so
-`get_windows`/`get_active_window` return an `isError` result from the
-backend rather than `-32010`; `window_control` addresses the focused view via
-`window:"focused"` or an omitted selector - `close`, and `move`/`resize`
-through the relative `dx,dy`/`dw,dh` deltas), `kdotool`
+on sway, `wayfire-ipc` on Wayfire, `riverctl` + foreign-toplevel on river
+(`riverctl` keeps focused-view `close` and relative `dx,dy`/`dw,dh`
+geometry; `zwlr_foreign_toplevel_manager_v1` supplies `get_windows`,
+`get_active_window`, and per-window `focus`/`close`/`min`/`max`/
+`fullscreen` on `wlr-toplevel-N` ids - without the protocol the rung
+degrades to focused-view-only and `get_windows`/`get_active_window`
+return honest `isError` results), `wlr-toplevel` as the shared wlroots
+fallback rung behind every compositor-specific provider and the sole rung
+on unknown wlroots sessions, `kdotool`
 on KDE, `gnome-shell` on GNOME (**requires the "Window Calls" Shell
 extension**- `org.gnome.Shell.Extensions.Windows`; without it the rung
 drops out and GNOME reports `ProviderUnavailable`), `wmctrl` + `xdotool`
@@ -1735,7 +1752,7 @@ backend (hyprctl dispatchers on Hyprland; the per-session rungs listed in
     },
     "window": {
       "type": "string",
-      "description": "Backend window id (Hyprland \"0x...\" address, sway con_id, Wayfire view id, GNOME window id, X11 window id) or unique title/class substring; omit for the active/focused window. On focused-view-only backends (river) \"focused\" - or an omitted selector - addresses the focused view directly"
+      "description": "Backend window id (Hyprland \"0x...\" address, sway con_id, Wayfire view id, wlr-toplevel-N, GNOME window id, X11 window id) or unique title/class substring; omit for the active/focused window. On river \"focused\" - or an omitted selector - addresses the focused view directly, and wlr-toplevel-N ids address enumerated windows when the compositor advertises foreign-toplevel"
     },
     "x": { "type": "integer", "description": "Target x (move only)" },
     "y": { "type": "integer", "description": "Target y (move only)" },
@@ -1762,8 +1779,8 @@ Per-action parameter rules (violations -> `InvalidParams`):
 | `focus` | - | `x`, `y`, `w`, `h` |
 | `move` | `x`, `y` *or* `dx`, `dy` | `w`, `h`, `dw`, `dh` |
 | `resize` | `w`, `h` *or* `dw`, `dh` | `x`, `y`, `dx`, `dy` |
-| `minimize`, `close` | - | all geometry | `dx`/`dy`/`dw`/`dh` are **relative deltas for focused-view-only backends**
-(river, v1.4.0): they are rejected with `InvalidParams` on any
+| `minimize`, `close` | - | all geometry | `dx`/`dy`/`dw`/`dh` are **relative deltas for river's focused-view geometry**
+(v1.4.0): they are rejected with `InvalidParams` on any
 list-capable backend, mixing absolute and relative pairs is rejected,
 and deltas on non-geometry actions are rejected. On river they dispatch
 `riverctl move <dir> <delta>` / `resize <axis> <delta>` against the
@@ -1771,12 +1788,16 @@ focused view.
 
 `minimize` maps to Hyprland `movetoworkspacesilent special:...`; `close` maps
 to `closewindow`. Other backends map honestly: sway `minimize` -> scratchpad,
-Wayfire `minimize` -> `wm-actions/set-minimized`, river has no minimize
-state (error). On river, `window:"focused"` (or an omitted selector - the
-focused view *is* the only addressable target) reaches dispatch directly:
-`close` -> `riverctl close`, `move`/`resize` -> the delta forms above.
-Absolute `x,y`/`w,h`, `focus` (the focused view is implicit), and
-`minimize` (no such river state) all error honestly at the provider.
+Wayfire `minimize` -> `wm-actions/set-minimized`. On river,
+`window:"focused"` (or an omitted selector) reaches `riverctl` directly -
+`close` -> `riverctl close`, `move`/`resize` -> the delta forms above;
+absolute `x,y`/`w,h` error honestly (river has no absolute form). With
+foreign-toplevel advertised, `wlr-toplevel-N` ids from `get_windows`
+address any window for `focus`/`close`/`minimize`/`maximize`/
+`fullscreen` (and the un- variants where the protocol defines them);
+the expected title/class are re-verified against a fresh enumeration
+before dispatch so a stale index fails closed. Without the protocol,
+non-focused selectors and verbs beyond `close`/geometry error honestly.
 Ambiguous `window` substrings (>1 match) fail with
 `InvalidParams` listing the candidate addresses.
 
@@ -2413,7 +2434,10 @@ bypass:
 | 4 - Enterprise | HTTP auth surface (`uxcp_*` enforcement on `:3010`, fail-closed bind), rate limiting, AES-256-GCM history, replay, metrics; opt-in Sentry via `ULTRANIX_MCP_SENTRY_DSN` (wired at v1.1.0) | `metrics`, `get_action_history`, `replay_action`, `clear_action_history` |
 | 5 - Portability | Non-Hyprland backends (KDE/GNOME via portal+uinput; X11 via `scrot`/`xdotool`/`wmctrl` - shipped at v1.1.0; portal RemoteDesktop->PipeWire capture - v1.1.0) | no new tools - widens where existing ones work |
 | 6 - v1.2.0 breadth wave | Clipboard providers (wl-clipboard/xclip), plugin tool-macros (`<state>/plugins/*.json`), bounded recording, compositor breadth (sway IPC window provider; KDE/GNOME portal routing; `kdotool` window provider on KDE), per-backend cargo features | `screen_record`; `plugin_list`, `plugin_run`, `plugin_reload`; `clipboard_get`, `clipboard_set`, `clipboard_clear` |
-| 7 - v1.4.0 reach wave | Wayfire (`wayfire-ipc`), river (`riverctl`, focused-view-only rung - `window_control` on `"focused"`/`close` + relative deltas), and GNOME Window Calls (`gnome-shell`) window providers; live rolling-window capture; plugin-exposed dynamic tools (manifest `tool` sections); OCI/-bin distribution | `screen_stream`; plugin-exposed tools join `tools/list` dynamically (not catalogued); `window_control` gains `dx,dy`/`dw,dh` delta params | Tools advertised in `tools/list` always reflect the *currently available*
+| 7 - v1.4.0 reach wave | Wayfire (`wayfire-ipc`), river (`riverctl`, focused-view-only rung - `window_control` on `"focused"`/`close` + relative deltas), and GNOME Window Calls (`gnome-shell`) window providers; live rolling-window capture; plugin-exposed dynamic tools (manifest `tool` sections); OCI/-bin distribution | `screen_stream`; plugin-exposed tools join `tools/list` dynamically (not catalogued); `window_control` gains `dx,dy`/`dw,dh` delta params |
+| 8 - unreleased wlroots-breadth wave | Shared `wlr-toplevel` rung (`zwlr_foreign_toplevel_manager_v1`) behind every wlroots window provider and as the sole rung on unknown wlroots sessions; river composite provider (foreign-toplevel enumeration + `riverctl` geometry); `screen_stream` `latest` long-poll | `screen_stream` gains `since`/`wait_ms`; `window_control` accepts `wlr-toplevel-N` ids |
+
+Tools advertised in `tools/list` always reflect the *currently available*
 providers: a Phase-2 tool on a system without an AT-SPI bus is still listed
 (it is part of the stable surface) but returns `ProviderUnavailable` when
 called. Deployment-time `--category` filters (see
