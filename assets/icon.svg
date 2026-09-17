@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="112" fill="#0f172a"/>
+  <!-- Monitor frame -->
+  <rect x="76" y="102" width="360" height="246" rx="30" fill="none" stroke="#22d3ee" stroke-width="22"/>
+  <!-- Stand & Base -->
+  <path d="M256 348 v62 M180 410 h152" fill="none" stroke="#22d3ee" stroke-width="22" stroke-linecap="round"/>
+  <!-- Terminal Prompt > _ -->
+  <path d="M156 191 l40 34 -40 34" fill="none" stroke="#22d3ee" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="218" y1="259" x2="262" y2="259" stroke="#22d3ee" stroke-width="22" stroke-linecap="round"/>
+  <!-- Shield accent with checkmark -->
+  <path d="M300 189 h56 v28 c0 28 -28 44 -28 44 s-28 -16 -28 -44 z" fill="#22d3ee"/>
+  <path d="M314 222 l9 9 18 -18" fill="none" stroke="#0f172a" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
