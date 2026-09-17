@@ -415,13 +415,14 @@ impl ServerHandler for UltraNixServer {
             .and_then(|k| k.0.clone());
         let result = match &self.security {
             Some(sec) => {
-                tools::call_tool_secured(
+                tools::call_tool_secured_with_peer(
                     &params.name,
                     args,
                     &self.providers,
                     sec,
                     &self.session_id,
                     key_id.as_deref(),
+                    Some(context.peer.clone()),
                 )
                 .await
             }
@@ -447,7 +448,13 @@ impl ServerHandler for UltraNixServer {
                     {
                         Err(err)
                     } else {
-                        tools::call_tool(&params.name, args, &self.providers).await
+                        tools::call_tool_with_peer(
+                            &params.name,
+                            args,
+                            &self.providers,
+                            Some(context.peer.clone()),
+                        )
+                        .await
                     }
                 }
             },

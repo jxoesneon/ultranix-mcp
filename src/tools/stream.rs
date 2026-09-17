@@ -36,7 +36,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::Duration;
 
-use rmcp::model::{CallToolResult, ContentBlock, ErrorCode, ErrorData, Tool};
+use rmcp::RoleServer;
+use rmcp::model::{CallToolResult, ContentBlock, CustomNotification, ErrorCode, ErrorData, Tool};
+use rmcp::service::Peer;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -112,6 +114,19 @@ struct StreamParams {
     #[serde(default)]
     #[schemars(range(min = 0, max = 30000))]
     wait_ms: u64,
+    /// `start` only: emit an `ultranix/stream_frame` notification to the
+    /// starting session on every written frame (metadata only - pixels
+    /// still come from `latest`). Requires the client's transport to
+    /// deliver server notifications (stdio does; streamable HTTP needs
+    /// the client's standalone SSE stream open).
+    #[serde(default)]
+    notify: bool,
+    /// `start` only: scope the stream to a single toplevel window by
+    /// stable identifier (`wlr-toplevel-<id>` from `get_windows`, or the
+    /// bare identifier). Requires the ext foreign-toplevel capture
+    /// source; an unknown id fails rather than capturing the whole
+    /// screen.
+    window: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -259,22 +274,24 @@ pub(super) async fn dispatch(
     name: &str,
     args: &Map<String, Value>,
     providers: &Providers,
+    peer: Option<&Peer<RoleServer>>,
 ) -> Option<Result<CallToolResult, ErrorData>> {
     Some(match name {
-        "screen_stream" => screen_stream(args, providers).await,
+        "screen_stream" => screen_stream(args, providers, peer).await,
         _ => return None,
     })
 }
 
-/// `screen_stream` entry point - same signature as `screen_record`'s
-/// handler so the mod.rs dispatch arm is mechanical.
+/// `screen_stream` entry point - `peer` is the request's MCP peer,
+/// needed only for `start {notify}` frame notifications.
 pub async fn screen_stream(
     args: &Map<String, Value>,
     providers: &Providers,
+    peer: Option<&Peer<RoleServer>>,
 ) -> Result<CallToolResult, ErrorData> {
     let p: StreamParams = parse_args("screen_stream", args)?;
     match p.action {
-        StreamAction::Start => stream_start(&p, args, providers).await,
+        StreamAction::Start => stream_start(&p, args, providers, peer).await,
         StreamAction::Status => Ok(stream_status().await),
         StreamAction::Latest => {
             if p.wait_ms > MAX_WAIT_MS {
@@ -288,10 +305,54 @@ pub async fn screen_stream(
     }
 }
 
+/// One written frame, described to `ultranix/stream_frame`
+/// notification subscribers. Metadata only - pixels stay pull-only via
+/// `latest`, so a client that ignores notifications loses nothing.
+struct FrameNotice {
+    stream_id: String,
+    seq: u64,
+    file: String,
+    width: u32,
+    height: u32,
+}
+
+/// Per-written-frame sink. Production wraps the `start` request's MCP
+/// peer; tests collect into a `Vec`.
+type FrameSink = Arc<dyn Fn(&FrameNotice) + Send + Sync>;
+
+/// `ultranix/stream_frame` notification method - a custom (non-MCP-core)
+/// notification per the spec's extension convention.
+const FRAME_NOTIFICATION: &str = "ultranix/stream_frame";
+
+/// Wrap a `Peer` as a `FrameSink`: each notice spawns the send so a
+/// slow or absent client can never stall the capture loop; delivery
+/// failure (transport gone) just ends notification delivery - the
+/// stream itself is unaffected.
+fn peer_sink(peer: Peer<RoleServer>) -> FrameSink {
+    Arc::new(move |n: &FrameNotice| {
+        let peer = peer.clone();
+        let params = json!({
+            "stream_id": n.stream_id,
+            "seq": n.seq,
+            "file": n.file,
+            "width": n.width,
+            "height": n.height,
+        });
+        tokio::spawn(async move {
+            let _ = peer
+                .send_notification(rmcp::model::ServerNotification::CustomNotification(
+                    CustomNotification::new(FRAME_NOTIFICATION, Some(params)),
+                ))
+                .await;
+        });
+    })
+}
+
 async fn stream_start(
     p: &StreamParams,
     args: &Map<String, Value>,
     providers: &Providers,
+    peer: Option<&Peer<RoleServer>>,
 ) -> Result<CallToolResult, ErrorData> {
     if !(MIN_FPS..=MAX_FPS).contains(&p.fps) {
         return Err(invalid_params(format!(
@@ -314,6 +375,28 @@ async fn stream_start(
         .capture
         .clone()
         .ok_or_else(|| provider_unavailable("CaptureProvider"))?;
+
+    // `window` requires a provider that can scope a session to a
+    // toplevel - reject up front rather than letting the task die with
+    // a capture_error or, worse, silently capture the full screen.
+    if p.window.is_some() && !capture.window_stream_supported() {
+        return Ok(tool_error(
+            "screen_stream: window capture is not supported by the capture backend",
+        ));
+    }
+    // Compositor ids are not capture identifiers - resolve `get_windows`
+    // ids to titles; ext identifiers and titles pass through.
+    let window_sel = match &p.window {
+        Some(w) => Some(super::resolve_window_selector(providers, w).await),
+        None => None,
+    };
+    // `notify` needs a peer to send to - silently degrades to off when
+    // called without one (tests / direct dispatch).
+    let sink = match (p.notify, peer) {
+        (true, Some(peer)) => Some(peer_sink(peer.clone())),
+        _ => None,
+    };
+    let notify_on = sink.is_some();
 
     // Cheap occupied check before any blocking work; the authoritative
     // check re-runs under the insert lock below (TOCTOU between the two
@@ -357,6 +440,9 @@ async fn stream_start(
         started_at.clone(),
         Arc::clone(&stats),
         cancel_rx,
+        id.clone(),
+        window_sel.clone(),
+        sink,
     ));
     let mut reg = REGISTRY.lock().await;
     if let Some(h) = reg.as_ref() {
@@ -400,6 +486,8 @@ async fn stream_start(
         "interval_ms": 1_000 / p.fps,
         "max_frames": p.max_frames,
         "max_bytes": p.max_bytes,
+        "window": p.window,
+        "notify": notify_on,
         "started_at": started_at,
     })))
 }
@@ -659,6 +747,9 @@ async fn run_stream(
     started_at: String,
     stats: Arc<StdMutex<Stats>>,
     mut cancel: watch::Receiver<bool>,
+    stream_id: String,
+    window: Option<String>,
+    notify: Option<FrameSink>,
 ) {
     let interval = Duration::from_millis(1_000 / fps.max(1));
     let start = Instant::now();
@@ -696,16 +787,39 @@ async fn run_stream(
     // fail to open still fall back to polling. The capability hint is
     // checked first so the thread is never spawned for providers that
     // can only poll.
-    let mut session_rx = if capture.stream_sessions_supported() {
+    // Window mode gates on the window-session hint, output mode on the
+    // output-session hint - a provider can support one without the other.
+    let session_ok = if window.is_some() {
+        capture.window_stream_supported()
+    } else {
+        capture.stream_sessions_supported()
+    };
+    let mut session_rx = if session_ok {
         let capture = Arc::clone(&capture);
         let cancel_rx = cancel.clone();
+        let window = window.clone();
         let (tx, rx) = tokio::sync::mpsc::channel::<StreamMsg>(4);
         std::thread::Builder::new()
             .name("screen-stream-capture".into())
             .spawn(move || {
-                let Some(mut session) = capture.stream_capture() else {
-                    let _ = tx.blocking_send(StreamMsg::Unsupported);
-                    return;
+                let mut session = match &window {
+                    // Window mode: `Err` (unknown id / protocols absent)
+                    // is a hard failure - falling back to full-screen
+                    // would capture something the caller did not ask for.
+                    Some(id) => match capture.stream_capture_window(id) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let _ = tx.blocking_send(StreamMsg::Failed(format!("{e:#}")));
+                            return;
+                        }
+                    },
+                    None => match capture.stream_capture() {
+                        Some(s) => s,
+                        None => {
+                            let _ = tx.blocking_send(StreamMsg::Unsupported);
+                            return;
+                        }
+                    },
                 };
                 // `fps` becomes a rate ceiling in session mode - the
                 // compositor may produce changes faster than the
@@ -746,6 +860,10 @@ async fn run_stream(
             };
             match msg {
                 Some(StreamMsg::Unsupported) => {
+                    if window.is_some() {
+                        st.error = Some("window capture session unavailable".into());
+                        break "capture_error";
+                    }
                     // No session support - drop the dead channel and
                     // continue into the polled branch next iteration.
                     session_rx = None;
@@ -762,6 +880,13 @@ async fn run_stream(
                 }
             }
         } else {
+            if window.is_some() {
+                // `start` gates on `window_stream_supported`, but a
+                // window-scoped stream must never silently degrade to
+                // full-screen polling - fail closed.
+                st.error = Some("window capture session unavailable".into());
+                break "capture_error";
+            }
             tokio::select! {
                 biased;
                 _ = cancel.changed() => break "stopped",
@@ -828,9 +953,18 @@ async fn run_stream(
                 "t_ms": start.elapsed().as_millis() as u64,
             }));
             let mut s = lock_stats(&stats);
-            s.latest_frame = Some(file);
+            s.latest_frame = Some(file.clone());
             s.latest_width = frame.width;
             s.latest_height = frame.height;
+            if let Some(sink) = &notify {
+                sink(&FrameNotice {
+                    stream_id: stream_id.clone(),
+                    seq: st.seq,
+                    file,
+                    width: frame.width,
+                    height: frame.height,
+                });
+            }
         }
         let mut s = lock_stats(&stats);
         s.frames_written = st.seq;
@@ -1063,7 +1197,7 @@ mod tests {
     }
 
     async fn call(action_args: Value, providers: &Providers) -> CallToolResult {
-        dispatch("screen_stream", &args(action_args), providers)
+        dispatch("screen_stream", &args(action_args), providers, None)
             .await
             .expect("dispatch claims screen_stream")
             .expect("tool call must not be a JSON-RPC error")
@@ -1113,7 +1247,7 @@ mod tests {
             json!({"action": "latest", "wait_ms": MAX_WAIT_MS + 1}),
             json!({"action": "start", "bogus": true}), // deny_unknown_fields
         ] {
-            let err = screen_stream(&args(v.clone()), &Providers::all_mocks())
+            let err = screen_stream(&args(v.clone()), &Providers::all_mocks(), None)
                 .await
                 .unwrap_err();
             assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "args: {v}");
@@ -1130,7 +1264,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_capture_provider_is_32010() {
-        let err = screen_stream(&args(json!({"action": "start"})), &Providers::empty())
+        let err = screen_stream(&args(json!({"action": "start"})), &Providers::empty(), None)
             .await
             .unwrap_err();
         assert_eq!(err.code.0, -32010);
@@ -1621,6 +1755,190 @@ mod tests {
         let stop = json_of(&call(json!({"action": "stop"}), &providers).await);
         assert_eq!(stop["stop_reason"], "stopped");
 
+        clear_base();
+    }
+
+    // ---- window-scoped sessions ----
+
+    /// Provider that only supports window-scoped sessions - output
+    /// sessions and polling both bail, so any fallback surfaces as a
+    /// capture_error instead of silently capturing the full screen.
+    /// `open_err` makes `stream_capture_window` fail (unknown id etc).
+    struct WindowOnlyCapture {
+        script: StdMutex<VecDeque<anyhow::Result<Option<Frame>>>>,
+        open_err: StdMutex<Option<String>>,
+    }
+
+    #[async_trait]
+    impl CaptureProvider for WindowOnlyCapture {
+        async fn capture_frame(&self, _r: Option<crate::traits::Rect>) -> anyhow::Result<Frame> {
+            anyhow::bail!("polled capture ran during window mode")
+        }
+        async fn cursor_position(&self) -> anyhow::Result<(i32, i32)> {
+            Ok((0, 0))
+        }
+        async fn screen_info(&self) -> anyhow::Result<Value> {
+            Ok(json!({"monitors": []}))
+        }
+        fn window_stream_supported(&self) -> bool {
+            true
+        }
+        fn stream_capture_window(
+            &self,
+            _window_id: &str,
+        ) -> anyhow::Result<Box<dyn crate::traits::StreamCapture>> {
+            if let Some(e) = self.open_err.lock().unwrap().take() {
+                anyhow::bail!(e);
+            }
+            let script = std::mem::take(&mut *self.script.lock().unwrap());
+            Ok(Box::new(ScriptedSession { script }))
+        }
+    }
+
+    #[tokio::test]
+    async fn window_stream_uses_window_session() {
+        let _g = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        use_base(&tmp);
+        let providers = providers_with(Arc::new(WindowOnlyCapture {
+            script: StdMutex::new(VecDeque::from(vec![
+                Ok(Some(tagged_frame(1))),
+                Ok(None),
+                Ok(Some(tagged_frame(2))),
+            ])),
+            open_err: StdMutex::new(None),
+        }));
+
+        let res = call(
+            json!({"action": "start", "fps": 10, "window": "wlr-toplevel-abc123"}),
+            &providers,
+        )
+        .await;
+        assert_eq!(res.is_error, Some(false), "{}", text_of(&res));
+        let start = json_of(&res);
+        assert_eq!(start["window"], "wlr-toplevel-abc123");
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let status = json_of(&call(json!({"action": "status"}), &providers).await);
+        assert_eq!(status["frames_written"], 2, "{status}");
+
+        call(json!({"action": "stop"}), &providers).await;
+        clear_base();
+    }
+
+    #[tokio::test]
+    async fn window_stream_unknown_id_is_capture_error_not_fallback() {
+        let _g = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        use_base(&tmp);
+        let providers = providers_with(Arc::new(WindowOnlyCapture {
+            script: StdMutex::new(VecDeque::new()),
+            open_err: StdMutex::new(Some("no live toplevel with identifier \"bogus\"".into())),
+        }));
+
+        call(
+            json!({"action": "start", "fps": 10, "window": "bogus"}),
+            &providers,
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let status = json_of(&call(json!({"action": "status"}), &providers).await);
+        assert_eq!(status["stop_reason"], "capture_error");
+        assert!(
+            status["last_error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no live toplevel"),
+            "{status}"
+        );
+        // The fail-closed invariant: no frames were written by falling
+        // back to a full-screen capture under a window selector.
+        assert_eq!(status["frames_written"], 0);
+
+        call(json!({"action": "stop"}), &providers).await;
+        clear_base();
+    }
+
+    #[tokio::test]
+    async fn window_stream_rejected_when_backend_lacks_support() {
+        let _g = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        use_base(&tmp);
+        // `SessionCapture` supports output sessions only - the default
+        // `window_stream_supported` is false.
+        let providers = providers_with(Arc::new(SessionCapture {
+            script: StdMutex::new(VecDeque::new()),
+        }));
+
+        let res = call(
+            json!({"action": "start", "window": "wlr-toplevel-1"}),
+            &providers,
+        )
+        .await;
+        assert_eq!(res.is_error, Some(true));
+        assert!(text_of(&res).contains("not supported"), "{}", text_of(&res));
+
+        clear_base();
+    }
+
+    // ---- frame notifications ----
+
+    #[tokio::test]
+    async fn stream_notify_emits_per_written_frame() {
+        let _g = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let base = use_base(&tmp);
+        let dir = {
+            let d = stream_dir().expect("mint stream dir");
+            assert!(d.starts_with(&base));
+            d
+        };
+        let notices = Arc::new(StdMutex::new(Vec::<(u64, String)>::new()));
+        let sink: FrameSink = {
+            let notices = Arc::clone(&notices);
+            Arc::new(move |n: &FrameNotice| {
+                assert_eq!(n.stream_id, "test-stream");
+                notices.lock().unwrap().push((n.seq, n.file.clone()));
+            })
+        };
+        let capture: Arc<dyn CaptureProvider> = Arc::new(SessionCapture {
+            script: StdMutex::new(VecDeque::from(vec![
+                Ok(Some(tagged_frame(1))),
+                Ok(None), // unchanged - no notice
+                Ok(Some(tagged_frame(2))),
+            ])),
+        });
+        let stats = Arc::new(StdMutex::new(Stats::default()));
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let join = tokio::spawn(run_stream(
+            dir,
+            capture,
+            "mock",
+            Map::new(),
+            10,
+            600,
+            DEFAULT_MAX_BYTES,
+            "ts".into(),
+            stats,
+            cancel_rx,
+            "test-stream".into(),
+            None,
+            Some(sink),
+        ));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let _ = cancel_tx.send(true);
+        let _ = join.await;
+
+        let got = notices.lock().unwrap().clone();
+        assert_eq!(
+            got,
+            vec![
+                (1, "frame_00001.png".to_string()),
+                (2, "frame_00002.png".to_string()),
+            ],
+            "one notice per written frame, in seq order"
+        );
         clear_base();
     }
 }

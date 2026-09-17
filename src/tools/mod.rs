@@ -13,7 +13,9 @@ mod vision;
 
 use std::sync::{Arc, LazyLock};
 
+use rmcp::RoleServer;
 use rmcp::model::{CallToolResult, ContentBlock, ErrorCode, ErrorData, JsonObject, Tool};
+use rmcp::service::Peer;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
@@ -292,8 +294,20 @@ pub async fn call_tool(
     args: serde_json::Map<String, Value>,
     providers: &Providers,
 ) -> Result<CallToolResult, ErrorData> {
+    call_tool_with_peer(name, args, providers, None).await
+}
+
+/// [`call_tool`] with the request's MCP peer attached. Tools that emit
+/// server-initiated notifications (`screen_stream`'s per-frame notices)
+/// deliver them to this peer; `None` disables notification delivery.
+pub async fn call_tool_with_peer(
+    name: &str,
+    args: serde_json::Map<String, Value>,
+    providers: &Providers,
+    peer: Option<Peer<RoleServer>>,
+) -> Result<CallToolResult, ErrorData> {
     let t0 = std::time::Instant::now();
-    let result = dispatch(name, &args, providers).await;
+    let result = dispatch(name, &args, providers, peer.as_ref()).await;
     record_tool_metric(name, providers, t0.elapsed(), outcome_of(&result));
     result
 }
@@ -305,6 +319,7 @@ async fn dispatch(
     name: &str,
     args: &Map<String, Value>,
     providers: &Providers,
+    peer: Option<&Peer<RoleServer>>,
 ) -> Result<CallToolResult, ErrorData> {
     if let Some(r) = mouse::dispatch(name, args, providers).await {
         return r;
@@ -327,13 +342,32 @@ async fn dispatch(
     if let Some(r) = record::dispatch(name, args, providers).await {
         return r;
     }
-    if let Some(r) = stream::dispatch(name, args, providers).await {
+    if let Some(r) = stream::dispatch(name, args, providers, peer).await {
         return r;
     }
     if let Some(r) = plugin::dispatch(name, args, providers).await {
         return r;
     }
     Err(unknown_tool(name))
+}
+
+/// Resolve a `window` selector for per-window capture (`screenshot`,
+/// `screen_stream`). `wlr-toplevel-*` stable identifiers pass through
+/// verbatim; a `get_windows` id that matches a live window resolves to
+/// its *title* - compositor ids like Hyprland's `0x...` addresses are
+/// not capture identifiers, but the window's title is; anything else
+/// passes through for the backend's own identifier/title match.
+pub(crate) async fn resolve_window_selector(providers: &Providers, window: &str) -> String {
+    if window.starts_with("wlr-toplevel-") {
+        return window.to_string();
+    }
+    if let Some(w) = &providers.window
+        && let Ok(list) = w.list_windows().await
+        && let Some(m) = list.iter().find(|x| x.id == window)
+    {
+        return m.title.clone();
+    }
+    window.to_string()
 }
 
 /// `dispatch` for the secured path - identical except the admin leg uses
@@ -348,6 +382,7 @@ async fn dispatch_secured(
     security: SecRef<'_>,
     session_id: &str,
     key_id: Option<&str>,
+    peer: Option<&Peer<RoleServer>>,
 ) -> Result<CallToolResult, ErrorData> {
     if let Some(r) = mouse::dispatch(name, args, providers).await {
         return r;
@@ -372,7 +407,7 @@ async fn dispatch_secured(
     if let Some(r) = record::dispatch(name, args, providers).await {
         return r;
     }
-    if let Some(r) = stream::dispatch(name, args, providers).await {
+    if let Some(r) = stream::dispatch(name, args, providers, peer).await {
         return r;
     }
     if let Some(r) =
@@ -550,6 +585,21 @@ pub async fn call_tool_secured<'a>(
     session_id: &str,
     key_id: Option<&str>,
 ) -> Result<CallToolResult, ErrorData> {
+    call_tool_secured_with_peer(name, args, providers, security, session_id, key_id, None).await
+}
+
+/// [`call_tool_secured`] with the request's MCP peer attached - see
+/// [`call_tool_with_peer`].
+#[allow(clippy::too_many_arguments)]
+pub async fn call_tool_secured_with_peer<'a>(
+    name: &str,
+    args: Map<String, Value>,
+    providers: &Providers,
+    security: impl Into<SecRef<'a>>,
+    session_id: &str,
+    key_id: Option<&str>,
+    peer: Option<Peer<RoleServer>>,
+) -> Result<CallToolResult, ErrorData> {
     let security = security.into();
     let t0 = std::time::Instant::now();
     let mut args = args;
@@ -694,7 +744,16 @@ pub async fn call_tool_secured<'a>(
         // `call_tool` would double-count every secured call - and the
         // admin leg must see the security context so `replay_action`
         // re-enters this same gated+audited path for the recorded call.
-        dispatch_secured(name, &args, providers, security, session_id, key_id).await
+        dispatch_secured(
+            name,
+            &args,
+            providers,
+            security,
+            session_id,
+            key_id,
+            peer.as_ref(),
+        )
+        .await
     };
 
     // Every invocation - gated or not, ok or error - emits one metric

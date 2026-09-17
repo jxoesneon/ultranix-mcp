@@ -738,7 +738,9 @@ Capture-side tools use `CaptureProvider`; tree-side tools use
 
 Capture the screen as PNG. Without arguments it captures the whole layout (or
 the spatial-focus rect when set); `region` crops to a rect and `display`
-limits capture to one output.
+limits capture to one output. `window` captures a single toplevel window
+instead - it is its own scope and cannot be combined with `region` or
+`display`.
 
 **inputSchema**
 
@@ -761,11 +763,26 @@ limits capture to one output.
     "display": {
       "type": "string",
       "description": "Output name from screen_info (e.g. \"eDP-1\", \"DP-2\"); omit for all outputs"
+    },
+    "window": {
+      "type": "string",
+      "description": "Toplevel window selector: a `get_windows` id, a `wlr-toplevel-<id>` stable identifier, or an exact unique window title"
     }
   },
   "additionalProperties": false
 }
 ```
+
+**`window` scope** (wlroots with `ext-image-copy-capture` +
+`ext-foreign-toplevel-image-capture-source` - Hyprland >= 0.54 / wlroots
+>= 0.20): captures just that window's buffer. The selector resolves in
+order - a `wlr-toplevel-` stable identifier passes through verbatim, an id
+from `get_windows` resolves to the window's title (compositor ids like
+Hyprland's `0x...` addresses are not capture identifiers), anything else
+is matched as an ext identifier first then as an exact window title.
+Unknown and ambiguous selectors fail - there is deliberately no
+full-screen fallback. On backends without the ext source the call errors
+honestly (`"backend does not support per-window capture"`).
 
 **Returns**: two content items - `text` (`"Captured <w>x<h> PNG of <scope>"`)
 then `image` (`image/png`, base64, physical pixels).
@@ -774,7 +791,7 @@ then `image` (`image/png`, base64, physical pixels).
 
 | Condition | Code |
 | --- | --- |
-| Bad region / unknown `display` | `-32602 InvalidParams` |
+| Bad region / unknown `display` / `window` combined with `region` or `display` | `-32602 InvalidParams` |
 | No capture backend (non-wlroots compositor without portal) | `-32010 ProviderUnavailable` |
 | Screencopy/portal denied or encode failed | `-32011 CaptureFailed` | **Example**
 
@@ -1390,6 +1407,14 @@ Shipped at v1.4.0. Works on any backend that can capture frames - same
     "wait_ms": {
       "type": "integer", "default": 0, "minimum": 0, "maximum": 30000,
       "description": "latest only: long-poll up to this long for a frame newer than since (or the first frame) before answering"
+    },
+    "notify": {
+      "type": "boolean", "default": false,
+      "description": "start only: emit an ultranix/stream_frame notification to the calling session on every written frame"
+    },
+    "window": {
+      "type": "string",
+      "description": "start only: scope the stream to one toplevel window - same selector resolution as screenshot's window"
     }
   },
   "required": ["action"],
@@ -1432,6 +1457,22 @@ Behaviour contract:
   RemoteDesktop portals the session open raises **one** `Start` consent
   dialog per `start` - nothing is persisted, so the next `start`
   re-consents.
+- **Window-scoped streams**(`start {window}`): where the compositor
+  advertises `ext-foreign-toplevel-image-capture-source` (Hyprland
+  >= 0.54 / wlroots >= 0.20) the session captures a single toplevel
+  instead of the whole output - same selector resolution as
+  `screenshot`'s `window`. A selector that matches nothing fails the
+  stream with `capture_error`; window mode never falls back to
+  full-screen polling.
+- **Frame notifications**(`start {notify: true}`): every written frame
+  emits an `ultranix/stream_frame` server notification to the session
+  that started the stream, carrying `{stream_id, seq, file, width,
+  height}` - metadata only, pixels still come from `latest`
+  (notifications are an optimisation: a client that ignores them loses
+  nothing, and there is no pixel push). Delivery needs a transport
+  that carries server->client notifications - stdio does; streamable
+  HTTP delivers them on the client's standalone SSE stream when one is
+  open.
 - **Ticking.**Missed ticks delay rather than burst (a slow backend
   never triggers a catch-up storm), and `stop` is checked before every
   tick; session-mode `stop` lands within one 200 ms poll slice.
@@ -2447,7 +2488,7 @@ bypass:
 | 5 - Portability | Non-Hyprland backends (KDE/GNOME via portal+uinput; X11 via `scrot`/`xdotool`/`wmctrl` - shipped at v1.1.0; portal RemoteDesktop->PipeWire capture - v1.1.0) | no new tools - widens where existing ones work |
 | 6 - v1.2.0 breadth wave | Clipboard providers (wl-clipboard/xclip), plugin tool-macros (`<state>/plugins/*.json`), bounded recording, compositor breadth (sway IPC window provider; KDE/GNOME portal routing; `kdotool` window provider on KDE), per-backend cargo features | `screen_record`; `plugin_list`, `plugin_run`, `plugin_reload`; `clipboard_get`, `clipboard_set`, `clipboard_clear` |
 | 7 - v1.4.0 reach wave | Wayfire (`wayfire-ipc`), river (`riverctl`, focused-view-only rung - `window_control` on `"focused"`/`close` + relative deltas), and GNOME Window Calls (`gnome-shell`) window providers; live rolling-window capture; plugin-exposed dynamic tools (manifest `tool` sections); OCI/-bin distribution | `screen_stream`; plugin-exposed tools join `tools/list` dynamically (not catalogued); `window_control` gains `dx,dy`/`dw,dh` delta params |
-| 8 - unreleased wlroots-breadth wave | Shared `wlr-toplevel` rung (`zwlr_foreign_toplevel_manager_v1`) behind every wlroots window provider and as the sole rung on unknown wlroots sessions; stable `ext_foreign_toplevel_list_v1` identifiers where advertised; river composite provider (foreign-toplevel enumeration + `riverctl` geometry); `screen_stream` damage-driven capture sessions (ext-image-copy-capture / `copy_with_damage` / held portal PipeWire) + `latest` long-poll | `screen_stream` gains `since`/`wait_ms` and damage-driven writes; `window_control` accepts `wlr-toplevel-<id>` selectors |
+| 8 - unreleased wlroots-breadth wave | Shared `wlr-toplevel` rung (`zwlr_foreign_toplevel_manager_v1`) behind every wlroots window provider and as the sole rung on unknown wlroots sessions; stable `ext_foreign_toplevel_list_v1` identifiers where advertised; river composite provider (foreign-toplevel enumeration + `riverctl` geometry); `screen_stream` damage-driven capture sessions (ext-image-copy-capture / `copy_with_damage` / held portal PipeWire) + `latest` long-poll + `notify`/`window` start params; per-window capture via `ext-foreign-toplevel-image-capture-source` | `screen_stream` gains `since`/`wait_ms`/`notify`/`window` and damage-driven writes; `window_control` accepts `wlr-toplevel-<id>` selectors; `screenshot` gains `window` |
 
 Tools advertised in `tools/list` always reflect the *currently available*
 providers: a Phase-2 tool on a system without an AT-SPI bus is still listed

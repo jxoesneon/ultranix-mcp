@@ -137,6 +137,11 @@ struct ScreenshotParams {
     region: Option<RegionParam>,
     /// Output name from screen_info (e.g. "eDP-1", "DP-2"); omit for all outputs
     display: Option<String>,
+    /// Toplevel window id from get_windows (stable identifier,
+    /// `wlr-toplevel-<id>` or bare). Captures just that window via the
+    /// ext foreign-toplevel capture source; mutually exclusive with
+    /// `region`/`display` and ignores spatial focus.
+    window: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -277,7 +282,8 @@ struct InvokeParams {
 fn screenshot_tool() -> Tool {
     tool::<ScreenshotParams>(
         "screenshot",
-        "Capture the screen as PNG; `region` crops, `display` limits to one output.",
+        "Capture the screen as PNG; `region` crops, `display` limits to one output, \
+         `window` captures a single toplevel by id.",
     )
 }
 
@@ -422,6 +428,27 @@ async fn screenshot(
         r.validate("screenshot")?;
     }
     let capture = capture_provider(providers)?;
+    // `window` is its own scope - it cannot be cropped or narrowed to
+    // an output, and spatial focus must not silently override it.
+    if let Some(w) = &p.window {
+        if p.region.is_some() || p.display.is_some() {
+            return Err(invalid_params(
+                "screenshot: `window` cannot be combined with `region` or `display`",
+            ));
+        }
+        // Compositor ids (Hyprland `0x...`, river indices) are not
+        // capture identifiers - resolve a `get_windows` id to its title;
+        // ext identifiers and titles pass through.
+        let sel = super::resolve_window_selector(providers, w).await;
+        let frame = backend!(capture.capture_window(&sel).await);
+        return Ok(CallToolResult::success(vec![
+            ContentBlock::text(format!(
+                "Captured {}x{} PNG of window {w}",
+                frame.width, frame.height
+            )),
+            ContentBlock::image(base64_encode(&frame.png), "image/png"),
+        ]));
+    }
     // Scope precedence: explicit `region` > `display` > spatial focus >
     // full layout (docs/TOOLS.md §Spatial Focus). `display` is resolved to
     // the output's layout rect and captured as a region - the capture
@@ -828,6 +855,7 @@ async fn invoke_element(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::Frame;
 
     #[test]
     fn output_rects_accepts_every_backend_shape() {
@@ -1054,5 +1082,77 @@ mod tests {
         assert_eq!(r.is_error, Some(false));
         let v: Value = serde_json::from_str(&text_of(&r)).unwrap();
         assert_eq!(v, json!({"found": false, "count": 0, "matches": []}));
+    }
+
+    // ---- `screenshot {window}` ----
+
+    /// Backend that can shoot a single toplevel.
+    struct WindowCap;
+
+    #[async_trait::async_trait]
+    impl crate::traits::CaptureProvider for WindowCap {
+        async fn capture_frame(&self, _r: Option<Rect>) -> anyhow::Result<Frame> {
+            anyhow::bail!("full-screen path must not run under a window selector")
+        }
+        async fn cursor_position(&self) -> anyhow::Result<(i32, i32)> {
+            Ok((0, 0))
+        }
+        async fn screen_info(&self) -> anyhow::Result<Value> {
+            Ok(json!({"monitors": []}))
+        }
+        async fn capture_window(&self, window_id: &str) -> anyhow::Result<Frame> {
+            assert_eq!(window_id, "wlr-toplevel-1");
+            Ok(Frame {
+                png: vec![9u8; 32],
+                width: 4,
+                height: 2,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn screenshot_window_captures_single_toplevel() {
+        let providers = Providers {
+            capture: Some(Arc::new(WindowCap)),
+            ..Providers::empty()
+        };
+        let r = screenshot(&args(json!({"window": "wlr-toplevel-1"})), &providers)
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(false));
+        assert_eq!(r.content.len(), 2);
+        assert!(
+            text_of(&r).contains("window wlr-toplevel-1"),
+            "{}",
+            text_of(&r)
+        );
+    }
+
+    #[tokio::test]
+    async fn screenshot_window_rejects_scope_combinations() {
+        for v in [
+            json!({"window": "w1", "region": {"x": 0, "y": 0, "w": 5, "h": 5}}),
+            json!({"window": "w1", "display": "eDP-1"}),
+        ] {
+            let err = screenshot(&args(v.clone()), &Providers::all_mocks())
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "args: {v}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn screenshot_window_unsupported_backend_reports_error() {
+        // `MockCapture` inherits the default `capture_window` - honest
+        // "not supported" rather than a full-screen substitute.
+        let r = screenshot(&args(json!({"window": "w1"})), &Providers::all_mocks())
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true));
+        assert!(text_of(&r).contains("not support"), "{}", text_of(&r));
     }
 }

@@ -517,6 +517,29 @@ impl CaptureProvider for WlrCapture {
         super::wlr_stream::open().ok()
     }
 
+    /// A live Wayland connection was already proven at construction, so
+    /// a window-scoped session is worth attempting - `open_window`
+    /// reports honestly when the ext protocol trio is not advertised.
+    fn window_stream_supported(&self) -> bool {
+        true
+    }
+
+    /// Per-window session via `ext_foreign_toplevel_image_capture_source_manager_v1`.
+    fn stream_capture_window(
+        &self,
+        window_id: &str,
+    ) -> Result<Box<dyn crate::traits::StreamCapture>> {
+        super::wlr_stream::open_window(window_id)
+    }
+
+    /// Single frame of one toplevel window for `screenshot {window}`.
+    async fn capture_window(&self, window_id: &str) -> Result<Frame> {
+        let id = window_id.to_string();
+        tokio::task::spawn_blocking(move || super::wlr_stream::capture_window_frame(&id))
+            .await
+            .context("window capture task")?
+    }
+
     async fn screen_info(&self) -> Result<Value> {
         if let Some(bin) = &self.hyprctl
             && let Ok(v) = hyprctl_monitors(bin).await

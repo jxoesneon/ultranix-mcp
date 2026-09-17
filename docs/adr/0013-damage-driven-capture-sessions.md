@@ -110,6 +110,26 @@ request, not a query, and neither toplevel protocol reports workspace
 membership. `WindowInfo.workspace` therefore stays `-1` on this
 backend rather than fabricating data.
 
+### Window-scoped sources and frame notifications (follow-up)
+
+Two additions landed on the same session machinery:
+
+- **`ext_foreign_toplevel_image_capture_source_manager_v1`** lets a
+  session capture a single toplevel (`screenshot {window}`,
+  `screen_stream {window}`). The capture selector accepts the ext
+  stable identifier or an exact unique title; the tool layer resolves
+  `get_windows` ids (Hyprland `0x...` addresses, river indices) to
+  titles first, because compositor ids are not capture identifiers.
+  Ambiguous or unknown selectors fail - a window stream never
+  degrades to full-screen capture, and polling fallback is disabled
+  in window mode.
+- **`ultranix/stream_frame` notifications**: `start {notify: true}`
+  emits an MCP `CustomNotification` to the session that started the
+  stream on each written frame - metadata only
+  (`stream_id`/`seq`/`file`/`width`/`height`); pixels stay pull-only
+  via `latest`. This is the push residual resolved without a second
+  authenticated surface: notifications ride the existing peer.
+
 ## Consequences
 
 - `screen_stream` on wlroots is event-driven end-to-end: idle desktops
@@ -135,9 +155,12 @@ backend rather than fabricating data.
   compositor today and keeps the decode path single-sourced with
   `wlr_capture`; dmabuf negotiation can land behind the same trait
   later without changing `screen_stream`.
-- **WebRTC/SSE push transport**: deferred (still) - long-poll plus
-  damage-driven production covers the agent diff-loop use case without
-  a second authenticated surface.
+- **WebRTC/SSE push transport**: superseded in scope - frame
+  notifications now ride the existing MCP peer as
+  `ultranix/stream_frame` notices, which covers the wake-on-change use
+  case without a second authenticated surface. Raw pixel push remains
+  deliberately unimplemented (a client that ignores notifications
+  loses nothing).
 - **`ext-workspace-v1` anyway**: rejected - without a toplevel mapping
   it would populate a workspace *list*, not the `workspace` field this
   work targeted.

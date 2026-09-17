@@ -20,6 +20,7 @@
 //! captures - the compositor only rewrites damaged regions, so stale
 //! bytes in undamaged areas are correct-by-construction.
 
+use std::collections::HashMap;
 use std::io::{Read as _, Seek as _};
 use std::os::fd::AsFd as _;
 use std::time::{Duration, Instant};
@@ -29,8 +30,15 @@ use tempfile::tempfile;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_output, wl_registry, wl_shm, wl_shm_pool::WlShmPool,
 };
-use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+use wayland_client::{
+    Connection, Dispatch, Proxy, QueueHandle, delegate_noop, event_created_child,
+};
+use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
+    ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1},
+    ext_foreign_toplevel_list_v1::{self, ExtForeignToplevelListV1},
+};
 use wayland_protocols::ext::image_capture_source::v1::client::{
+    ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1,
     ext_image_capture_source_v1::ExtImageCaptureSourceV1,
     ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
 };
@@ -76,34 +84,7 @@ pub(crate) fn open() -> Result<Box<dyn StreamCapture>> {
 
     if let (Some(mgr), Some(src_mgr)) = (state.ext_mgr.clone(), state.ext_src_mgr.clone()) {
         let source = src_mgr.create_source(&output, &qh, ());
-        let session = mgr.create_session(
-            &source,
-            ext_image_copy_capture_manager_v1::Options::empty(),
-            &qh,
-            (),
-        );
-        // Drain the constraint block (buffer_size/shm_format/done).
-        let deadline = Instant::now() + COPY_DEADLINE;
-        while !state.ext_done && Instant::now() < deadline {
-            queue
-                .roundtrip(&mut state)
-                .context("ext session constraints roundtrip")?;
-        }
-        if !state.ext_done {
-            bail!("ext-image-copy-capture sent no constraint set");
-        }
-        return Ok(Box::new(ExtSession {
-            queue,
-            state,
-            session,
-            _source: source,
-            _manager: mgr,
-            buf_key: None,
-            pool_file: None,
-            _pool: None,
-            buffer: None,
-            client_damage: None,
-        }));
+        return open_ext_session(queue, state, mgr, source);
     }
 
     let mgr = state
@@ -122,6 +103,126 @@ pub(crate) fn open() -> Result<Box<dyn StreamCapture>> {
     }))
 }
 
+/// Shared tail of `open`/`open_window`: create the ext session on an
+/// already-constructed source, drain the constraint block, and wrap it.
+fn open_ext_session(
+    mut queue: wayland_client::EventQueue<Sess>,
+    mut state: Sess,
+    mgr: ExtImageCopyCaptureManagerV1,
+    source: ExtImageCaptureSourceV1,
+) -> Result<Box<dyn StreamCapture>> {
+    let session = mgr.create_session(
+        &source,
+        ext_image_copy_capture_manager_v1::Options::empty(),
+        &queue.handle(),
+        (),
+    );
+    // Drain the constraint block (buffer_size/shm_format/done).
+    let deadline = Instant::now() + COPY_DEADLINE;
+    while !state.ext_done && Instant::now() < deadline {
+        queue
+            .roundtrip(&mut state)
+            .context("ext session constraints roundtrip")?;
+    }
+    if !state.ext_done {
+        bail!("ext-image-copy-capture sent no constraint set");
+    }
+    Ok(Box::new(ExtSession {
+        queue,
+        state,
+        session,
+        _source: source,
+        _manager: mgr,
+        buf_key: None,
+        pool_file: None,
+        _pool: None,
+        buffer: None,
+        client_damage: None,
+    }))
+}
+
+/// Session scoped to a single toplevel window via
+/// `ext_foreign_toplevel_image_capture_source_manager_v1`. `window_id`
+/// is the stable identifier `get_windows` reports - the `wlr-toplevel-`
+/// selector prefix is stripped, so both forms are accepted. An id that
+/// matches no live toplevel is an error; there is deliberately no
+/// full-screen fallback (capturing the wrong thing is worse than
+/// failing). Requires the ext protocol trio - there is no screencopy
+/// fallback because `zwlr_screencopy` has no toplevel source.
+pub(crate) fn open_window(window_id: &str) -> Result<Box<dyn StreamCapture>> {
+    let conn = Connection::connect_to_env().context("connect to WAYLAND_DISPLAY")?;
+    let mut queue = conn.new_event_queue();
+    let qh = queue.handle();
+    let mut state = Sess::default();
+    conn.display().get_registry(&qh, ());
+    queue.roundtrip(&mut state).context("registry roundtrip")?;
+
+    if state.shm.is_none() {
+        bail!("wl_shm not advertised");
+    }
+    let (mgr, src_mgr) = match (state.ext_mgr.clone(), state.ext_top_src_mgr.clone()) {
+        (Some(m), Some(s)) if state.ext_list.is_some() => (m, s),
+        _ => bail!(
+            "per-window capture needs ext-image-copy-capture, \
+             ext-foreign-toplevel-list and the toplevel capture source - \
+             not advertised by this compositor"
+        ),
+    };
+
+    // One roundtrip flushes the list bind and collects the initial
+    // toplevel burst (identifiers arrive on each handle). `finished`
+    // is *not* awaited - Hyprland never sends it, matching the
+    // enumeration strategy wlr_toplevel uses.
+    queue
+        .roundtrip(&mut state)
+        .context("toplevel enumeration roundtrip")?;
+
+    // Selector resolution: stable identifier (`wlr-toplevel-` prefix is
+    // stripped), else an *exact unique* title match. Compositor ids
+    // like Hyprland's `0x...` addresses resolve to titles in the tool
+    // layer before this call. Ambiguous titles fail - capturing the
+    // wrong window is worse than an error.
+    let want = window_id.strip_prefix("wlr-toplevel-").unwrap_or(window_id);
+    let mut by_id = state
+        .tops
+        .iter()
+        .filter(|(_, id, _, closed)| !*closed && id == want);
+    let handle = match by_id.next() {
+        Some((h, _, _, _)) => h.clone(),
+        None => {
+            let mut by_title: Vec<&ExtForeignToplevelHandleV1> = state
+                .tops
+                .iter()
+                .filter(|(_, _, title, closed)| !*closed && title == want)
+                .map(|(h, _, _, _)| h)
+                .collect();
+            match by_title.len() {
+                1 => by_title.pop().expect("len checked").clone(),
+                0 => bail!("no live toplevel with identifier or title {want:?}"),
+                _ => bail!(
+                    "title {want:?} matches {} toplevels - ambiguous",
+                    by_title.len()
+                ),
+            }
+        }
+    };
+
+    let source = src_mgr.create_source(&handle, &qh, ());
+    open_ext_session(queue, state, mgr, source)
+}
+
+/// One frame of a single toplevel window - `screenshot {window}`'s
+/// backend path. Opens a window session, waits out the first frame
+/// (always full-damage, so it cannot stall on an idle window), and
+/// closes. Runs on a blocking thread - callers must `spawn_blocking`.
+pub(crate) fn capture_window_frame(window_id: &str) -> Result<Frame> {
+    let mut session = open_window(window_id)?;
+    match session.next_frame(Duration::from_secs(2 * COPY_DEADLINE.as_secs()))? {
+        Some(f) => Ok(f),
+        None => bail!("window capture produced no frame within deadline"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared session state
 // ---------------------------------------------------------------------------
@@ -132,6 +233,16 @@ struct Sess {
     screencopy: Option<ZwlrScreencopyManagerV1>,
     ext_mgr: Option<ExtImageCopyCaptureManagerV1>,
     ext_src_mgr: Option<ExtOutputImageCaptureSourceManagerV1>,
+    ext_top_src_mgr: Option<ExtForeignToplevelImageCaptureSourceManagerV1>,
+    /// Bound ext toplevel-list proxy - kept alive so its handles stay
+    /// valid for the source request.
+    ext_list: Option<ExtForeignToplevelListV1>,
+    /// `ext_foreign_toplevel_handle_v1.id()` -> `tops` slot.
+    by_top_id: HashMap<wayland_client::backend::ObjectId, usize>,
+    /// (handle, identifier, title, closed) per enumerated toplevel, in
+    /// emission order.
+    tops: Vec<(ExtForeignToplevelHandleV1, String, String, bool)>,
+    list_finished: bool,
     outputs: Vec<wl_output::WlOutput>,
 
     // ---- ext session constraints ----
@@ -203,6 +314,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Sess {
                 "ext_output_image_capture_source_manager_v1" => {
                     state.ext_src_mgr = Some(registry.bind(name, version.min(1), qh, ()));
                 }
+                "ext_foreign_toplevel_image_capture_source_manager_v1" => {
+                    state.ext_top_src_mgr = Some(registry.bind(name, version.min(1), qh, ()));
+                }
+                "ext_foreign_toplevel_list_v1" => {
+                    state.ext_list = Some(registry.bind(name, version.min(1), qh, ()));
+                }
                 "wl_output" => {
                     state
                         .outputs
@@ -210,6 +327,55 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Sess {
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+impl Dispatch<ExtForeignToplevelListV1, ()> for Sess {
+    fn event(
+        state: &mut Self,
+        _: &ExtForeignToplevelListV1,
+        event: ext_foreign_toplevel_list_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use ext_foreign_toplevel_list_v1::Event;
+        match event {
+            Event::Toplevel { toplevel } => {
+                state.by_top_id.insert(toplevel.id(), state.tops.len());
+                state
+                    .tops
+                    .push((toplevel, String::new(), String::new(), false));
+            }
+            Event::Finished => state.list_finished = true,
+            _ => {}
+        }
+    }
+
+    event_created_child!(Sess, ExtForeignToplevelListV1, [
+        ext_foreign_toplevel_list_v1::EVT_TOPLEVEL_OPCODE => (ExtForeignToplevelHandleV1, ())
+    ]);
+}
+
+impl Dispatch<ExtForeignToplevelHandleV1, ()> for Sess {
+    fn event(
+        state: &mut Self,
+        handle: &ExtForeignToplevelHandleV1,
+        event: ext_foreign_toplevel_handle_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use ext_foreign_toplevel_handle_v1::Event;
+        let Some(&idx) = state.by_top_id.get(&handle.id()) else {
+            return;
+        };
+        match event {
+            Event::Identifier { identifier } => state.tops[idx].1 = identifier,
+            Event::Title { title } => state.tops[idx].2 = title,
+            Event::Closed => state.tops[idx].3 = true,
+            _ => {} // app_id/done unused - identifier and title are the selectors
         }
     }
 }
@@ -633,6 +799,7 @@ delegate_noop!(Sess: WlShmPool);
 delegate_noop!(Sess: ZwlrScreencopyManagerV1);
 delegate_noop!(Sess: ExtImageCopyCaptureManagerV1);
 delegate_noop!(Sess: ExtOutputImageCaptureSourceManagerV1);
+delegate_noop!(Sess: ExtForeignToplevelImageCaptureSourceManagerV1);
 delegate_noop!(Sess: ExtImageCaptureSourceV1);
 
 #[cfg(test)]
@@ -676,5 +843,40 @@ mod tests {
             .next_frame(Duration::from_millis(800))
             .expect("idle poll must not error");
         assert!(start.elapsed() >= Duration::from_millis(700));
+    }
+
+    /// Live smoke for per-window capture - `cargo test -- --ignored`.
+    /// Lists ext toplevels through the same machinery `open_window`
+    /// uses, captures the first live one, and confirms the frame is a
+    /// PNG smaller than a full-output frame.
+    #[test]
+    #[ignore = "needs a live session advertising the ext toplevel source"]
+    fn live_window_capture() {
+        let conn = Connection::connect_to_env().expect("wayland");
+        let mut queue = conn.new_event_queue();
+        let qh = queue.handle();
+        let mut state = Sess::default();
+        conn.display().get_registry(&qh, ());
+        queue.roundtrip(&mut state).unwrap();
+        if state.ext_top_src_mgr.is_none() || state.ext_list.is_none() {
+            eprintln!("compositor lacks ext toplevel capture source - skipping");
+            return;
+        }
+        // `finished` is not awaited - Hyprland never sends it; one
+        // roundtrip collects the initial toplevel burst.
+        queue.roundtrip(&mut state).unwrap();
+        let Some((_, id, _, _)) = state
+            .tops
+            .iter()
+            .find(|(_, id, _, c)| !*c && !id.is_empty())
+        else {
+            eprintln!("no identified toplevels - skipping");
+            return;
+        };
+        eprintln!("capturing toplevel {id}");
+        let frame = capture_window_frame(id).expect("window capture");
+        assert!(frame.png.starts_with(b"\x89PNG"));
+        assert!(frame.width > 0 && frame.height > 0);
+        eprintln!("window frame: {}x{}", frame.width, frame.height);
     }
 }

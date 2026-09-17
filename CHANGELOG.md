@@ -86,6 +86,23 @@ for frames.
   parks until a newer frame lands, the first frame exists, or the
   deadline expires - on timeout it returns a text-only "no new frame"
   result (`isError` stays false). No mutex is held across the wait.
+- **Per-window capture** - `screenshot` gains `window` and
+  `screen_stream` gains `window` on `start`: a session scoped to one
+  toplevel through `ext_foreign_toplevel_image_capture_source_manager_v1`
+  (Hyprland >= 0.54 / wlroots >= 0.20). Selectors resolve through the
+  `get_windows` id namespace - compositor ids like Hyprland `0x...`
+  addresses resolve to the window's title; `wlr-toplevel-<id>` stable
+  identifiers and exact unique titles also match. Unknown or ambiguous
+  selectors fail - window capture never falls back to a full-screen
+  capture. Backends without the ext source report
+  `"backend does not support per-window capture"`.
+- **Frame notifications** - `screen_stream` `start {notify: true}`
+  emits an `ultranix/stream_frame` server notification to the calling
+  session on every written frame, carrying `{stream_id, seq, file,
+  width, height}` (metadata only - pixels still come from `latest`).
+  Delivery uses MCP server->client notifications, so no second auth
+  surface: stdio delivers inline; streamable HTTP delivers on the
+  client's standalone SSE stream when open.
 
 ### Changed
 

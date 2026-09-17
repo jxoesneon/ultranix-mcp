@@ -101,6 +101,30 @@ pub trait CaptureProvider: Send + Sync {
     fn stream_capture(&self) -> Option<Box<dyn StreamCapture>> {
         None
     }
+    /// Cheap hint like [`stream_sessions_supported`](Self::stream_sessions_supported),
+    /// but for a session scoped to a single toplevel window. `false`
+    /// (default) lets `screen_stream` reject `window` on `start` without
+    /// touching the session thread.
+    fn window_stream_supported(&self) -> bool {
+        false
+    }
+    /// Damage-driven session scoped to one toplevel window, addressed
+    /// by the stable identifier `get_windows` reports (the suffix of
+    /// `wlr-toplevel-<id>` selectors). `Err` for providers that cannot
+    /// scope a session to a window, or when the id matches no live
+    /// toplevel - an unknown window must fail, never degrade to a
+    /// full-screen session.
+    fn stream_capture_window(&self, _window_id: &str) -> Result<Box<dyn StreamCapture>> {
+        anyhow::bail!("backend does not support per-window capture sessions")
+    }
+    /// Single frame of one toplevel window (the `screenshot`
+    /// counterpart of [`stream_capture_window`](Self::stream_capture_window)).
+    /// Default reports unsupported; backends that can open a window
+    /// session capture its first frame.
+    async fn capture_window(&self, window_id: &str) -> Result<Frame> {
+        let _ = window_id;
+        anyhow::bail!("backend does not support per-window capture")
+    }
 }
 
 /// Input injection (wlr virtual pointer/keyboard, uinput, portal, X11).
