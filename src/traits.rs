@@ -65,6 +65,18 @@ pub struct WindowInfo {
     pub monitor: Option<i64>,
 }
 
+/// Damage-driven frame source for `screen_stream`. Implementations own a
+/// persistent capture session (wlr-screencopy `copy_with_damage`,
+/// ext-image-copy-capture, a held portal PipeWire stream) and live on a
+/// dedicated blocking thread - `next_frame` performs synchronous
+/// roundtrips, so it must never run on the async executor.
+pub trait StreamCapture: Send {
+    /// Block up to `wait` for the next *changed* frame. `Ok(None)` means
+    /// the deadline passed with no screen damage - the stream task must
+    /// not advance `seq` or write for it.
+    fn next_frame(&mut self, wait: std::time::Duration) -> Result<Option<Frame>>;
+}
+
 /// Screen capture (wlr-screencopy / portal / X11).
 #[async_trait]
 pub trait CaptureProvider: Send + Sync {
@@ -74,6 +86,21 @@ pub trait CaptureProvider: Send + Sync {
     async fn cursor_position(&self) -> Result<(i32, i32)>;
     /// Monitor/output inventory as compositor-native JSON.
     async fn screen_info(&self) -> Result<Value>;
+    /// Cheap hint for `screen_stream`: whether `stream_capture` could
+    /// plausibly open a session here. `false` (default) skips the
+    /// session-driver thread entirely - no I/O, so it must stay a pure
+    /// probe of construction-time knowledge, never a live check.
+    /// Providers that override `stream_capture` override this too.
+    fn stream_sessions_supported(&self) -> bool {
+        false
+    }
+    /// Optional session-scoped capture for `screen_stream`: a fresh
+    /// damage-driven session, or `None` (default) for providers that
+    /// only support per-call frames. The returned session is created on
+    /// and owned by the caller's thread.
+    fn stream_capture(&self) -> Option<Box<dyn StreamCapture>> {
+        None
+    }
 }
 
 /// Input injection (wlr virtual pointer/keyboard, uinput, portal, X11).

@@ -25,6 +25,8 @@ pub mod overlay;
 pub mod portal_capture;
 #[cfg(feature = "a11y")]
 pub mod portal_input;
+#[cfg(feature = "pipewire")]
+pub mod portal_stream;
 pub mod river_window;
 pub mod sway_window;
 #[cfg(feature = "uinput")]
@@ -34,6 +36,8 @@ pub mod wayfire_window;
 pub mod wlr_capture;
 #[cfg(feature = "wayland")]
 pub mod wlr_input;
+#[cfg(feature = "wayland")]
+pub mod wlr_stream;
 #[cfg(feature = "wayland")]
 pub mod wlr_toplevel;
 pub mod x11_capture;

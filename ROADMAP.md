@@ -516,6 +516,22 @@ share ([ADR 0012](docs/adr/0012-shared-wlroots-toplevel-rung.md)):
       (`frames_written` watermark; replies report `seq`) and `wait_ms`
       (0..=30000) so agents park for a newer frame instead of
       busy-polling; timeout returns a text-only non-error result.
+- [x] **Stable toplevel identifiers**- `ext_foreign_toplevel_list_v1`
+      bound beside the wlr manager; `wlr-toplevel-<identifier>` ids
+      survive enumeration-order drift (correlated to handles by
+      title/app-id), index ids remain the fallback, all-digit
+      identifiers resolve as identifiers first. `monitor` populates
+      from `output_enter`/`output_leave` where compositors emit them.
+- [x] **Damage-driven `screen_stream`**([ADR 0013](docs/adr/0013-damage-driven-capture-sessions.md)) -
+      `StreamCapture` sessions push only changed frames: wlroots uses
+      `ext-image-copy-capture` (compositor-held capture until change;
+      Hyprland >= 0.54 / wlroots >= 0.20) with a `copy_with_damage`
+      fallback; RemoteDesktop portals hold one PipeWire stream per
+      `start` (single consent dialog, nothing persisted). `fps` becomes
+      a write-rate ceiling; polled providers are unchanged.
+- [x] **`ext-workspace-v1` assessed for `WindowInfo.workspace`**- no
+      toplevel-to-workspace association exists in the protocol, so the
+      field honestly stays `-1` on this backend (recorded in ADR 0013).
 
 ## Post-v1 Ideas
 
@@ -540,7 +556,8 @@ cleared most of the former list; honest residuals are noted inline.)
   does not yet exercise GPU EPs.
 - ~~**Streaming capture**~~ - **shipped at v1.4.0**as `screen_stream`
   (rolling-window disk capture; `latest` long-polls via `since`/`wait_ms`
-  after the wlroots-breadth wave). Residual: true push-style streaming
+  and writes are damage-driven on session-capable backends after the
+  wlroots-breadth wave). Residual: true push-style streaming
   (RTP/WebRTC/live feed) for remote-control UX remains open.
 - ~~**Headless operation**~~ - **shipped at v1.4.0**:
   [docs/HEADLESS.md](docs/HEADLESS.md) + `SessionType::Headless`

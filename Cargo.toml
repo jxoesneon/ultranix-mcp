@@ -41,6 +41,7 @@ libc = "0.2"
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 wayland-client = { version = "0.31.15", optional = true }
+wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"], optional = true }
 wayland-protocols-misc = { version = "0.3.12", features = ["client"], optional = true }
 xkbcommon = { version = "0.9", optional = true }
@@ -118,6 +119,7 @@ default = ["wayland", "uinput", "a11y", "pipewire", "vision", "browser", "sentry
 # input, layer-shell overlay.
 wayland = [
     "dep:wayland-client",
+    "dep:wayland-protocols",
     "dep:wayland-protocols-wlr",
     "dep:wayland-protocols-misc",
     "dep:xkbcommon",

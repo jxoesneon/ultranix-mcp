@@ -429,7 +429,7 @@ fn screen_info_blocking() -> Result<Value> {
 /// wl_shm formats [`shm_to_rgba`] can decode - the four 32-bit 8888
 /// layouts only; anything else the compositor offers is declined so the
 /// `buffer` event loop keeps looking for a usable one.
-fn shm_format_supported(fmt: wl_shm::Format) -> bool {
+pub(crate) fn shm_format_supported(fmt: wl_shm::Format) -> bool {
     matches!(
         fmt,
         wl_shm::Format::Xrgb8888
@@ -441,7 +441,7 @@ fn shm_format_supported(fmt: wl_shm::Format) -> bool {
 
 /// Unpack a wl_shm 8888 frame into tightly-packed RGBA8888.
 /// XRGB/ARGB arrive in memory as B,G,R,X (little-endian); XBGR/ABGR as R,G,B,X.
-fn shm_to_rgba(
+pub(crate) fn shm_to_rgba(
     raw: &[u8],
     format: wl_shm::Format,
     width: u32,
@@ -475,7 +475,7 @@ fn shm_to_rgba(
     out
 }
 
-fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+pub(crate) fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
     use image::ImageEncoder;
     let mut out = Vec::new();
     image::codecs::png::PngEncoder::new(&mut out)
@@ -501,6 +501,20 @@ impl CaptureProvider for WlrCapture {
             Some(bin) => hyprctl_cursorpos(bin).await,
             None => Err(anyhow!("hyprctl unavailable (not pinned at startup)")),
         }
+    }
+
+    /// `WlrCapture::new` already probed a live Wayland session, so a
+    /// damage-driven stream session is always worth attempting here -
+    /// `open` still degrades to `None` (then per-tick polling) on
+    /// compositors advertising neither capture protocol.
+    fn stream_sessions_supported(&self) -> bool {
+        true
+    }
+
+    /// Damage-driven session for `screen_stream` - ext-image-copy-capture
+    /// when advertised, else wlr-screencopy `copy_with_damage`.
+    fn stream_capture(&self) -> Option<Box<dyn crate::traits::StreamCapture>> {
+        super::wlr_stream::open().ok()
     }
 
     async fn screen_info(&self) -> Result<Value> {

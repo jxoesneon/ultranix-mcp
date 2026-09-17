@@ -124,11 +124,11 @@ const SCREENSHOT_IFACE: &str = "org.freedesktop.portal.Screenshot";
 /// [`PORTAL_DESKTOP_PATH`] - PipeWire frame source when Screenshot is
 /// absent. Ungated: the portal probe reports it regardless of the
 /// `pipewire` feature.
-const REMOTE_DESKTOP_IFACE: &str = "org.freedesktop.portal.RemoteDesktop";
+pub(crate) const REMOTE_DESKTOP_IFACE: &str = "org.freedesktop.portal.RemoteDesktop";
 /// `org.freedesktop.portal.Session` interface, implemented by the
 /// session object returned from `CreateSession` - used for `Close`.
 #[cfg(feature = "pipewire")]
-const SESSION_IFACE: &str = "org.freedesktop.portal.Session";
+pub(crate) const SESSION_IFACE: &str = "org.freedesktop.portal.Session";
 
 /// `SelectSources` `types` bitmask: monitor(1) only.
 #[cfg(feature = "pipewire")]
@@ -588,21 +588,28 @@ impl PortalCapture {
     /// session object also disappears when our connection drops.
     #[cfg(feature = "pipewire")]
     async fn close_session(&self, conn: &zbus::Connection, path: &OwnedObjectPath) {
-        let r = async {
-            let proxy = portal_call(zbus::Proxy::new(
-                conn,
-                PORTAL_BUS_NAME,
-                path.as_str(),
-                SESSION_IFACE,
-            ))
-            .await?;
-            portal_call(proxy.call::<_, _, ()>("Close", &())).await
-        }
-        .await;
+        let r = close_portal_session(conn, path).await;
         if let Err(e) = r {
             tracing::debug!("portal session Close failed (ignored): {e:#}");
         }
     }
+}
+
+/// `org.freedesktop.portal.Session.Close()` - shared with the
+/// held-stream session's teardown in `portal_stream`.
+#[cfg(feature = "pipewire")]
+pub(crate) async fn close_portal_session(
+    conn: &zbus::Connection,
+    path: &OwnedObjectPath,
+) -> Result<()> {
+    let proxy = portal_call(zbus::Proxy::new(
+        conn,
+        PORTAL_BUS_NAME,
+        path.as_str(),
+        SESSION_IFACE,
+    ))
+    .await?;
+    portal_call(proxy.call::<_, _, ()>("Close", &())).await
 }
 
 /// `Screenshot` options: non-interactive, no parent window, handle token.
@@ -628,7 +635,7 @@ fn screenshot_options(token: &str) -> Options {
 /// `persist_mode`/`restore_token` - every `Start` re-consents (module
 /// docs; THREAT_MODEL.md §4.2).
 #[cfg(feature = "pipewire")]
-fn create_session_options(handle_token: String, session_token: String) -> Options {
+pub(crate) fn create_session_options(handle_token: String, session_token: String) -> Options {
     let mut o = Options::new();
     o.insert("handle_token", Value::new(handle_token));
     o.insert("session_handle_token", Value::new(session_token));
@@ -637,7 +644,7 @@ fn create_session_options(handle_token: String, session_token: String) -> Option
 
 /// `SelectSources` options: a single monitor source, hidden cursor.
 #[cfg(feature = "pipewire")]
-fn select_sources_options(handle_token: String) -> Options {
+pub(crate) fn select_sources_options(handle_token: String) -> Options {
     let mut o = Options::new();
     o.insert("handle_token", Value::new(handle_token));
     o.insert("types", Value::new(SOURCE_MONITOR));
@@ -648,7 +655,7 @@ fn select_sources_options(handle_token: String) -> Options {
 
 /// `Start` options: handle token only.
 #[cfg(feature = "pipewire")]
-fn start_options(handle_token: String) -> Options {
+pub(crate) fn start_options(handle_token: String) -> Options {
     let mut o = Options::new();
     o.insert("handle_token", Value::new(handle_token));
     o
@@ -657,7 +664,7 @@ fn start_options(handle_token: String) -> Options {
 /// `session_handle` from a `CreateSession` response: spec type `s`, but
 /// accept `o` too (some backends return an object path variant).
 #[cfg(feature = "pipewire")]
-fn session_path_from(results: &HashMap<String, OwnedValue>) -> Result<OwnedObjectPath> {
+pub(crate) fn session_path_from(results: &HashMap<String, OwnedValue>) -> Result<OwnedObjectPath> {
     if let Ok(s) = get_string(results, "session_handle") {
         return OwnedObjectPath::try_from(s).context("session_handle is not an object path");
     }
@@ -672,7 +679,7 @@ fn session_path_from(results: &HashMap<String, OwnedValue>) -> Result<OwnedObjec
 /// (capture needs only the node id; geometry comes from format
 /// negotiation on the stream itself).
 #[cfg(feature = "pipewire")]
-fn stream_node_ids(results: &HashMap<String, OwnedValue>) -> Vec<u32> {
+pub(crate) fn stream_node_ids(results: &HashMap<String, OwnedValue>) -> Vec<u32> {
     results
         .get("streams")
         .and_then(|v| v.try_clone().ok())
@@ -693,7 +700,7 @@ fn stream_node_ids(results: &HashMap<String, OwnedValue>) -> Vec<u32> {
 /// pixels.
 #[cfg(feature = "pipewire")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PixelLayout {
+pub(crate) enum PixelLayout {
     /// B,G,R,X - swap B/R, alpha forced opaque (X is padding).
     Bgrx,
     /// B,G,R,A - swap B/R, keep alpha.
@@ -718,7 +725,7 @@ impl PixelLayout {
 
 /// Map a negotiated `SPA_VIDEO_FORMAT_*` onto a supported layout.
 #[cfg(feature = "pipewire")]
-fn pixel_layout(fmt: VideoFormat) -> Option<PixelLayout> {
+pub(crate) fn pixel_layout(fmt: VideoFormat) -> Option<PixelLayout> {
     if fmt == VideoFormat::BGRx {
         Some(PixelLayout::Bgrx)
     } else if fmt == VideoFormat::BGRA {
@@ -736,7 +743,7 @@ fn pixel_layout(fmt: VideoFormat) -> Option<PixelLayout> {
 /// `src` is already offset to the chunk start; `stride` is the chunk's
 /// row stride (0 treated as tightly packed, negative rejected).
 #[cfg(feature = "pipewire")]
-fn convert_frame(
+pub(crate) fn convert_frame(
     src: &[u8],
     width: u32,
     height: u32,
@@ -784,7 +791,7 @@ fn convert_frame(
 
 /// Tightly packed RGBA -> PNG bytes (the [`Frame`] payload).
 #[cfg(feature = "pipewire")]
-fn encode_frame(width: u32, height: u32, rgba: Vec<u8>) -> Result<(Vec<u8>, u32, u32)> {
+pub(crate) fn encode_frame(width: u32, height: u32, rgba: Vec<u8>) -> Result<(Vec<u8>, u32, u32)> {
     let img = image::RgbaImage::from_raw(width, height, rgba)
         .context("pipewire frame size does not match negotiated dimensions")?;
     let mut png = Vec::new();
@@ -792,6 +799,54 @@ fn encode_frame(width: u32, height: u32, rgba: Vec<u8>) -> Result<(Vec<u8>, u32,
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .context("encode pipewire frame as PNG")?;
     Ok((png, width, height))
+}
+
+/// Serialized `EnumFormat` pod offering raw video in the four supported
+/// 8888 layouts; size/framerate left as wide ranges for the backend to
+/// fixate. Shared with the held-stream session in `portal_stream` so the
+/// format contract stays single-sourced.
+#[cfg(feature = "pipewire")]
+pub(crate) fn raw_video_format_pod() -> Result<Vec<u8>> {
+    let format_obj = spa::pod::object! {
+        spa::utils::SpaTypes::ObjectParamFormat,
+        spa::param::ParamType::EnumFormat,
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaType,
+            Id, spa::param::format::MediaType::Video
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaSubtype,
+            Id, spa::param::format::MediaSubtype::Raw
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFormat,
+            Choice, Enum, Id,
+            VideoFormat::BGRx,
+            VideoFormat::BGRA,
+            VideoFormat::RGBx,
+            VideoFormat::RGBA
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoSize,
+            Choice, Range, Rectangle,
+            spa::utils::Rectangle { width: 1, height: 1 },
+            spa::utils::Rectangle { width: 1, height: 1 },
+            spa::utils::Rectangle { width: 16384, height: 16384 }
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFramerate,
+            Choice, Range, Fraction,
+            spa::utils::Fraction { num: 25, denom: 1 },
+            spa::utils::Fraction { num: 0, denom: 1 },
+            spa::utils::Fraction { num: 1000, denom: 1 }
+        ),
+    };
+    let (cursor, _len) = spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::<u8>::new()),
+        &spa::pod::Value::Object(format_obj),
+    )
+    .map_err(|e| anyhow!("serialize EnumFormat pod: {e:?}"))?;
+    Ok(cursor.into_inner())
 }
 
 /// Shared state between the stream listener callbacks (which run inside
@@ -922,46 +977,7 @@ fn pipewire_frame(fd: OwnedFd, node_id: u32) -> Result<(Vec<u8>, u32, u32)> {
 
     // EnumFormat offer: raw video in the four supported layouts only;
     // size/framerate left as wide ranges for the backend to fixate.
-    let format_obj = spa::pod::object! {
-        spa::utils::SpaTypes::ObjectParamFormat,
-        spa::param::ParamType::EnumFormat,
-        spa::pod::property!(
-            spa::param::format::FormatProperties::MediaType,
-            Id, spa::param::format::MediaType::Video
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::MediaSubtype,
-            Id, spa::param::format::MediaSubtype::Raw
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoFormat,
-            Choice, Enum, Id,
-            VideoFormat::BGRx,
-            VideoFormat::BGRA,
-            VideoFormat::RGBx,
-            VideoFormat::RGBA
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoSize,
-            Choice, Range, Rectangle,
-            spa::utils::Rectangle { width: 1, height: 1 },
-            spa::utils::Rectangle { width: 1, height: 1 },
-            spa::utils::Rectangle { width: 16384, height: 16384 }
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoFramerate,
-            Choice, Range, Fraction,
-            spa::utils::Fraction { num: 25, denom: 1 },
-            spa::utils::Fraction { num: 0, denom: 1 },
-            spa::utils::Fraction { num: 1000, denom: 1 }
-        ),
-    };
-    let (cursor, _len) = spa::pod::serialize::PodSerializer::serialize(
-        std::io::Cursor::new(Vec::<u8>::new()),
-        &spa::pod::Value::Object(format_obj),
-    )
-    .map_err(|e| anyhow!("serialize EnumFormat pod: {e:?}"))?;
-    let pod_bytes = cursor.into_inner();
+    let pod_bytes = raw_video_format_pod()?;
     let pod = spa::pod::Pod::from_bytes(&pod_bytes).context("EnumFormat pod bytes")?;
     let mut params = [pod];
 
@@ -1177,6 +1193,22 @@ impl CaptureProvider for PortalCapture {
                 "portal capture backend cannot read the cursor (hyprctl unavailable)"
             )),
         }
+    }
+
+    /// A held RemoteDesktop PipeWire session is the portal's
+    /// damage-driven stream path: one `Start` consent dialog per
+    /// `screen_stream start`, then pushed frames for the session's
+    /// lifetime - versus the ephemeral-session-per-frame path which
+    /// would re-consent at stream fps on RemoteDesktop-only portals.
+    /// Nothing is persisted (`portal_stream` module docs).
+    #[cfg(feature = "pipewire")]
+    fn stream_sessions_supported(&self) -> bool {
+        self.caps.remote_desktop
+    }
+
+    #[cfg(feature = "pipewire")]
+    fn stream_capture(&self) -> Option<Box<dyn crate::traits::StreamCapture>> {
+        super::portal_stream::open().ok()
     }
 
     /// `hyprctl monitors` verbatim on Hyprland; otherwise a synthesized

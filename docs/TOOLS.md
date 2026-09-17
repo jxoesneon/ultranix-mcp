@@ -1420,9 +1420,21 @@ Behaviour contract:
   `frames_written`/`bytes_written`, `dropped_frames`, `stop_reason`
   (`stopped` | `capture_error` | `io_error`), and `error` when a failure
   occurred.
-- **Ticking.**The first frame lands as soon as the backend produces one;
-  missed ticks delay rather than burst (a slow backend never triggers a
-  catch-up storm), and `stop` is checked before every tick.
+- **Damage-driven sessions.**On capture backends that can hold a
+  session - wlroots (`ext-image-copy-capture`, or
+  `zwlr_screencopy` `copy_with_damage` elsewhere) and RemoteDesktop
+  portals (one held PipeWire stream) - the capture task pushes **only
+  changed frames**: `frames_written`/`seq` advance on real damage, an
+  idle desktop produces no disk churn, and `fps` acts as a write-rate
+  ceiling rather than a timer. Backends without a session mode (grim,
+  X11, Screenshot-portal-only) keep the per-tick polling loop verbatim;
+  the first frame still lands as soon as the backend produces one. On
+  RemoteDesktop portals the session open raises **one** `Start` consent
+  dialog per `start` - nothing is persisted, so the next `start`
+  re-consents.
+- **Ticking.**Missed ticks delay rather than burst (a slow backend
+  never triggers a catch-up storm), and `stop` is checked before every
+  tick; session-mode `stop` lands within one 200 ms poll slice.
 - **`latest` long-polls.**`since` is a `frames_written` watermark (every
   `latest` reply reports its `seq` for chaining) and `wait_ms`
   (0..=30000, default 0) is how long the call parks for a newer frame -
@@ -2435,7 +2447,7 @@ bypass:
 | 5 - Portability | Non-Hyprland backends (KDE/GNOME via portal+uinput; X11 via `scrot`/`xdotool`/`wmctrl` - shipped at v1.1.0; portal RemoteDesktop->PipeWire capture - v1.1.0) | no new tools - widens where existing ones work |
 | 6 - v1.2.0 breadth wave | Clipboard providers (wl-clipboard/xclip), plugin tool-macros (`<state>/plugins/*.json`), bounded recording, compositor breadth (sway IPC window provider; KDE/GNOME portal routing; `kdotool` window provider on KDE), per-backend cargo features | `screen_record`; `plugin_list`, `plugin_run`, `plugin_reload`; `clipboard_get`, `clipboard_set`, `clipboard_clear` |
 | 7 - v1.4.0 reach wave | Wayfire (`wayfire-ipc`), river (`riverctl`, focused-view-only rung - `window_control` on `"focused"`/`close` + relative deltas), and GNOME Window Calls (`gnome-shell`) window providers; live rolling-window capture; plugin-exposed dynamic tools (manifest `tool` sections); OCI/-bin distribution | `screen_stream`; plugin-exposed tools join `tools/list` dynamically (not catalogued); `window_control` gains `dx,dy`/`dw,dh` delta params |
-| 8 - unreleased wlroots-breadth wave | Shared `wlr-toplevel` rung (`zwlr_foreign_toplevel_manager_v1`) behind every wlroots window provider and as the sole rung on unknown wlroots sessions; river composite provider (foreign-toplevel enumeration + `riverctl` geometry); `screen_stream` `latest` long-poll | `screen_stream` gains `since`/`wait_ms`; `window_control` accepts `wlr-toplevel-N` ids |
+| 8 - unreleased wlroots-breadth wave | Shared `wlr-toplevel` rung (`zwlr_foreign_toplevel_manager_v1`) behind every wlroots window provider and as the sole rung on unknown wlroots sessions; stable `ext_foreign_toplevel_list_v1` identifiers where advertised; river composite provider (foreign-toplevel enumeration + `riverctl` geometry); `screen_stream` damage-driven capture sessions (ext-image-copy-capture / `copy_with_damage` / held portal PipeWire) + `latest` long-poll | `screen_stream` gains `since`/`wait_ms` and damage-driven writes; `window_control` accepts `wlr-toplevel-<id>` selectors |
 
 Tools advertised in `tools/list` always reflect the *currently available*
 providers: a Phase-2 tool on a system without an AT-SPI bus is still listed

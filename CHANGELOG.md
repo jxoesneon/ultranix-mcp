@@ -9,8 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The compositor-breadth wave, part two: every wlroots compositor now gets
 window enumeration and per-window control through
-`zwlr_foreign_toplevel_manager_v1`, and `screen_stream` learns to
-long-poll so agents stop busy-polling for frames.
+`zwlr_foreign_toplevel_manager_v1` (with stable
+`ext_foreign_toplevel_list_v1` identifiers where advertised), and
+`screen_stream` becomes damage-driven - wlroots sessions capture through
+a persistent `ext-image-copy-capture`/`copy_with_damage` session,
+portal-backed sessions hold one RemoteDesktop PipeWire stream per
+stream, and `latest` learns to long-poll so agents stop busy-polling
+for frames.
 
 ### Added
 
@@ -18,18 +23,48 @@ long-poll so agents stop busy-polling for frames.
   `zwlr_foreign_toplevel_manager_v1` (`src/providers/wlr_toplevel.rs`),
   the shared wlroots window rung. Stateless per call: one short-lived
   Wayland connection binds the manager, collects title/app-id/state for
-  every tracked toplevel, then answers or dispatches. Synthetic ids are
-  `wlr-toplevel-N` (enumeration order); `"focused"` addresses the
-  activated toplevel. Verbs: `focus` -> `activate`, `close`,
-  `minimize`/`unminimize`, `maximize`/`unmaximize`,
-  `fullscreen`/`unfullscreen`; `move`/`resize` error honestly - the
-  protocol carries no geometry. Geometry, workspace, monitor, PID, and
-  floating state are reported as zero/unknown because the protocol does
-  not expose them. Index drift is guarded: `window_control` passes the
-  expected title/class from its own resolution, and a stale
-  `wlr-toplevel-N` selector that no longer names that window is
-  rejected rather than silently retargeted. Backend name
+  every tracked toplevel, then answers or dispatches. Verbs:
+  `focus` -> `activate`, `close`, `minimize`/`unminimize`,
+  `maximize`/`unmaximize`, `fullscreen`/`unfullscreen`; `move`/`resize`
+  error honestly - the protocol carries no geometry. Geometry,
+  workspace, monitor, PID, and floating state are reported as
+  zero/unknown where the compositor does not expose them. Backend name
   `"wlr-toplevel"`.
+- **Stable toplevel identifiers** - `ext_foreign_toplevel_list_v1` is
+  bound alongside the wlr manager where advertised (Hyprland, wlroots
+  >= 0.20); its compositor-assigned `identifier` becomes the window id
+  (`wlr-toplevel-<identifier>`), surviving enumeration-order drift
+  across calls. Entries are correlated to dispatch handles by
+  title/app-id in occurrence order; numeric suffixes still parse as
+  index fallbacks, but identifier lookup wins first so all-digit ids
+  are never misread as positions. `monitor` populates from
+  `output_enter`/`output_leave` on compositors that emit them
+  (Hyprland currently does not - it reports `None` honestly).
+- **`StreamCapture` sessions** - a damage-driven frame source
+  (`crate::traits::StreamCapture`) that `screen_stream` prefers over
+  per-tick polling: a dedicated thread pushes only *changed* frames, so
+  `seq`/`frames_written` advance on real damage, `latest` long-polls
+  wake on actual screen updates, and idle screens cost no GPU copy and
+  no PNG encode. `fps` becomes a rate ceiling rather than a timer.
+  Providers opt in via `stream_sessions_supported()`/`stream_capture()`;
+  anything else keeps the ticker loop unchanged.
+- **wlroots capture session** (`src/providers/wlr_stream.rs`) -
+  prefers `ext_image_copy_capture_manager_v1` +
+  `ext_output_image_capture_source_manager_v1` (staging; Hyprland >=
+  0.54, wlroots >= 0.20), whose `capture` request the compositor holds
+  until the source changes - genuinely event-driven with zero polling.
+  Falls back to `zwlr_screencopy_manager_v1` `copy_with_damage`, where
+  a `ready` with no damage events means "unchanged" and idle polling
+  costs one roundtrip per ~50 ms. Both reuse one persistent `wl_shm`
+  buffer so only damaged regions are rewritten.
+- **Held portal PipeWire session** (`src/providers/portal_stream.rs`) -
+  on RemoteDesktop-capable portals, `screen_stream` opens one
+  RemoteDesktop session per stream: a single `Start` consent dialog at
+  start, then pushed frames for the session's lifetime (versus the
+  ephemeral path which would re-consent per frame). Nothing is
+  persisted - no `persist_mode`/`restore_token`, same policy as
+  `portal_input`; `stop` closes the session and the next `start`
+  re-consents.
 - **Shared wlroots fallback rung** - `WlrToplevel` now sits behind the
   compositor-specific window rungs on every wlroots session: Hyprland
   `Hyprctl -> WlrToplevel`, sway `SwayIpc -> WlrToplevel`, Wayfire
@@ -53,6 +88,12 @@ long-poll so agents stop busy-polling for frames.
   result (`isError` stays false). No mutex is held across the wait.
 
 ### Changed
+
+- `screen_stream` on session-capable backends now writes frames only
+  when the screen actually changes: `frames_written`/`seq` advance on
+  compositor-reported damage, and `fps` acts as a maximum write rate.
+  Streams on idle desktops produce no disk churn; `stop` still lands
+  within one 200 ms session poll.
 
 - `window_control`'s `window` selector on wlroots sessions now also
   accepts `wlr-toplevel-N` ids wherever the foreign-toplevel rung

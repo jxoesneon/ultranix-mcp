@@ -638,6 +638,15 @@ async fn stream_stop() -> CallToolResult {
 /// budget would overflow; a frame larger than the whole `max_bytes`
 /// budget is dropped unwritten so `buffered_bytes <= max_bytes` holds
 /// unconditionally.
+/// Session-driver channel messages. `Unsupported` reports that the
+/// provider could not open a `StreamCapture` session on this session -
+/// the receiver then falls back to per-tick `capture_frame` polling.
+enum StreamMsg {
+    Unsupported,
+    Frame(crate::traits::Frame),
+    Failed(String),
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_stream(
     dir: PathBuf,
@@ -680,25 +689,98 @@ async fn run_stream(
         manifest_written: false,
     };
 
+    // Session-capable providers (damage-driven capture - `StreamCapture`
+    // in traits.rs) get a dedicated blocking thread that pushes only
+    // *changed* frames; its first message reports whether a session could
+    // be opened at all, so providers that implement `stream_capture` but
+    // fail to open still fall back to polling. The capability hint is
+    // checked first so the thread is never spawned for providers that
+    // can only poll.
+    let mut session_rx = if capture.stream_sessions_supported() {
+        let capture = Arc::clone(&capture);
+        let cancel_rx = cancel.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel::<StreamMsg>(4);
+        std::thread::Builder::new()
+            .name("screen-stream-capture".into())
+            .spawn(move || {
+                let Some(mut session) = capture.stream_capture() else {
+                    let _ = tx.blocking_send(StreamMsg::Unsupported);
+                    return;
+                };
+                // `fps` becomes a rate ceiling in session mode - the
+                // compositor may produce changes faster than the
+                // configured stream rate, so sends are coalesced to the
+                // interval rather than bursting.
+                let mut last_send = std::time::Instant::now() - interval;
+                while !*cancel_rx.borrow() {
+                    match session.next_frame(Duration::from_millis(200)) {
+                        Ok(Some(f)) => {
+                            std::thread::sleep(interval.saturating_sub(last_send.elapsed()));
+                            let stop = *cancel_rx.borrow()
+                                || tx.blocking_send(StreamMsg::Frame(f)).is_err();
+                            last_send = std::time::Instant::now();
+                            if stop {
+                                break;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            let _ = tx.blocking_send(StreamMsg::Failed(format!("{e:#}")));
+                            break;
+                        }
+                    }
+                }
+            })
+            .ok()
+            .map(|_| rx)
+    } else {
+        None
+    };
+
     let reason: &'static str = loop {
-        tokio::select! {
-            biased;
-            _ = cancel.changed() => break "stopped",
-            _ = ticker.tick() => {}
-        }
-        // `stop` must not wait out an in-flight capture - the frame
-        // future is raced against the cancel edge. Dropping it is safe:
-        // spawned helpers are `kill_on_drop` (security/spawn.rs).
-        let frame = tokio::select! {
-            biased;
-            _ = cancel.changed() => break "stopped",
-            f = capture.capture_frame(None) => match f {
-                Ok(f) => f,
-                Err(e) => {
-                    st.error = Some(format!("{e:#}"));
+        let frame = if session_rx.is_some() {
+            let msg = tokio::select! {
+                biased;
+                _ = cancel.changed() => break "stopped",
+                msg = session_rx.as_mut().expect("checked is_some").recv() => msg,
+            };
+            match msg {
+                Some(StreamMsg::Unsupported) => {
+                    // No session support - drop the dead channel and
+                    // continue into the polled branch next iteration.
+                    session_rx = None;
+                    continue;
+                }
+                Some(StreamMsg::Frame(f)) => f,
+                Some(StreamMsg::Failed(e)) => {
+                    st.error = Some(e);
                     break "capture_error";
                 }
-            },
+                None => {
+                    st.error = Some("capture session ended unexpectedly".into());
+                    break "capture_error";
+                }
+            }
+        } else {
+            tokio::select! {
+                biased;
+                _ = cancel.changed() => break "stopped",
+                _ = ticker.tick() => {}
+            }
+            // `stop` must not wait out an in-flight capture - the frame
+            // future is raced against the cancel edge. Dropping it is safe:
+            // spawned helpers are `kill_on_drop` (security/spawn.rs).
+            tokio::select! {
+                biased;
+                _ = cancel.changed() => break "stopped",
+                f = capture.capture_frame(None) => match f {
+                    Ok(f) => f,
+                    Err(e) => {
+                        st.error = Some(format!("{e:#}"));
+                        break "capture_error";
+                    }
+                },
+            }
         };
         let size = frame.png.len() as u64;
         // Rolling eviction: oldest first until the incoming frame fits
@@ -1398,6 +1480,147 @@ mod tests {
         assert_eq!(res.content.len(), 2);
 
         call(json!({"action": "stop"}), &providers).await;
+        clear_base();
+    }
+
+    // ---- session mode (damage-driven StreamCapture) ----
+
+    /// A scripted `StreamCapture` - one queue entry per `next_frame`
+    /// call; an exhausted script means "idle forever". These tests run
+    /// on real time (the session thread sleeps real intervals), so no
+    /// `start_paused`.
+    struct ScriptedSession {
+        script: VecDeque<anyhow::Result<Option<Frame>>>,
+    }
+
+    impl crate::traits::StreamCapture for ScriptedSession {
+        fn next_frame(&mut self, _wait: Duration) -> anyhow::Result<Option<Frame>> {
+            let item = self.script.pop_front().unwrap_or(Ok(None));
+            if matches!(item, Ok(None)) {
+                // Stand in for the compositor-side wait a real session
+                // performs - keeps the driver loop from busy-spinning.
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            item
+        }
+    }
+
+    /// Provider whose `stream_capture` serves a scripted session. The
+    /// polled `capture_frame` bails so any accidental fallback surfaces
+    /// as a capture_error rather than a silent wrong path.
+    struct SessionCapture {
+        script: StdMutex<VecDeque<anyhow::Result<Option<Frame>>>>,
+    }
+
+    fn tagged_frame(tag: u8) -> Frame {
+        Frame {
+            png: vec![tag; 64],
+            width: 2,
+            height: 2,
+        }
+    }
+
+    #[async_trait]
+    impl CaptureProvider for SessionCapture {
+        async fn capture_frame(&self, _r: Option<crate::traits::Rect>) -> anyhow::Result<Frame> {
+            anyhow::bail!("polled capture ran during session mode")
+        }
+        async fn cursor_position(&self) -> anyhow::Result<(i32, i32)> {
+            Ok((0, 0))
+        }
+        async fn screen_info(&self) -> anyhow::Result<Value> {
+            Ok(json!({"monitors": []}))
+        }
+        fn stream_sessions_supported(&self) -> bool {
+            true
+        }
+        fn stream_capture(&self) -> Option<Box<dyn crate::traits::StreamCapture>> {
+            let script = std::mem::take(&mut *self.script.lock().unwrap());
+            Some(Box::new(ScriptedSession { script }))
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_session_writes_only_changed_frames() {
+        let _g = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        use_base(&tmp);
+        let script = VecDeque::from(vec![
+            Ok(Some(tagged_frame(1))),
+            Ok(None),
+            Ok(None),
+            Ok(Some(tagged_frame(2))),
+        ]);
+        let providers = providers_with(Arc::new(SessionCapture {
+            script: StdMutex::new(script),
+        }));
+
+        call(json!({"action": "start", "fps": 10}), &providers).await;
+        // Real sleeps - the session driver thread runs outside tokio's
+        // clock. 400 ms is two+ intervals at fps 10: both changed frames
+        // land while the idle pops write nothing.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let res = call(json!({"action": "latest"}), &providers).await;
+        assert_eq!(res.is_error, Some(false));
+        assert_eq!(seq_of(&res), 2, "only changed frames advance seq");
+
+        let status = json_of(&call(json!({"action": "status"}), &providers).await);
+        assert_eq!(status["frames_written"], 2);
+
+        call(json!({"action": "stop"}), &providers).await;
+        clear_base();
+    }
+
+    #[tokio::test]
+    async fn stream_session_failure_surfaces_as_capture_error() {
+        let _g = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        use_base(&tmp);
+        let script = VecDeque::from(vec![
+            Ok(Some(tagged_frame(1))),
+            Err(anyhow::anyhow!("session died")),
+        ]);
+        let providers = providers_with(Arc::new(SessionCapture {
+            script: StdMutex::new(script),
+        }));
+
+        call(json!({"action": "start", "fps": 10}), &providers).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let status = json_of(&call(json!({"action": "status"}), &providers).await);
+        assert_eq!(status["stop_reason"], "capture_error");
+        assert!(
+            status["last_error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("session died"),
+            "{status}"
+        );
+        assert_eq!(status["frames_written"], 1);
+
+        call(json!({"action": "stop"}), &providers).await;
+        clear_base();
+    }
+
+    #[tokio::test]
+    async fn stream_session_stop_is_prompt_during_idle() {
+        let _g = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        use_base(&tmp);
+        // Idle session - `next_frame` returns None forever; stop must
+        // still land through the 200 ms session poll window.
+        let providers = providers_with(Arc::new(SessionCapture {
+            script: StdMutex::new(VecDeque::new()),
+        }));
+
+        call(json!({"action": "start", "fps": 10}), &providers).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        // `stop` joins the task and reports the final stats itself -
+        // the registry slot is already gone afterwards.
+        let stop = json_of(&call(json!({"action": "stop"}), &providers).await);
+        assert_eq!(stop["stop_reason"], "stopped");
+
         clear_base();
     }
 }
