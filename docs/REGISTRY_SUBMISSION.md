@@ -259,7 +259,9 @@ alphabetised and one line, per the list's contributing rules.
   for when registration reopens.
 - [x] GitHub topics set: `mcp`, `mcp-server`, `linux`, `wayland`, `hyprland`,
   `automation`, `ocr`, `computer-use`, `rust`
-- [ ] `assets/icon.png` (512×512) present for registry icons
+- [x] `assets/icon.png` (512×512) present + advertised via `server.json`
+  `icons` (lands on the registry at the next version publish - the registry
+  rejects re-publishing an existing version)
 - [x] Health endpoint (`GET /health`) and `GET /metrics` verified on `:3010`
 - [x] Official MCP registry: `io.github.jxoesneon/ultranix-mcp` v1.4.0
   published 2026-09-16 (`status: active`). AUR pending the pause above.
