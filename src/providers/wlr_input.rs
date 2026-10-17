@@ -5,7 +5,10 @@
 //! Connects to `$WAYLAND_DISPLAY`, binds `wl_seat` + `wl_output` (the latter
 //! for layout geometry, needed by `motion_absolute`), creates one virtual
 //! pointer and one virtual keyboard, and uploads an `xkbcommon`-compiled
-//! keymap so key names resolve to evdev keycodes locally.
+//! keymap so key names resolve to evdev keycodes locally. Modifier state
+//! is maintained explicitly: the `zwp_virtual_keyboard_v1` protocol only
+//! carries it through `modifiers` requests, never by inference from key
+//! events, so every modifier press/release is followed by one.
 //!
 //! A single persistent `Connection`/`EventQueue` is kept behind a `Mutex`;
 //! every injection call flushes pending requests and performs one roundtrip
@@ -15,7 +18,7 @@
 //! `cursor_position` prefers `hyprctl` (live on Hyprland); the virtual
 //! pointer protocol offers no read channel of its own.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::os::fd::AsFd;
 use std::sync::{Arc, Mutex};
@@ -78,6 +81,13 @@ struct Inner {
     keys: HashMap<u32, KeyBinding>,
     /// evdev code of `Shift_L`, cached for level-1 (shifted) keysyms.
     shift_evdev: Option<u32>,
+    /// evdev code of each modifier key -> the XKB modifier mask to report
+    /// via `modifiers` while it is held (precomputed against the session
+    /// keymap, same `!Send` rationale as `keys`).
+    mods: HashMap<u32, u32>,
+    /// Modifier codes currently held *by us* (tracked across calls, so
+    /// `key_control` down + a later `key_event` still compose).
+    depressed: HashSet<u32>,
 }
 
 /// A resolved key: evdev keycode plus whether `Shift` must be held.
@@ -291,8 +301,8 @@ fn char_keysym(c: char) -> Keysym {
 
 /// Compile the session keymap (env defaults: `XKB_DEFAULT_RULES` etc.,
 /// else libxkbcommon defaults) and return its text form plus the
-/// keysym -> keybinding lookup.
-fn build_keymap() -> Option<(String, HashMap<u32, KeyBinding>)> {
+/// keysym -> keybinding and modifier-keycode -> mask lookups.
+fn build_keymap() -> Option<(String, HashMap<u32, KeyBinding>, HashMap<u32, u32>)> {
     build_keymap_rmlvo("", "", "", "")
 }
 
@@ -301,7 +311,7 @@ fn build_keymap_rmlvo(
     model: &str,
     layout: &str,
     variant: &str,
-) -> Option<(String, HashMap<u32, KeyBinding>)> {
+) -> Option<(String, HashMap<u32, KeyBinding>, HashMap<u32, u32>)> {
     let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
     let keymap = xkb::Keymap::new_from_names(
         &ctx,
@@ -316,7 +326,9 @@ fn build_keymap_rmlvo(
     if text.is_empty() {
         return None;
     }
-    Some((text, build_keycode_map(&keymap)))
+    let keys = build_keycode_map(&keymap);
+    let mods = build_modifier_map(&keymap, &keys);
+    Some((text, keys, mods))
 }
 
 /// Map every keysym reachable at level 0 (unshifted) or level 1 (shifted)
@@ -335,6 +347,47 @@ fn build_keycode_map(keymap: &xkb::Keymap) -> HashMap<u32, KeyBinding> {
                     shifted: level == 1,
                 });
             }
+        }
+    }
+    map
+}
+
+/// XKB modifier event-name convention: which modifier does a keysym name?
+///
+/// Modifier keysyms do not carry their bit position in the protocol; the
+/// compositor decodes them through the *uploaded keymap's* modifier table
+/// (`Mod1`..-5 are indexed positions, not fixed bits).
+fn mod_name_for_keysym(raw: u32) -> Option<&'static str> {
+    use xkb::keysyms::{self as K};
+    Some(match raw {
+        K::KEY_Shift_L | K::KEY_Shift_R => "Shift",
+        K::KEY_Control_L | K::KEY_Control_R => "Control",
+        K::KEY_Caps_Lock => "Lock",
+        K::KEY_Alt_L | K::KEY_Alt_R | K::KEY_Meta_L | K::KEY_Meta_R => "Mod1",
+        K::KEY_Num_Lock => "Mod2",
+        K::KEY_Scroll_Lock => "Mod3",
+        K::KEY_Super_L | K::KEY_Super_R | K::KEY_Hyper_L | K::KEY_Hyper_R => "Mod4",
+        K::KEY_ISO_Level3_Shift | K::KEY_ISO_Level5_Shift | K::KEY_Mode_switch => "Mod5",
+        _ => return None,
+    })
+}
+
+/// evdev keycode of each modifier key in the keymap -> the XKB modifier
+/// mask that keycode must report via `zwp_virtual_keyboard_v1.modifiers`
+/// while held. Modifier state is only carried through explicit `modifiers`
+/// requests - the compositor never infers it from key events.
+fn build_modifier_map(
+    keymap: &xkb::Keymap,
+    keys: &HashMap<u32, KeyBinding>,
+) -> HashMap<u32, u32> {
+    let mut map = HashMap::new();
+    for (sym_raw, binding) in keys {
+        let Some(name) = mod_name_for_keysym(*sym_raw) else {
+            continue;
+        };
+        let idx = keymap.mod_get_index(name);
+        if idx != xkb::MOD_INVALID {
+            map.entry(binding.evdev).or_insert(1u32 << idx);
         }
     }
     map
@@ -480,6 +533,29 @@ impl Inner {
         self.emit_keysym(sym, down)
     }
 
+    /// Track a pressed/released keycode in the local modifier state and,
+    /// when a modifier actually changed, report the new mask to the
+    /// compositor via `modifiers` - the only channel the
+    /// `zwp_virtual_keyboard_v1` protocol has for modifier state.
+    fn note_modifier(&mut self, code: u32, down: bool, kbd: &ZwpVirtualKeyboardV1) {
+        if !self.mods.contains_key(&code) {
+            return;
+        }
+        let changed = if down {
+            self.depressed.insert(code)
+        } else {
+            self.depressed.remove(&code)
+        };
+        if !changed {
+            return;
+        }
+        let mut mask = 0u32;
+        for &c in &self.depressed {
+            mask |= self.mods.get(&c).copied().unwrap_or(0);
+        }
+        kbd.modifiers(mask, 0, 0, 0);
+    }
+
     fn emit_keysym(&mut self, sym: Keysym, down: bool) -> Result<()> {
         let binding = *self.keys.get(&sym.raw()).ok_or_else(|| {
             anyhow!(
@@ -499,13 +575,16 @@ impl Inner {
                 .ok_or_else(|| anyhow!("Shift_L has no keycode in keymap"))?;
             if down {
                 kbd.key(t, shift, press);
+                self.note_modifier(shift, true, &kbd);
                 kbd.key(t, binding.evdev, press);
             } else {
                 kbd.key(t, binding.evdev, release);
                 kbd.key(t, shift, release);
+                self.note_modifier(shift, false, &kbd);
             }
         } else {
             kbd.key(t, binding.evdev, if down { press } else { release });
+            self.note_modifier(binding.evdev, down, &kbd);
         }
         self.sync()
     }
@@ -548,12 +627,16 @@ impl Inner {
             if b.shifted {
                 let s = shift.expect("validated above");
                 kbd.key(t, s, press);
+                self.note_modifier(s, true, &kbd);
                 kbd.key(t, b.evdev, press);
                 kbd.key(t, b.evdev, release);
                 kbd.key(t, s, release);
+                self.note_modifier(s, false, &kbd);
             } else {
                 kbd.key(t, b.evdev, press);
+                self.note_modifier(b.evdev, true, &kbd);
                 kbd.key(t, b.evdev, release);
+                self.note_modifier(b.evdev, false, &kbd);
             }
         }
         self.sync()
@@ -624,7 +707,7 @@ impl WlrInput {
             .create_virtual_keyboard(&seat, &qh, ());
         state.keyboard = Some(keyboard.clone());
 
-        let (keymap_text, keys) =
+        let (keymap_text, keys, mods) =
             build_keymap().ok_or_else(|| anyhow!("xkbcommon failed to compile session keymap"))?;
         let shift_evdev = keys.get(&xkb::keysyms::KEY_Shift_L).map(|b| b.evdev);
         upload_keymap(&keyboard, &keymap_text)?;
@@ -641,6 +724,8 @@ impl WlrInput {
                 state,
                 started: Instant::now(),
                 keys,
+                mods,
+                depressed: HashSet::new(),
                 shift_evdev,
             })),
             hyprctl: crate::security::whitelist::resolve_binaries()
@@ -831,8 +916,8 @@ mod tests {
     #[test]
     fn keymap_builds_text_and_keycode_map() {
         // Pinned RMLVO so the assertion set is deterministic.
-        let (text, keys) = build_keymap_rmlvo("evdev", "pc105", "us", "")
-            .expect("libxkbcommon must compile evdev/pc105/us");
+        let (text, keys, _mods) =
+            build_keymap_rmlvo("evdev", "pc105", "us", "").expect("libxkbcommon must compile evdev/pc105/us");
         assert!(text.contains("xkb_keymap"));
 
         let a = keys.get(&xkb::keysyms::KEY_a).expect("us keymap has 'a'");
@@ -855,7 +940,7 @@ mod tests {
     #[test]
     fn keycode_map_prefers_unshifted_level() {
         // '1' is level 0 on AE01; '!' is level 1 on the same key.
-        let (_text, keys) = build_keymap_rmlvo("evdev", "pc105", "us", "").unwrap();
+        let (_text, keys, _mods) = build_keymap_rmlvo("evdev", "pc105", "us", "").unwrap();
         assert!(!keys[&xkb::keysyms::KEY_1].shifted);
         assert!(keys[&xkb::keysyms::KEY_exclam].shifted);
         assert_eq!(
@@ -956,13 +1041,57 @@ mod tests {
         // The env-driven wrapper compiles *some* keymap on any machine
         // with a working libxkbcommon (XKB_DEFAULT_* may legitimately
         // select a non-us layout, so only structural properties hold).
-        let (text, keys) = build_keymap().expect("default keymap compiles");
+        let (text, keys, mods) = build_keymap().expect("default keymap compiles");
         assert!(text.contains("xkb_keymap"));
         // Every standard layout binds Escape at level 0.
         let esc = keys
             .get(&xkb::keysyms::KEY_Escape)
             .expect("keymap binds Escape");
         assert!(!esc.shifted);
+        // The canonical modifiers are present with real masks - this is
+        // what `modifiers` requests are built from.
+        for name_sym in [
+            xkb::keysyms::KEY_Shift_L,
+            xkb::keysyms::KEY_Control_L,
+            xkb::keysyms::KEY_Alt_L,
+            xkb::keysyms::KEY_Super_L,
+        ] {
+            let evdev = keys.get(&name_sym).expect("modifier key in keymap").evdev;
+            let mask = mods.get(&evdev).expect("modifier mask precomputed");
+            assert_ne!(*mask, 0);
+        }
+    }
+
+    #[test]
+    fn modifier_map_covers_the_canonical_modifiers() {
+        let (_text, keys, mods) = build_keymap_rmlvo("evdev", "pc105", "us", "").unwrap();
+        // Each canonical modifier key get a distinct nonzero mask...
+        let mask_of = |sym| {
+            let evdev = keys.get(&sym).expect("modifier key in evdev keymap").evdev;
+            mods.get(&evdev).copied().expect("modifier has a mask")
+        };
+        let shift = mask_of(xkb::keysyms::KEY_Shift_L);
+        let ctrl = mask_of(xkb::keysyms::KEY_Control_L);
+        let alt = mask_of(xkb::keysyms::KEY_Alt_L);
+        let superef = mask_of(xkb::keysyms::KEY_Super_L);
+        assert_ne!(shift, 0);
+        assert_ne!(ctrl, 0);
+        assert_ne!(alt, 0);
+        assert_ne!(superef, 0);
+        assert_ne!(shift, ctrl);
+        assert_ne!(shift, alt);
+        assert_ne!(ctrl, alt);
+        // ...left and right 'shift' agree (same modifier, 2 keycodes).
+        assert_eq!(shift, mask_of(xkb::keysyms::KEY_Shift_R));
+        // Plain keys never receive a mask entry...
+        assert!(!mods.contains_key(&keys[&xkb::keysyms::KEY_a].evdev));
+        // ...and the name translation only knows modifiers.
+        assert_eq!(mod_name_for_keysym(xkb::keysyms::KEY_Shift_L), Some("Shift"));
+        assert_eq!(
+            mod_name_for_keysym(xkb::keysyms::KEY_Super_L),
+            Some("Mod4")
+        );
+        assert_eq!(mod_name_for_keysym(xkb::keysyms::KEY_a), None);
     }
 
     // ---- layout geometry ------------------------------------------------

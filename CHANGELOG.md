@@ -5,6 +5,36 @@ All notable changes to ultranix-mcp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-10-18
+
+Two Wayland provider fixes surfaced on Wayfire (wlr session driving both
+broken paths at once - screenshot panicked and modifier keys never
+reached the compositor):
+
+### Fixed
+
+- **`screenshot` no longer panics (and wedges Wayfire)** - the
+  `wlr-screencopy` capture used plain `delegate_noop!` for `WlBuffer`,
+  which panics if the object delivers *any* event. Buffers have one:
+  `release`, sent when the compositor is done reading SHM contents.
+  Wayfire does so routinely, so every capture played Russian roulette;
+  a panic aborted the connection mid-copy without `frame.destroy()`,
+  and one abrupt disconnect wedged the compositor's screencopy slot
+  session-wide (even clean clients like `grim` then hung until a
+  compositor restart). The protocol objects now swallow events via
+  `delegate_noop!(... ignore ...)`, roundtrip errors no longer skip
+  the `destroy()` cleanup, and failures flush the connection.
+- **Keyboard injection delivers modifiers** - `zwp_virtual_keyboard_v1`
+  carries modifier state only through explicit `modifiers` requests;
+  compositors never infer it from key events on a virtual device. The
+  provider sent raw `key` events only, so every shifted character
+  dropped its shift (`:` typed as `;`) and control combos were plain
+  keys (`ctrl+c` indistinguishable from `c`). Modifier keycodes are now
+  precomputed against the session keymap (keysym -> XKB modifier-name
+  table -> mask), the provider tracks modifiers held across calls, and
+  every press/release of a modifier keycode is followed by a
+  `modifiers` request reporting the serialised depressed state.
+
 ## [Unreleased]
 
 The compositor-breadth wave, part two: every wlroots compositor now gets

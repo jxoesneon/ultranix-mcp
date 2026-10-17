@@ -266,9 +266,15 @@ impl Dispatch<wl_shm::WlShm, ()> for State {
     }
 }
 
-delegate_noop!(State: WlShmPool);
-delegate_noop!(State: WlBuffer);
-delegate_noop!(State: ZwlrScreencopyManagerV1);
+// `delegate_noop!` (without `ignore`) panics if the object delivers an
+// event. `WlBuffer` has one: `release`, which compositors send once they
+// are done reading SHM contents. Wayfire does this routinely; a panic here
+// would abort mid-roundtrip and abandon the frame without `destroy()`,
+// wedging the compositor's screencopy slot (grim then hangs session-wide
+// until a compositor restart). Swallow the events instead.
+delegate_noop!(State: ignore WlShmPool);
+delegate_noop!(State: ignore WlBuffer);
+delegate_noop!(State: ignore ZwlrScreencopyManagerV1);
 
 // ---------------------------------------------------------------------------
 // Blocking protocol plumbing
@@ -350,20 +356,32 @@ fn capture_blocking(region: Option<Rect>) -> Result<Frame> {
     // asynchronous - `ready` arrives when the GPU work completes, often
     // several display frames later, so a fixed roundtrip count races it.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut roundtrip_err = None;
     while !(state.ready || state.failed.is_some()) {
         if std::time::Instant::now() >= deadline {
             break;
         }
-        queue
-            .roundtrip(&mut state)
-            .context("screencopy roundtrip")?;
+        match queue.roundtrip(&mut state) {
+            Ok(_) => {}
+            Err(e) => {
+                roundtrip_err = Some(anyhow::Error::new(e).context("screencopy roundtrip"));
+                break;
+            }
+        }
         if !(state.ready || state.failed.is_some()) {
             std::thread::sleep(std::time::Duration::from_millis(15));
         }
     }
+    // Release the frame/manager even on failure: an abruptly dropped
+    // connection mid-copy leaves the compositor's screencopy slot wedged
+    // (recovery on Wayfire requires a compositor restart).
     frame.destroy();
     mgr.destroy();
+    let _ = queue.flush();
 
+    if let Some(e) = roundtrip_err {
+        return Err(e);
+    }
     if let Some(err) = state.failed.take() {
         bail!("wlr-screencopy failed: {err}");
     }
